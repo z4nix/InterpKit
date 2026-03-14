@@ -18,7 +18,7 @@ _ATTENTION_PATTERNS = re.compile(
     r"(^|\.)(self_attn|attn|attention|mha|multi_head_attention)(\.|\b)", re.IGNORECASE
 )
 _MLP_PATTERNS = re.compile(
-    r"(^|\.)(mlp|ffn|feed_forward|dense|fc[_\d]|intermediate)(\.|\b)", re.IGNORECASE
+    r"(^|\.)(mlp|ffn|feed_forward|dense|fc_?\d*|intermediate)(\.|\b)", re.IGNORECASE
 )
 _HEAD_PATTERNS = re.compile(
     r"(^|\.)(lm_head|head|classifier|output_projection|qa_outputs)(\.|\b)", re.IGNORECASE
@@ -112,11 +112,36 @@ def _parse_hf_config(model: nn.Module) -> dict[str, Any]:
     return info
 
 
+_LM_HEAD_PATTERNS = re.compile(
+    r"(^|\.)(lm_head|output_projection)(\.|\b)", re.IGNORECASE
+)
+
+
 def _find_unembedding(model: nn.Module) -> str | None:
-    """Try to find the unembedding / LM head weight matrix."""
+    """Try to find the unembedding / LM head weight matrix.
+
+    Only matches names that are unambiguously language-model heads
+    (``lm_head``, ``output_projection``). Generic names like ``head``,
+    ``classifier``, and ``qa_outputs`` are excluded to avoid false
+    positives on vision and QA models.  If the model has a
+    ``config.vocab_size``, a broader search is attempted with a
+    shape check as a safety net.
+    """
+    # Strict pass: unambiguous LM head names
     for name, module in model.named_modules():
-        if _HEAD_PATTERNS.search(name) and hasattr(module, "weight"):
+        if _LM_HEAD_PATTERNS.search(name) and hasattr(module, "weight"):
             return name
+
+    # Relaxed pass: allow generic head names only when the output
+    # dimension matches vocab_size from the config.
+    vocab_size = getattr(getattr(model, "config", None), "vocab_size", None)
+    if vocab_size is not None:
+        for name, module in model.named_modules():
+            if _HEAD_PATTERNS.search(name) and hasattr(module, "weight"):
+                out_features = getattr(module, "out_features", None)
+                if out_features == vocab_size:
+                    return name
+
     return None
 
 

@@ -161,12 +161,18 @@ def _attribute_tensor(model: "Model", tensor_input: Any, *, target: int | None) 
         out = model._model(inp)
 
     logits = out.logits if hasattr(out, "logits") else (out[0] if isinstance(out, (tuple, list)) else out)
-    logits_flat = logits.view(-1)
+
+    if logits.dim() == 3:
+        logits_last = logits[0, -1, :]
+    elif logits.dim() == 2:
+        logits_last = logits[0]
+    else:
+        logits_last = logits.view(-1)
 
     if target is None:
-        target = logits_flat.argmax().item()
+        target = logits_last.argmax().item()
 
-    score = logits_flat[target]
+    score = logits_last[target]
     score.backward()
 
     if grad_tensor.grad is None:
@@ -184,21 +190,27 @@ def _attribute_tensor(model: "Model", tensor_input: Any, *, target: int | None) 
 
 
 def _find_embedding(model: torch.nn.Module) -> torch.nn.Module | None:
-    """Find the token embedding layer."""
+    """Find the token embedding layer.
+
+    Prefers an embedding whose name contains "token" or "wte".  Falls back
+    to the largest embedding (by num_embeddings), which is almost always the
+    token embedding rather than a position embedding.
+    """
+    # Prefer explicitly named token embeddings
     for name, mod in model.named_modules():
-        if isinstance(mod, torch.nn.Embedding) and "token" not in name.lower().replace("token", ""):
-            pass
         if isinstance(mod, torch.nn.Embedding):
-            # Pick the largest embedding (usually token embeddings, not position)
-            if mod.num_embeddings > 1000:
+            if "token" in name.lower() or "wte" in name.lower():
                 return mod
 
-    # Fallback: first embedding
+    # Fall back to the largest embedding (token > position in practice)
+    best: torch.nn.Module | None = None
+    best_size = 0
     for _name, mod in model.named_modules():
-        if isinstance(mod, torch.nn.Embedding):
-            return mod
+        if isinstance(mod, torch.nn.Embedding) and mod.num_embeddings > best_size:
+            best = mod
+            best_size = mod.num_embeddings
 
-    return None
+    return best
 
 
 def _is_image_path(s: str) -> bool:

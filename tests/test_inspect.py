@@ -46,6 +46,5 @@ def test_inspect_resnet_runs(resnet_model, capsys):
 
 def test_inspect_resnet_no_lm_head(resnet_model):
     arch = resnet_model.arch_info
-    # ResNet has a classifier head, which our heuristics may detect as "head",
-    # but it's not a language model
-    assert not arch.is_language_model or arch.unembedding_name is not None
+    # ResNet has a classifier head, but it should not be detected as a language model
+    assert not arch.is_language_model

@@ -535,9 +535,9 @@ def _hash_input(model_input: dict[str, torch.Tensor] | torch.Tensor) -> int:
         for k in sorted(model_input.keys()):
             v = model_input[k]
             h.update(k.encode())
-            h.update(v.cpu().contiguous().numpy().tobytes())
+            h.update(v.detach().cpu().float().contiguous().numpy().tobytes())
     else:
-        h.update(model_input.cpu().contiguous().numpy().tobytes())
+        h.update(model_input.detach().cpu().float().contiguous().numpy().tobytes())
     return int.from_bytes(h.digest()[:8], "little")
 
 

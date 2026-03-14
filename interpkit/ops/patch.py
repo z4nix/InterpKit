@@ -86,8 +86,10 @@ def _compute_effect(
     corrupted: torch.Tensor,
     patched: torch.Tensor,
 ) -> float:
-    """Normalised patching effect: 0 = patched == corrupted, 1 = patched == clean."""
-    # Use KL divergence on the last-token logits as the distance metric
+    """Normalised patching effect: 0 = patched == corrupted, 1 = patched == clean.
+
+    Uses L2 distance between probability distributions as the distance metric.
+    """
     clean_flat = clean.view(-1, clean.shape[-1]).float()
     corrupted_flat = corrupted.view(-1, corrupted.shape[-1]).float()
     patched_flat = patched.view(-1, patched.shape[-1]).float()

@@ -28,7 +28,7 @@ _ROLE_TAGS = {
 # ------------------------------------------------------------------
 
 
-def render_inspect(arch_info: "ModelArchInfo") -> None:
+def render_inspect(arch_info: "ModelArchInfo", nn_model: "torch.nn.Module | None" = None) -> None:
     """Print a module tree with types, param counts, and detected roles."""
     header_parts = []
     if arch_info.arch_family:
@@ -40,7 +40,15 @@ def render_inspect(arch_info: "ModelArchInfo") -> None:
     if arch_info.vocab_size is not None:
         header_parts.append(f"vocab={arch_info.vocab_size}")
 
-    total_params = sum(m.param_count for m in arch_info.modules)
+    if nn_model is not None:
+        seen: set[int] = set()
+        total_params = 0
+        for p in nn_model.parameters():
+            if p.data_ptr() not in seen:
+                seen.add(p.data_ptr())
+                total_params += p.numel()
+    else:
+        total_params = sum(m.param_count for m in arch_info.modules)
     header_parts.append(f"{_format_params(total_params)} params total")
 
     console.print(f"\n[bold]{' | '.join(header_parts)}[/bold]")

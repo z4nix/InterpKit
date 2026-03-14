@@ -45,9 +45,10 @@ def run_lens(model: "Model", text: Any, *, save: str | None = None) -> list[dict
 
     text_input = model._prepare(text)
 
-    # Get the unembedding weight matrix
+    # Get the unembedding weight matrix (and optional bias)
     unembed_mod = _get_module(model._model, arch.unembedding_name)
     unembed_weight = unembed_mod.weight  # shape: (vocab_size, hidden_size)
+    unembed_bias = getattr(unembed_mod, "bias", None)  # shape: (vocab_size,) or None
 
     # Capture hidden states at the output of each layer
     layer_outputs: dict[str, torch.Tensor] = {}
@@ -101,8 +102,10 @@ def run_lens(model: "Model", text: Any, *, save: str | None = None) -> list[dict
         if final_norm is not None:
             hidden = final_norm(hidden)
 
-        # Project through unembedding: logits = hidden @ W^T
+        # Project through unembedding: logits = hidden @ W^T (+ bias)
         logits = hidden @ unembed_weight.float().T  # (batch, vocab)
+        if unembed_bias is not None:
+            logits = logits + unembed_bias.float()
         probs = torch.softmax(logits, dim=-1)
 
         top5_probs, top5_ids = probs[0].topk(5)
@@ -141,11 +144,12 @@ def _find_final_norm(model: torch.nn.Module, arch: Any) -> torch.nn.Module | Non
         if norm_pattern.match(name):
             return mod
 
-    # Generic fallback: look for a top-level norm module
+    # Generic fallback: look for a top-level norm module (LayerNorm or RMSNorm variants)
     for name, mod in model.named_modules():
-        if name.count(".") <= 1 and isinstance(mod, (torch.nn.LayerNorm,)):
-            type_name = type(mod).__name__
-            if "norm" in name.lower() or "Norm" in type_name:
+        if name.count(".") <= 1:
+            cls_name = type(mod).__name__.lower()
+            is_norm = isinstance(mod, torch.nn.LayerNorm) or "rmsnorm" in cls_name or "layernorm" in cls_name
+            if is_norm and ("norm" in name.lower() or "Norm" in type(mod).__name__):
                 return mod
 
     return None

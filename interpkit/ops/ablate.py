@@ -49,7 +49,7 @@ def run_ablate(
             if t.dim() >= 3:
                 replacement = t.mean(dim=-2, keepdim=True).expand_as(t)
             else:
-                replacement = t.mean(dim=-1, keepdim=True).expand_as(t)
+                replacement = t.mean(dim=0, keepdim=True).expand_as(t)
         else:
             raise ValueError(f"Unknown ablation method: {method!r}. Use 'zero' or 'mean'.")
 
