@@ -358,10 +358,23 @@ def render_steer(
 def render_probe(result: dict[str, Any]) -> None:
     """Print probe results — accuracy and top features."""
     console.print(f"\n[bold]Linear Probe at: {result['module']}[/bold]")
-    console.print(f"  Accuracy: [bold]{result['accuracy']:.3f}[/bold]")
 
-    if result.get("train_accuracy") is not None:
-        console.print(f"  Train accuracy: {result['train_accuracy']:.3f}")
+    eval_method = result.get("eval_method", "")
+    if eval_method == "holdout":
+        console.print(f"  Test accuracy (holdout 20%): [bold]{result['accuracy']:.3f}[/bold]")
+        if result.get("cv_accuracy") is not None:
+            console.print(f"  CV accuracy (train split):   {result['cv_accuracy']:.3f}")
+        if result.get("train_accuracy") is not None:
+            console.print(f"  Train accuracy:              {result['train_accuracy']:.3f}")
+    elif eval_method == "cv_only":
+        console.print(f"  CV accuracy: [bold]{result['accuracy']:.3f}[/bold]")
+        console.print("  [dim](too few samples for holdout split)[/dim]")
+    elif eval_method == "train_only":
+        console.print(f"  Train accuracy: [bold]{result['accuracy']:.3f}[/bold]  [dim](no holdout — <10 samples)[/dim]")
+    else:
+        console.print(f"  Accuracy: [bold]{result['accuracy']:.3f}[/bold]")
+        if result.get("train_accuracy") is not None:
+            console.print(f"  Train accuracy: {result['train_accuracy']:.3f}")
 
     if result.get("top_features"):
         console.print("\n  Top features by weight magnitude:")

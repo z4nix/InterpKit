@@ -78,7 +78,7 @@ model = interpkit.load("bert-base-uncased")
 | `activations` | Extract raw activation tensors at any module | Any model |
 | `ablate` | Zero/mean ablate a component and measure effect | Any model |
 | `attention` | Visualize attention patterns per layer/head | Transformers |
-| `steer` | Extract and apply steering vectors | Any model |
+| `steer` | Extract and apply steering vectors | LMs |
 | `probe` | Linear probe on activations | Any model |
 | `diff` | Compare activations between two models | Any model |
 | `features` | SAE feature decomposition | Any model |
@@ -102,6 +102,8 @@ model.attention("The capital of France is", layer=8, head=3)  # single head
 ```
 
 ## Steering
+
+Steering vectors work by computing the difference in activations between two contrasting prompts and adding that vector back during inference. This is most useful on language models, where the effect on generated text is interpretable.
 
 ```python
 # 1. Extract a steering vector

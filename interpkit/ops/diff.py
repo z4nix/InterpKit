@@ -5,9 +5,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import torch
+from rich.console import Console
 
 if TYPE_CHECKING:
     from interpkit.core.model import Model
+
+console = Console()
 
 
 def run_diff(
@@ -16,30 +19,45 @@ def run_diff(
     input_data: Any,
     *,
     save: str | None = None,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     """Compare activations between two models at all discovered layers.
 
-    Returns a list of dicts sorted by cosine distance (highest change first).
+    Returns a dict with ``"results"`` (list sorted by cosine distance,
+    highest first), ``"skipped_a"`` (count of modules only in model A),
+    and ``"skipped_b"`` (count of modules only in model B).
     """
     from interpkit.core.render import render_diff
     from interpkit.ops.activations import run_activations
 
-    # Find shared layer-like modules
     layers_a = set(model_a.arch_info.layer_names or [])
     layers_b = set(model_b.arch_info.layer_names or [])
 
-    # If no layers detected, fall back to all named modules
     if not layers_a:
         layers_a = {m.name for m in model_a.arch_info.modules if m.param_count > 0}
     if not layers_b:
         layers_b = {m.name for m in model_b.arch_info.modules if m.param_count > 0}
 
+    only_in_a = layers_a - layers_b
+    only_in_b = layers_b - layers_a
     shared_layers = sorted(layers_a & layers_b)
 
+    model_a_name = model_a.arch_info.arch_family or "model_a"
+    model_b_name = model_b.arch_info.arch_family or "model_b"
+
+    if only_in_a or only_in_b:
+        parts = []
+        if only_in_a:
+            parts.append(f"{len(only_in_a)} modules only in {model_a_name}")
+        if only_in_b:
+            parts.append(f"{len(only_in_b)} modules only in {model_b_name}")
+        console.print(
+            f"\n  [yellow]diff:[/yellow] skipped {', '.join(parts)}. "
+            f"Comparing {len(shared_layers)} shared modules."
+        )
+
     if not shared_layers:
-        from rich.console import Console
-        Console().print("\n  [yellow]diff:[/yellow] no shared modules found between the two models.\n")
-        return []
+        console.print("\n  [yellow]diff:[/yellow] no shared modules found between the two models.\n")
+        return {"results": [], "skipped_a": len(only_in_a), "skipped_b": len(only_in_b)}
 
     acts_a = run_activations(model_a, input_data, at=shared_layers, print_stats=False)
     acts_b = run_activations(model_b, input_data, at=shared_layers, print_stats=False)
@@ -67,8 +85,6 @@ def run_diff(
 
     results.sort(key=lambda r: r["distance"], reverse=True)
 
-    model_a_name = model_a.arch_info.arch_family or "model_a"
-    model_b_name = model_b.arch_info.arch_family or "model_b"
     render_diff(results, model_a_name, model_b_name)
 
     if save is not None:
@@ -76,4 +92,4 @@ def run_diff(
 
         plot_diff(results, model_a_name=model_a_name, model_b_name=model_b_name, save_path=save)
 
-    return results
+    return {"results": results, "skipped_a": len(only_in_a), "skipped_b": len(only_in_b)}

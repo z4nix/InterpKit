@@ -96,7 +96,7 @@ def run_attention(
         layer_idx = int(layer_match.group(1)) if layer_match else 0
 
         attn_weights = _compute_attention_from_projections(
-            projections, arch.num_attention_heads or 12
+            projections, arch.num_attention_heads
         )
 
         if attn_weights is None:
@@ -155,13 +155,12 @@ def run_attention(
 
 def _compute_attention_from_projections(
     projections: dict[str, torch.Tensor],
-    num_heads: int,
+    num_heads: int | None,
 ) -> torch.Tensor | None:
     """Compute attention weights from captured QKV or Q/K projections."""
     # GPT-2 style: c_attn produces [Q, K, V] concatenated
     for key, tensor in projections.items():
         if "c_attn" in key or "qkv" in key:
-            # tensor shape: (batch, seq, 3 * hidden) or (seq, 3 * hidden)
             if tensor.dim() == 3:
                 tensor = tensor[0]  # drop batch
             hidden = tensor.shape[-1] // 3
@@ -188,21 +187,48 @@ def _compute_attention_from_projections(
 
 
 def _qk_to_attention(
-    q: torch.Tensor, k: torch.Tensor, num_heads: int,
+    q: torch.Tensor, k: torch.Tensor, num_heads: int | None,
 ) -> torch.Tensor:
     """Compute attention weights from Q and K tensors.
 
-    q, k: (seq_len, hidden_size)
-    Returns: (num_heads, seq_len, seq_len)
-    """
-    seq_len, hidden = q.shape
-    head_dim = hidden // num_heads
+    Handles standard MHA, grouped-query attention (GQA), and multi-query
+    attention (MQA) by detecting the number of KV heads from the K tensor
+    shape and expanding K heads to match Q heads when necessary.
 
-    q = q.view(seq_len, num_heads, head_dim).transpose(0, 1)  # (heads, seq, head_dim)
-    k = k.view(seq_len, num_heads, head_dim).transpose(0, 1)
+    q: (seq_len, q_hidden)  — q_hidden = num_q_heads * head_dim
+    k: (seq_len, k_hidden)  — k_hidden = num_kv_heads * head_dim
+    Returns: (num_q_heads, seq_len, seq_len)
+    """
+    seq_len, q_hidden = q.shape
+    _seq_len_k, k_hidden = k.shape
+
+    if num_heads is not None and num_heads > 0:
+        head_dim = q_hidden // num_heads
+        num_q_heads = num_heads
+    else:
+        # Best-effort: assume Q and K have the same head count (standard MHA)
+        # and try common head dims (64, 128, 80) to infer num_heads.
+        for candidate_dim in (64, 128, 80, 96, 32):
+            if q_hidden % candidate_dim == 0:
+                head_dim = candidate_dim
+                num_q_heads = q_hidden // head_dim
+                break
+        else:
+            head_dim = q_hidden
+            num_q_heads = 1
+
+    num_kv_heads = k_hidden // head_dim
+
+    q = q.view(seq_len, num_q_heads, head_dim).transpose(0, 1)   # (q_heads, seq, head_dim)
+    k = k.view(seq_len, num_kv_heads, head_dim).transpose(0, 1)  # (kv_heads, seq, head_dim)
+
+    # GQA / MQA: expand K heads to match Q heads
+    if num_kv_heads < num_q_heads:
+        repeats = num_q_heads // num_kv_heads
+        k = k.repeat_interleave(repeats, dim=0)  # (q_heads, seq, head_dim)
 
     scale = head_dim ** 0.5
-    scores = torch.matmul(q, k.transpose(-2, -1)) / scale  # (heads, seq, seq)
+    scores = torch.matmul(q, k.transpose(-2, -1)) / scale  # (q_heads, seq, seq)
 
     # Apply causal mask
     causal_mask = torch.triu(torch.ones(seq_len, seq_len, dtype=torch.bool, device=q.device), diagonal=1)

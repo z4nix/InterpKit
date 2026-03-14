@@ -61,31 +61,67 @@ def run_probe(
 
 def _probe_sklearn(X: Any, y: Any) -> dict[str, Any]:
     from sklearn.linear_model import LogisticRegression
-    from sklearn.model_selection import cross_val_score
 
     n_samples = len(y)
 
+    if n_samples >= 20:
+        from sklearn.model_selection import StratifiedShuffleSplit, cross_val_score
+
+        splitter = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+        train_idx, test_idx = next(splitter.split(X, y))
+        X_train, X_test = X[train_idx], X[test_idx]
+        y_train, y_test = y[train_idx], y[test_idx]
+
+        cv_folds = min(5, len(y_train))
+        clf = LogisticRegression(max_iter=1000, solver="lbfgs")
+        cv_scores = cross_val_score(clf, X_train, y_train, cv=cv_folds, scoring="accuracy")
+
+        clf.fit(X_train, y_train)
+        test_accuracy = float(clf.score(X_test, y_test))
+        train_accuracy = float(clf.score(X_train, y_train))
+
+        weights = clf.coef_[0] if clf.coef_.ndim == 2 else clf.coef_
+        top_indices = list(reversed(sorted(range(len(weights)), key=lambda i: abs(weights[i]))))[:20]
+        top_features = [(int(i), float(weights[i])) for i in top_indices]
+
+        return {
+            "accuracy": test_accuracy,
+            "cv_accuracy": float(cv_scores.mean()),
+            "train_accuracy": train_accuracy,
+            "eval_method": "holdout",
+            "top_features": top_features,
+        }
+
     if n_samples >= 10:
+        from sklearn.model_selection import cross_val_score
+
         cv_folds = min(5, n_samples)
         clf = LogisticRegression(max_iter=1000, solver="lbfgs")
         scores = cross_val_score(clf, X, y, cv=cv_folds, scoring="accuracy")
-        accuracy = float(scores.mean())
-    else:
-        accuracy = None
 
-    # Train on full data for feature analysis
+        clf.fit(X, y)
+        weights = clf.coef_[0] if clf.coef_.ndim == 2 else clf.coef_
+        top_indices = list(reversed(sorted(range(len(weights)), key=lambda i: abs(weights[i]))))[:20]
+        top_features = [(int(i), float(weights[i])) for i in top_indices]
+
+        return {
+            "accuracy": float(scores.mean()),
+            "eval_method": "cv_only",
+            "top_features": top_features,
+        }
+
+    # < 10 samples: train-only, no reliable evaluation possible
     clf = LogisticRegression(max_iter=1000, solver="lbfgs")
     clf.fit(X, y)
     train_accuracy = float(clf.score(X, y))
 
-    # Top features by weight magnitude
     weights = clf.coef_[0] if clf.coef_.ndim == 2 else clf.coef_
     top_indices = list(reversed(sorted(range(len(weights)), key=lambda i: abs(weights[i]))))[:20]
     top_features = [(int(i), float(weights[i])) for i in top_indices]
 
     return {
-        "accuracy": accuracy if accuracy is not None else train_accuracy,
-        "train_accuracy": train_accuracy,
+        "accuracy": train_accuracy,
+        "eval_method": "train_only",
         "top_features": top_features,
     }
 

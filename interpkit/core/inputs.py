@@ -89,7 +89,7 @@ def prepare_pair(
 def _looks_like_image_path(s: str) -> bool:
     _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
     ext = os.path.splitext(s)[1].lower()
-    return ext in _IMAGE_EXTS and (Path(s).exists() or not s.startswith("/"))
+    return ext in _IMAGE_EXTS and Path(s).exists()
 
 
 def _load_image(
