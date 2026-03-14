@@ -8,11 +8,11 @@
 
 ---
 
-## The Problem
+## Why InterpKit?
 
-TransformerLens is excellent — but only works on GPT-style decoder-only transformers. The moment you step outside that (Mamba, SSMs, ViT, CNNs, BERT, T5, MoE models), there is no equivalent tool. You write hook code from scratch every time.
+Mechanistic interpretability tooling today is fragmented. Each library supports a narrow set of architectures, and moving to a different model family usually means rewriting hook code from scratch.
 
-InterpKit fills this gap: the same standard mech interp operations, on any HuggingFace model, with no annotation required.
+InterpKit provides a single, consistent interface for mech interp operations across any HuggingFace model — transformers, SSMs, vision models, and more — with zero annotation required.
 
 ---
 
