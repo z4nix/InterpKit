@@ -14,7 +14,6 @@ keywords = ["mechanistic-interpretability", "pytorch", "transformers", "mech-int
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -22,12 +21,6 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-
-[project.urls]
-Homepage = "https://github.com/davidezani/mechkit"
-Repository = "https://github.com/davidezani/mechkit"
-Issues = "https://github.com/davidezani/mechkit/issues"
-
 dependencies = [
     "torch>=2.1",
     "transformers>=4.36",
@@ -48,6 +41,11 @@ dev = [
     "pytest-timeout>=2.2",
     "scikit-learn>=1.3",
 ]
+
+[project.urls]
+Homepage = "https://github.com/davidezani/mechkit"
+Repository = "https://github.com/davidezani/mechkit"
+Issues = "https://github.com/davidezani/mechkit/issues"
 
 [project.scripts]
 mechkit = "mechkit.cli.main:app"
