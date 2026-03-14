@@ -1,0 +1,250 @@
+# mechkit
+
+> Mech interp for any HuggingFace model.
+
+[![PyPI version](https://badge.fury.io/py/mechkit.svg)](https://badge.fury.io/py/mechkit)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+
+---
+
+## The Problem
+
+TransformerLens is excellent — but only works on GPT-style decoder-only transformers. The moment you step outside that (Mamba, SSMs, ViT, CNNs, BERT, T5, MoE models), there is no equivalent tool. You write hook code from scratch every time.
+
+mechkit fills this gap: the same standard mech interp operations, on any HuggingFace model, with no annotation required.
+
+---
+
+## Install
+
+```bash
+pip install mechkit
+
+# For linear probe support:
+pip install mechkit[probe]
+```
+
+---
+
+## Quickstart
+
+```python
+import mechkit
+
+model = mechkit.load("gpt2")
+
+model.inspect()                    # module tree with roles, params, shapes
+model.trace("...Paris...", "...Rome...", top_k=20)   # causal tracing
+model.patch("...Paris...", "...Rome...", at="transformer.h.8.mlp")
+model.lens("The capital of France is")               # logit lens
+model.attribute("The capital of France is")          # gradient saliency
+```
+
+Works the same on any HF architecture:
+
+```python
+model = mechkit.load("state-spaces/mamba-370m")
+model = mechkit.load("google/vit-base-patch16-224")
+model = mechkit.load("bert-base-uncased")
+```
+
+---
+
+## Operations
+
+| Operation | What it does | Works on |
+|-----------|-------------|----------|
+| `inspect` | Module tree with types, param counts, shapes | Any model |
+| `patch` | Activation patching at a named module | Any model |
+| `trace` | Causal tracing across modules, ranked by effect | Any model |
+| `attribute` | Gradient saliency over inputs | Any model |
+| `lens` | Logit lens — project activations to vocabulary | LMs (auto-detected) |
+| `activations` | Extract raw activation tensors at any module | Any model |
+| `ablate` | Zero/mean ablate a component and measure effect | Any model |
+| `attention` | Visualize attention patterns per layer/head | Transformers |
+| `steer` | Extract and apply steering vectors | Any model |
+| `probe` | Linear probe on activations | Any model |
+| `diff` | Compare activations between two models | Any model |
+| `features` | SAE feature decomposition | Any model |
+
+---
+
+## Activations, Ablation, Attention
+
+```python
+# Extract raw activations
+act = model.activations("The capital of France is", at="transformer.h.8.mlp")
+acts = model.activations("...", at=["transformer.h.0", "transformer.h.8.mlp"])
+
+# Ablation — zero or mean
+result = model.ablate("The capital of France is", at="transformer.h.8.mlp")
+result = model.ablate("...", at="transformer.h.8.mlp", method="mean")
+
+# Attention patterns
+model.attention("The capital of France is")                   # all layers
+model.attention("The capital of France is", layer=8, head=3)  # single head
+```
+
+## Steering
+
+```python
+# 1. Extract a steering vector
+vector = model.steer_vector("Love", "Hate", at="transformer.h.8")
+
+# 2. Apply during inference — side-by-side comparison
+model.steer("The weather today is", vector=vector, at="transformer.h.8", scale=2.0)
+```
+
+## Linear Probe
+
+```python
+result = model.probe(
+    texts=["The cat sat", "The dog ran", "A bird flew", "A fish swam"],
+    labels=[0, 0, 1, 1],
+    at="transformer.h.8",
+)
+print(result["accuracy"])
+```
+
+## Model Diff
+
+```python
+base = mechkit.load("gpt2")
+finetuned = mechkit.load("my-finetuned-gpt2")
+mechkit.diff(base, finetuned, "The capital of France is")
+```
+
+## SAE Features
+
+Decompose activations into interpretable features using pre-trained Sparse Autoencoders from HuggingFace:
+
+```python
+model.features(
+    "The capital of France is",
+    at="transformer.h.8",
+    sae="jbloom/GPT2-Small-SAEs-Reformatted",
+)
+```
+
+No SAELens dependency — weights are loaded directly via `safetensors`.
+
+## Activation Cache
+
+Avoid redundant forward passes when exploring the same input with multiple operations:
+
+```python
+model.cache("The capital of France is")  # one forward pass, cache all layers
+model.activations("The capital of France is", at="transformer.h.8.mlp")  # instant
+model.activations("The capital of France is", at="transformer.h.0.mlp")  # instant
+
+model.clear_cache()  # free memory
+```
+
+---
+
+## Visualizations
+
+Pass `save="path.png"` to export a static matplotlib figure, or `html="path.html"` for an interactive visualization:
+
+```python
+model.attention("hello world", layer=0, head=0, save="attention.png")
+model.trace("...Paris...", "...Rome...", save="trace.png")
+model.lens("The capital of France is", save="lens.png")
+model.steer("The weather is", vector=vector, at="transformer.h.8", save="steer.png")
+model.attribute("The capital of France is", save="attribution.png")
+mechkit.diff(base, finetuned, "...", save="diff.png")
+
+# Interactive HTML — self-contained files with hover tooltips, filters, and sliders
+model.attention("hello world", html="attention.html")
+model.trace("...Paris...", "...Rome...", html="trace.html")
+model.attribute("The capital of France is", html="attribution.html")
+```
+
+---
+
+## CLI
+
+```bash
+mechkit inspect gpt2
+mechkit trace gpt2 --clean "...Paris..." --corrupted "...Rome..." --top-k 20
+mechkit lens gpt2 "The capital of France is"
+mechkit attention gpt2 "The capital of France is" --layer 8 --save attention.png
+mechkit steer gpt2 "The weather is" --positive Love --negative Hate --at transformer.h.8
+mechkit ablate gpt2 "The capital of France is" --at transformer.h.8.mlp
+mechkit diff gpt2 my-finetuned-gpt2 "The capital of France is" --save diff.png
+mechkit features gpt2 "The capital of France is" --at transformer.h.8 --sae jbloom/GPT2-Small-SAEs-Reformatted
+
+# Interactive HTML output
+mechkit attention gpt2 "hello world" --html attention.html
+mechkit trace gpt2 --clean "...Paris..." --corrupted "...Rome..." --html trace.html
+mechkit attribute gpt2 "The capital of France is" --html attribution.html
+
+# Vision models — auto-preprocessed
+mechkit attribute microsoft/resnet-50 cat.jpg --target 281
+```
+
+Run `mechkit` with no arguments for a full command reference.
+
+---
+
+## TransformerLens interop
+
+Already using TransformerLens? Pass your `HookedTransformer` directly into mechkit — it auto-detects the model and extracts the tokenizer:
+
+```python
+from transformer_lens import HookedTransformer
+import mechkit
+
+tl_model = HookedTransformer.from_pretrained("gpt2")
+model = mechkit.load(tl_model)
+
+# All mechkit operations work on TL models
+model.trace("The Eiffel Tower is in Paris", "The Eiffel Tower is in Rome", top_k=20)
+model.attention("The capital of France is", save="attention.png")
+model.steer("The weather is", vector=vector, at="blocks.8", scale=2.0)
+```
+
+Translate between native and TL hook point names:
+
+```python
+mechkit.to_tl_name("transformer.h.8.mlp")       # -> "blocks.8.mlp"
+mechkit.to_native_name("blocks.8.attn", model.arch_info)  # -> "transformer.h.8.attn"
+mechkit.list_tl_hooks(tl_model)                  # -> ["blocks.0.hook_resid_pre", ...]
+```
+
+---
+
+## Local models
+
+```python
+import torch.nn as nn
+import mechkit
+
+my_model = MyCustomModel()
+mechkit.register(my_model, layers=["blocks.0", "blocks.1"], output_head="head")
+model = mechkit.load(my_model, tokenizer=my_tokenizer)
+model.trace(input_a, input_b, top_k=10)
+```
+
+---
+
+## Examples
+
+See the [`examples/`](examples/) directory for Jupyter notebooks:
+
+| Notebook | Topics |
+|----------|--------|
+| `01_quickstart` | Inspect, trace, lens, attribution, patching, ablation |
+| `02_attention_patterns` | Per-head heatmaps, layer filtering, HTML export |
+| `03_steering_vectors` | Extract and apply steering vectors at different layers/scales |
+| `04_sae_features` | Sparse Autoencoder feature decomposition |
+| `05_caching_and_probing` | Activation cache, linear probes across layers |
+| `06_model_comparison` | Diff two models, side-by-side tracing and logit lens |
+| `07_vision_models` | ResNet/ViT attribution, ablation, activations |
+
+---
+
+## License
+
+MIT
