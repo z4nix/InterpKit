@@ -1,8 +1,10 @@
 ```
- ____ ____ ____ ____ ____ ____ ____ ____ ____ _________
-||I |||n |||t |||e |||r |||p |||K |||i |||t |||       ||
-||__|||__|||__|||__|||__|||__|||__|||__|||__|||_______||
-|/__\|/__\|/__\|/__\|/__\|/__\|/__\|/__\|/__\|/_______\|
+IIIII         tt                          KK  KK iii tt
+ III  nn nnn  tt      eee  rr rr  pp pp   KK KK      tt
+ III  nnn  nn tttt  ee   e rrr  r ppp  pp KKKK   iii tttt
+ III  nn   nn tt    eeeee  rr     pppppp  KK KK  iii tt
+IIIII nn   nn  tttt  eeeee rr     pp      KK  KK iii  tttt
+                                  pp
 ```
 
 > Mech interp for any HuggingFace model.
