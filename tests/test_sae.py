@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from mechkit.ops.sae import SAE, load_sae_from_tensors, run_features
+from interpkit.ops.sae import SAE, load_sae_from_tensors, run_features
 
 
 def _make_synthetic_sae(d_in: int = 768, d_sae: int = 128) -> SAE:

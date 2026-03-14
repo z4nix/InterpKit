@@ -10,7 +10,7 @@ from rich.table import Table
 from rich.tree import Tree
 
 if TYPE_CHECKING:
-    from mechkit.core.discovery import ModelArchInfo, ModuleInfo
+    from interpkit.core.discovery import ModelArchInfo, ModuleInfo
 
 console = Console()
 

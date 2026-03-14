@@ -6,7 +6,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from mechkit.core.discovery import ModelArchInfo
+    from interpkit.core.discovery import ModelArchInfo
 
 # ── TL canonical hook names ──────────────────────────────────────
 #

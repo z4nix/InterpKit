@@ -8,7 +8,7 @@ import torch
 from rich.console import Console
 
 if TYPE_CHECKING:
-    from mechkit.core.model import Model
+    from interpkit.core.model import Model
 
 console = Console()
 
@@ -25,8 +25,8 @@ def run_probe(
     Uses LogisticRegression from scikit-learn. Falls back to a simple
     torch-based probe if sklearn is not installed.
     """
-    from mechkit.core.render import render_probe
-    from mechkit.ops.activations import run_activations
+    from interpkit.core.render import render_probe
+    from interpkit.ops.activations import run_activations
 
     if len(texts) != len(labels):
         raise ValueError(f"texts ({len(texts)}) and labels ({len(labels)}) must have the same length.")

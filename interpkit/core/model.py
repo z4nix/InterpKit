@@ -7,15 +7,15 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from mechkit.core.discovery import ModelArchInfo, discover
-from mechkit.core.inputs import prepare_input, prepare_pair
-from mechkit.core.registry import Registration, get_registration
+from interpkit.core.discovery import ModelArchInfo, discover
+from interpkit.core.inputs import prepare_input, prepare_pair
+from interpkit.core.registry import Registration, get_registration
 
 
 class Model:
     """Wraps a PyTorch model for mechanistic interpretability operations.
 
-    Created via :func:`mechkit.load` — not instantiated directly.
+    Created via :func:`interpkit.load` — not instantiated directly.
     """
 
     def __init__(
@@ -101,7 +101,7 @@ class Model:
 
         Returns ``self`` for chaining.
         """
-        from mechkit.ops.activations import run_activations
+        from interpkit.ops.activations import run_activations
 
         model_input = self._prepare(input_data)
         input_hash = _hash_input(model_input)
@@ -151,7 +151,7 @@ class Model:
 
     def inspect(self) -> None:
         """Print the model's module tree with types, param counts, and detected roles."""
-        from mechkit.ops.inspect import run_inspect
+        from interpkit.ops.inspect import run_inspect
 
         run_inspect(self)
 
@@ -165,7 +165,7 @@ class Model:
 
         Returns a single tensor if *at* is a string, or a dict if *at* is a list.
         """
-        from mechkit.ops.activations import run_activations
+        from interpkit.ops.activations import run_activations
 
         return run_activations(self, input_data, at=at)
 
@@ -177,7 +177,7 @@ class Model:
         at: str,
     ) -> torch.Tensor:
         """Extract a steering vector: activation(positive) - activation(negative)."""
-        from mechkit.ops.steer import run_steer_vector
+        from interpkit.ops.steer import run_steer_vector
 
         return run_steer_vector(self, positive, negative, at=at)
 
@@ -195,7 +195,7 @@ class Model:
         Shows side-by-side comparison of original vs steered top predictions.
         Pass ``save="path.png"`` to export a matplotlib figure.
         """
-        from mechkit.ops.steer import run_steer
+        from interpkit.ops.steer import run_steer
 
         return run_steer(self, input_data, vector=vector, at=at, scale=scale, save=save)
 
@@ -213,7 +213,7 @@ class Model:
         Pass ``save="path.png"`` to export a matplotlib heatmap.
         Pass ``html="path.html"`` to export an interactive HTML page.
         """
-        from mechkit.ops.attention import run_attention
+        from interpkit.ops.attention import run_attention
 
         return run_attention(self, input_data, layer=layer, head=head, save=save, html=html)
 
@@ -228,7 +228,7 @@ class Model:
 
         Returns a dict with ``effect`` (0 = no change, 1 = max change).
         """
-        from mechkit.ops.ablate import run_ablate
+        from interpkit.ops.ablate import run_ablate
 
         return run_ablate(self, input_data, at=at, method=method)
 
@@ -244,7 +244,7 @@ class Model:
         Returns a dict with ``clean_logits``, ``corrupted_logits``, ``patched_logits``,
         and ``effect`` (normalised scalar measuring how much the patch restored clean behaviour).
         """
-        from mechkit.ops.patch import run_patch
+        from interpkit.ops.patch import run_patch
 
         return run_patch(self, clean, corrupted, at=at)
 
@@ -264,7 +264,7 @@ class Model:
         Pass ``save="path.png"`` to export a matplotlib bar chart.
         Pass ``html="path.html"`` to export an interactive HTML page.
         """
-        from mechkit.ops.trace import run_trace
+        from interpkit.ops.trace import run_trace
 
         return run_trace(self, clean, corrupted, top_k=top_k, save=save, html=html)
 
@@ -279,7 +279,7 @@ class Model:
         Only available for language models with a detectable unembedding matrix.
         Pass ``save="path.png"`` to export a matplotlib heatmap.
         """
-        from mechkit.ops.lens import run_lens
+        from interpkit.ops.lens import run_lens
 
         return run_lens(self, text, save=save)
 
@@ -293,10 +293,10 @@ class Model:
         """Train a linear probe on activations at module *at*.
 
         Returns accuracy, top features by weight magnitude.
-        Requires scikit-learn (``pip install mechkit[probe]``), falls back to
+        Requires scikit-learn (``pip install interpkit[probe]``), falls back to
         a torch-based probe otherwise.
         """
-        from mechkit.ops.probe import run_probe
+        from interpkit.ops.probe import run_probe
 
         return run_probe(self, texts, labels, at=at)
 
@@ -314,10 +314,10 @@ class Model:
         ----------
         sae:
             Either a HuggingFace repo ID (``"jbloom/GPT2-Small-SAEs-Reformatted"``)
-            or a pre-loaded :class:`mechkit.ops.sae.SAE` object.
+            or a pre-loaded :class:`interpkit.ops.sae.SAE` object.
         """
-        from mechkit.ops.sae import SAE as SAEClass
-        from mechkit.ops.sae import load_sae, run_features
+        from interpkit.ops.sae import SAE as SAEClass
+        from interpkit.ops.sae import load_sae, run_features
 
         if isinstance(sae, str):
             sae = load_sae(sae, device=self._device)
@@ -341,7 +341,7 @@ class Model:
         Pass ``save="path.png"`` to export a matplotlib figure.
         Pass ``html="path.html"`` to export an interactive HTML page.
         """
-        from mechkit.ops.attribute import run_attribute
+        from interpkit.ops.attribute import run_attribute
 
         run_attribute(self, input_data, target=target, save=save, html=html)
 

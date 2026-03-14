@@ -2,15 +2,15 @@
 
 Usage::
 
-    import mechkit
+    import interpkit
 
-    mechkit.register(
+    interpkit.register(
         my_model,
         layers=["blocks.0", "blocks.1", "blocks.2"],
         output_head="head",
     )
 
-    model = mechkit.load(my_model, tokenizer=my_tokenizer)
+    model = interpkit.load(my_model, tokenizer=my_tokenizer)
     model.trace(tensor_a, tensor_b)
 """
 
@@ -42,7 +42,7 @@ def register(
     attention_modules: list[str] | None = None,
     mlp_modules: list[str] | None = None,
 ) -> None:
-    """Annotate a custom ``nn.Module`` so mechkit knows its structure.
+    """Annotate a custom ``nn.Module`` so interpkit knows its structure.
 
     Parameters
     ----------

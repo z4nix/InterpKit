@@ -9,10 +9,10 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-from mechkit.ops.patch import _get_module
+from interpkit.ops.patch import _get_module
 
 if TYPE_CHECKING:
-    from mechkit.core.model import Model
+    from interpkit.core.model import Model
 
 
 @dataclass
@@ -59,7 +59,7 @@ def load_sae(hf_id: str, *, device: str | torch.device = "cpu") -> SAE:
         raise KeyError(
             f"SAE weights from {hf_id!r} are missing keys: {missing}. "
             f"Found keys: {list(weights.keys())}. "
-            f"mechkit expects the SAELens format (W_enc, W_dec, b_enc, b_dec)."
+            f"interpkit expects the SAELens format (W_enc, W_dec, b_enc, b_dec)."
         )
 
     W_enc = weights["W_enc"].to(device).float()
@@ -116,7 +116,7 @@ def run_features(
 
     Returns a dict with ``top_features``, ``reconstruction_error``, ``sparsity``.
     """
-    from mechkit.ops.activations import run_activations
+    from interpkit.ops.activations import run_activations
 
     act = run_activations(model, input_data, at=at, print_stats=False)
     if not isinstance(act, torch.Tensor):
@@ -162,7 +162,7 @@ def run_features(
     }
 
     if print_results:
-        from mechkit.core.render import render_features
+        from interpkit.core.render import render_features
 
         render_features(result)
 

@@ -9,10 +9,10 @@ import torch
 from rich.console import Console
 from rich.progress import Progress
 
-from mechkit.ops.patch import _compute_effect, _get_module
+from interpkit.ops.patch import _compute_effect, _get_module
 
 if TYPE_CHECKING:
-    from mechkit.core.model import Model
+    from interpkit.core.model import Model
 
 console = Console()
 
@@ -34,7 +34,7 @@ def run_trace(
     Phase 2 (expensive): for the top-K modules by proxy score, run full
     patch-and-measure to get true causal effect.
     """
-    from mechkit.core.render import render_trace
+    from interpkit.core.render import render_trace
 
     clean_input, corrupted_input = model._prepare_pair(clean, corrupted)
 
@@ -169,13 +169,13 @@ def run_trace(
     render_trace(results, model_name, total_modules, top_k)
 
     if save is not None:
-        from mechkit.core.plot import plot_trace
+        from interpkit.core.plot import plot_trace
 
         plot_trace(results, model_name=model_name, save_path=save)
 
     if html is not None:
-        from mechkit.core.html import html_trace as gen_html_trace
-        from mechkit.core.html import save_html
+        from interpkit.core.html import html_trace as gen_html_trace
+        from interpkit.core.html import save_html
 
         save_html(gen_html_trace(results), html)
 

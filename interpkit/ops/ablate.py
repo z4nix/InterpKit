@@ -6,10 +6,10 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-from mechkit.ops.patch import _get_module
+from interpkit.ops.patch import _get_module
 
 if TYPE_CHECKING:
-    from mechkit.core.model import Model
+    from interpkit.core.model import Model
 
 
 def run_ablate(
@@ -27,7 +27,7 @@ def run_ablate(
         ``"zero"`` replaces the module output with zeros.
         ``"mean"`` replaces it with the mean activation across the sequence dimension.
     """
-    from mechkit.core.render import render_ablate
+    from interpkit.core.render import render_ablate
 
     model_input = model._prepare(input_data)
     target_mod = _get_module(model._model, at)

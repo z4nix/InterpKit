@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 if TYPE_CHECKING:
-    from mechkit.core.model import Model
+    from interpkit.core.model import Model
 
 
 def run_diff(
@@ -21,8 +21,8 @@ def run_diff(
 
     Returns a list of dicts sorted by cosine distance (highest change first).
     """
-    from mechkit.core.render import render_diff
-    from mechkit.ops.activations import run_activations
+    from interpkit.core.render import render_diff
+    from interpkit.ops.activations import run_activations
 
     # Find shared layer-like modules
     layers_a = set(model_a.arch_info.layer_names or [])
@@ -72,7 +72,7 @@ def run_diff(
     render_diff(results, model_a_name, model_b_name)
 
     if save is not None:
-        from mechkit.core.plot import plot_diff
+        from interpkit.core.plot import plot_diff
 
         plot_diff(results, model_a_name=model_a_name, model_b_name=model_b_name, save_path=save)
 

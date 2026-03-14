@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from mechkit.core.model import Model
+    from interpkit.core.model import Model
 
 
 def run_inspect(model: "Model") -> None:
-    from mechkit.core.render import render_inspect
+    from interpkit.core.render import render_inspect
 
     render_inspect(model.arch_info)

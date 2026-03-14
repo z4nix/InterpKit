@@ -8,8 +8,8 @@ from unittest.mock import MagicMock
 import torch
 import torch.nn as nn
 
-import mechkit
-from mechkit.core.tl_compat import list_tl_hooks, to_native_name, to_tl_name
+import interpkit
+from interpkit.core.tl_compat import list_tl_hooks, to_native_name, to_tl_name
 
 
 # ── Name translation tests ──────────────────────────────────────
@@ -140,26 +140,26 @@ _FakeHookedTransformer.__qualname__ = "HookedTransformer"
 
 def test_load_hooked_transformer_detects_tl():
     fake_model = _FakeHookedTransformer()
-    model = mechkit.load(fake_model, device="cpu")
+    model = interpkit.load(fake_model, device="cpu")
     assert model.arch_info.is_tl_model is True
 
 
 def test_load_hooked_transformer_extracts_tokenizer():
     fake_model = _FakeHookedTransformer()
-    model = mechkit.load(fake_model, device="cpu")
+    model = interpkit.load(fake_model, device="cpu")
     assert model._tokenizer is not None
     assert model._tokenizer.eos_token == "<eos>"
 
 
 def test_load_hooked_transformer_sets_pad_token():
     fake_model = _FakeHookedTransformer()
-    model = mechkit.load(fake_model, device="cpu")
+    model = interpkit.load(fake_model, device="cpu")
     assert model._tokenizer.pad_token == "<eos>"
 
 
 def test_load_regular_model_not_tl():
     regular = nn.Linear(10, 10)
-    model = mechkit.load(regular, device="cpu")
+    model = interpkit.load(regular, device="cpu")
     assert model.arch_info.is_tl_model is False
 
 
@@ -167,5 +167,5 @@ def test_load_hooked_transformer_with_explicit_tokenizer():
     fake_model = _FakeHookedTransformer()
     custom_tok = _FakeTokenizer()
     custom_tok.eos_token = "<custom>"
-    model = mechkit.load(fake_model, tokenizer=custom_tok, device="cpu")
+    model = interpkit.load(fake_model, tokenizer=custom_tok, device="cpu")
     assert model._tokenizer.eos_token == "<custom>"

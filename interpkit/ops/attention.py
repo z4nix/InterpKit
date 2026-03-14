@@ -9,10 +9,10 @@ import torch
 import torch.nn.functional as F
 from rich.console import Console
 
-from mechkit.ops.patch import _get_module
+from interpkit.ops.patch import _get_module
 
 if TYPE_CHECKING:
-    from mechkit.core.model import Model
+    from interpkit.core.model import Model
 
 console = Console()
 
@@ -32,7 +32,7 @@ def run_attention(
     since modern transformer implementations (SDPA, FlashAttention) don't
     return attention weights.
     """
-    from mechkit.core.render import render_attention
+    from interpkit.core.render import render_attention
 
     arch = model.arch_info
     attn_modules = [m for m in arch.modules if m.role == "attention"]
@@ -129,7 +129,7 @@ def run_attention(
     render_attention(results, tokens, model_name)
 
     if save is not None:
-        from mechkit.core.plot import plot_attention, plot_attention_multi
+        from interpkit.core.plot import plot_attention, plot_attention_multi
 
         if layer is not None and head is not None and len(results) == 1:
             plot_attention(results[0]["weights"], tokens, layer=results[0]["layer"],
@@ -138,8 +138,8 @@ def run_attention(
             plot_attention_multi(results, tokens, save_path=save)
 
     if html is not None:
-        from mechkit.core.html import html_attention as gen_html_attention
-        from mechkit.core.html import save_html
+        from interpkit.core.html import html_attention as gen_html_attention
+        from interpkit.core.html import save_html
 
         serializable = []
         for r in results:

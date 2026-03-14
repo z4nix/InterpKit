@@ -50,9 +50,9 @@ def test_attribute_save(gpt2_model):
 
 
 def test_diff_save(gpt2_model):
-    import mechkit
+    import interpkit
 
     path = os.path.join(tempfile.gettempdir(), "test_diff.png")
-    mechkit.diff(gpt2_model, gpt2_model, "hello world", save=path)
+    interpkit.diff(gpt2_model, gpt2_model, "hello world", save=path)
     assert os.path.exists(path)
     os.remove(path)

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 if TYPE_CHECKING:
-    from mechkit.core.model import Model
+    from interpkit.core.model import Model
 
 
 def _get_module(model: torch.nn.Module, name: str) -> torch.nn.Module:
@@ -30,7 +30,7 @@ def run_patch(
     Returns a dict with ``effect`` — a normalised scalar in [0, 1] measuring how
     much the patched corrupted run's output shifted toward the clean output.
     """
-    from mechkit.core.render import render_patch
+    from interpkit.core.render import render_patch
 
     clean_input, corrupted_input = model._prepare_pair(clean, corrupted)
 

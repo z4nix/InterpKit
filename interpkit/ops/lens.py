@@ -7,10 +7,10 @@ from typing import TYPE_CHECKING, Any
 import torch
 from rich.console import Console
 
-from mechkit.ops.patch import _get_module
+from interpkit.ops.patch import _get_module
 
 if TYPE_CHECKING:
-    from mechkit.core.model import Model
+    from interpkit.core.model import Model
 
 console = Console()
 
@@ -20,7 +20,7 @@ def run_lens(model: "Model", text: Any, *, save: str | None = None) -> list[dict
 
     Only works for language models with a detectable output head.
     """
-    from mechkit.core.render import render_lens
+    from interpkit.core.render import render_lens
 
     arch = model.arch_info
 
@@ -121,7 +121,7 @@ def run_lens(model: "Model", text: Any, *, save: str | None = None) -> list[dict
     render_lens(predictions, model_name)
 
     if save is not None:
-        from mechkit.core.plot import plot_lens
+        from interpkit.core.plot import plot_lens
 
         plot_lens(predictions, save_path=save)
 

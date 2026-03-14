@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from mechkit.core.registry import get_registration, register
+from interpkit.core.registry import get_registration, register
 
 
 def test_register_stores_layers():

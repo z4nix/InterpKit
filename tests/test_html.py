@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import tempfile
 
-from mechkit.core.html import html_attention, html_attribution, html_trace, save_html
+from interpkit.core.html import html_attention, html_attribution, html_trace, save_html
 
 
 def test_html_attention_generates_valid_html():

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 if TYPE_CHECKING:
-    from mechkit.core.model import Model
+    from interpkit.core.model import Model
 
 
 def run_attribute(
@@ -35,7 +35,7 @@ def run_attribute(
 
 
 def _attribute_text(model: "Model", text: str, *, target: int | None, save: str | None = None, html: str | None = None) -> None:
-    from mechkit.core.render import render_attribution_tokens
+    from interpkit.core.render import render_attribution_tokens
 
     if model._tokenizer is None:
         raise ValueError("No tokenizer available for text attribution.")
@@ -90,20 +90,20 @@ def _attribute_text(model: "Model", text: str, *, target: int | None, save: str 
     render_attribution_tokens(tokens, token_scores)
 
     if save is not None:
-        from mechkit.core.plot import plot_attribution
+        from interpkit.core.plot import plot_attribution
 
         plot_attribution(tokens, token_scores, save_path=save)
 
     if html is not None:
-        from mechkit.core.html import html_attribution as gen_html_attribution
-        from mechkit.core.html import save_html
+        from interpkit.core.html import html_attribution as gen_html_attribution
+        from interpkit.core.html import save_html
 
         save_html(gen_html_attribution(tokens, token_scores), html)
 
 
 def _attribute_image(model: "Model", image_path: str, *, target: int | None, save: str | None = None) -> None:
-    from mechkit.core.inputs import _load_image
-    from mechkit.core.render import render_attribution_heatmap
+    from interpkit.core.inputs import _load_image
+    from interpkit.core.render import render_attribution_heatmap
 
     processed = _load_image(
         image_path,
@@ -141,7 +141,7 @@ def _attribute_image(model: "Model", image_path: str, *, target: int | None, sav
 
 
 def _attribute_tensor(model: "Model", tensor_input: Any, *, target: int | None) -> None:
-    from mechkit.core.render import render_attribution_tokens
+    from interpkit.core.render import render_attribution_tokens
 
     inp = model._prepare(tensor_input)
 

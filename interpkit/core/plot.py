@@ -68,7 +68,7 @@ def plot_attention(
     fig, ax = plt.subplots(figsize=(max(4, seq_len * 0.6), max(4, seq_len * 0.6)))
 
     cmap = mcolors.LinearSegmentedColormap.from_list(
-        "mechkit", ["#1a1a2e", "#0f3460", "#e94560", "#ffdd57"]
+        "interpkit", ["#1a1a2e", "#0f3460", "#e94560", "#ffdd57"]
     )
     im = ax.imshow(attn, cmap=cmap, aspect="equal", vmin=0, vmax=1)
 
@@ -115,7 +115,7 @@ def plot_attention_multi(
     )
 
     cmap = mcolors.LinearSegmentedColormap.from_list(
-        "mechkit", ["#1a1a2e", "#0f3460", "#e94560", "#ffdd57"]
+        "interpkit", ["#1a1a2e", "#0f3460", "#e94560", "#ffdd57"]
     )
 
     for ax_row in axes:
@@ -206,7 +206,7 @@ def plot_lens(
     fig, ax = plt.subplots(figsize=(6, max(3, len(layers) * 0.4)))
 
     cmap = mcolors.LinearSegmentedColormap.from_list(
-        "mechkit_lens", ["#1a1a2e", "#0f3460", "#28a745", "#ffdd57"]
+        "interpkit_lens", ["#1a1a2e", "#0f3460", "#28a745", "#ffdd57"]
     )
 
     # Single-column heatmap

@@ -1,8 +1,8 @@
-# mechkit
+# InterpKit
 
 > Mech interp for any HuggingFace model.
 
-[![PyPI version](https://badge.fury.io/py/mechkit.svg)](https://badge.fury.io/py/mechkit)
+[![PyPI version](https://img.shields.io/pypi/v/interpkit.svg)](https://pypi.org/project/interpkit/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
@@ -12,17 +12,25 @@
 
 TransformerLens is excellent — but only works on GPT-style decoder-only transformers. The moment you step outside that (Mamba, SSMs, ViT, CNNs, BERT, T5, MoE models), there is no equivalent tool. You write hook code from scratch every time.
 
-mechkit fills this gap: the same standard mech interp operations, on any HuggingFace model, with no annotation required.
+InterpKit fills this gap: the same standard mech interp operations, on any HuggingFace model, with no annotation required.
 
 ---
 
 ## Install
 
 ```bash
-pip install mechkit
+pip install interpkit
 
 # For linear probe support:
-pip install mechkit[probe]
+pip install interpkit[probe]
+```
+
+Or install from source for development:
+
+```bash
+git clone https://github.com/davidezani/InterpKit.git
+cd InterpKit
+pip install -e ".[dev]"
 ```
 
 ---
@@ -30,9 +38,9 @@ pip install mechkit[probe]
 ## Quickstart
 
 ```python
-import mechkit
+import interpkit
 
-model = mechkit.load("gpt2")
+model = interpkit.load("gpt2")
 
 model.inspect()                    # module tree with roles, params, shapes
 model.trace("...Paris...", "...Rome...", top_k=20)   # causal tracing
@@ -44,9 +52,9 @@ model.attribute("The capital of France is")          # gradient saliency
 Works the same on any HF architecture:
 
 ```python
-model = mechkit.load("state-spaces/mamba-370m")
-model = mechkit.load("google/vit-base-patch16-224")
-model = mechkit.load("bert-base-uncased")
+model = interpkit.load("state-spaces/mamba-370m")
+model = interpkit.load("google/vit-base-patch16-224")
+model = interpkit.load("bert-base-uncased")
 ```
 
 ---
@@ -110,9 +118,9 @@ print(result["accuracy"])
 ## Model Diff
 
 ```python
-base = mechkit.load("gpt2")
-finetuned = mechkit.load("my-finetuned-gpt2")
-mechkit.diff(base, finetuned, "The capital of France is")
+base = interpkit.load("gpt2")
+finetuned = interpkit.load("my-finetuned-gpt2")
+interpkit.diff(base, finetuned, "The capital of France is")
 ```
 
 ## SAE Features
@@ -153,7 +161,7 @@ model.trace("...Paris...", "...Rome...", save="trace.png")
 model.lens("The capital of France is", save="lens.png")
 model.steer("The weather is", vector=vector, at="transformer.h.8", save="steer.png")
 model.attribute("The capital of France is", save="attribution.png")
-mechkit.diff(base, finetuned, "...", save="diff.png")
+interpkit.diff(base, finetuned, "...", save="diff.png")
 
 # Interactive HTML — self-contained files with hover tooltips, filters, and sliders
 model.attention("hello world", html="attention.html")
@@ -166,40 +174,40 @@ model.attribute("The capital of France is", html="attribution.html")
 ## CLI
 
 ```bash
-mechkit inspect gpt2
-mechkit trace gpt2 --clean "...Paris..." --corrupted "...Rome..." --top-k 20
-mechkit lens gpt2 "The capital of France is"
-mechkit attention gpt2 "The capital of France is" --layer 8 --save attention.png
-mechkit steer gpt2 "The weather is" --positive Love --negative Hate --at transformer.h.8
-mechkit ablate gpt2 "The capital of France is" --at transformer.h.8.mlp
-mechkit diff gpt2 my-finetuned-gpt2 "The capital of France is" --save diff.png
-mechkit features gpt2 "The capital of France is" --at transformer.h.8 --sae jbloom/GPT2-Small-SAEs-Reformatted
+interpkit inspect gpt2
+interpkit trace gpt2 --clean "...Paris..." --corrupted "...Rome..." --top-k 20
+interpkit lens gpt2 "The capital of France is"
+interpkit attention gpt2 "The capital of France is" --layer 8 --save attention.png
+interpkit steer gpt2 "The weather is" --positive Love --negative Hate --at transformer.h.8
+interpkit ablate gpt2 "The capital of France is" --at transformer.h.8.mlp
+interpkit diff gpt2 my-finetuned-gpt2 "The capital of France is" --save diff.png
+interpkit features gpt2 "The capital of France is" --at transformer.h.8 --sae jbloom/GPT2-Small-SAEs-Reformatted
 
 # Interactive HTML output
-mechkit attention gpt2 "hello world" --html attention.html
-mechkit trace gpt2 --clean "...Paris..." --corrupted "...Rome..." --html trace.html
-mechkit attribute gpt2 "The capital of France is" --html attribution.html
+interpkit attention gpt2 "hello world" --html attention.html
+interpkit trace gpt2 --clean "...Paris..." --corrupted "...Rome..." --html trace.html
+interpkit attribute gpt2 "The capital of France is" --html attribution.html
 
 # Vision models — auto-preprocessed
-mechkit attribute microsoft/resnet-50 cat.jpg --target 281
+interpkit attribute microsoft/resnet-50 cat.jpg --target 281
 ```
 
-Run `mechkit` with no arguments for a full command reference.
+Run `interpkit` with no arguments for a full command reference.
 
 ---
 
 ## TransformerLens interop
 
-Already using TransformerLens? Pass your `HookedTransformer` directly into mechkit — it auto-detects the model and extracts the tokenizer:
+Already using TransformerLens? Pass your `HookedTransformer` directly into InterpKit — it auto-detects the model and extracts the tokenizer:
 
 ```python
 from transformer_lens import HookedTransformer
-import mechkit
+import interpkit
 
 tl_model = HookedTransformer.from_pretrained("gpt2")
-model = mechkit.load(tl_model)
+model = interpkit.load(tl_model)
 
-# All mechkit operations work on TL models
+# All InterpKit operations work on TL models
 model.trace("The Eiffel Tower is in Paris", "The Eiffel Tower is in Rome", top_k=20)
 model.attention("The capital of France is", save="attention.png")
 model.steer("The weather is", vector=vector, at="blocks.8", scale=2.0)
@@ -208,9 +216,9 @@ model.steer("The weather is", vector=vector, at="blocks.8", scale=2.0)
 Translate between native and TL hook point names:
 
 ```python
-mechkit.to_tl_name("transformer.h.8.mlp")       # -> "blocks.8.mlp"
-mechkit.to_native_name("blocks.8.attn", model.arch_info)  # -> "transformer.h.8.attn"
-mechkit.list_tl_hooks(tl_model)                  # -> ["blocks.0.hook_resid_pre", ...]
+interpkit.to_tl_name("transformer.h.8.mlp")       # -> "blocks.8.mlp"
+interpkit.to_native_name("blocks.8.attn", model.arch_info)  # -> "transformer.h.8.attn"
+interpkit.list_tl_hooks(tl_model)                  # -> ["blocks.0.hook_resid_pre", ...]
 ```
 
 ---
@@ -219,11 +227,11 @@ mechkit.list_tl_hooks(tl_model)                  # -> ["blocks.0.hook_resid_pre"
 
 ```python
 import torch.nn as nn
-import mechkit
+import interpkit
 
 my_model = MyCustomModel()
-mechkit.register(my_model, layers=["blocks.0", "blocks.1"], output_head="head")
-model = mechkit.load(my_model, tokenizer=my_tokenizer)
+interpkit.register(my_model, layers=["blocks.0", "blocks.1"], output_head="head")
+model = interpkit.load(my_model, tokenizer=my_tokenizer)
 model.trace(input_a, input_b, top_k=10)
 ```
 

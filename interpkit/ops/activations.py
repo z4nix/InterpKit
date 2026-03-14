@@ -6,10 +6,10 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-from mechkit.ops.patch import _get_module
+from interpkit.ops.patch import _get_module
 
 if TYPE_CHECKING:
-    from mechkit.core.model import Model
+    from interpkit.core.model import Model
 
 
 def run_activations(
@@ -55,7 +55,7 @@ def run_activations(
             h.remove()
 
     if print_stats:
-        from mechkit.core.render import render_activations
+        from interpkit.core.render import render_activations
 
         render_activations(cache)
 

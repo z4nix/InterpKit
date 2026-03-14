@@ -6,10 +6,10 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-from mechkit.ops.patch import _get_module
+from interpkit.ops.patch import _get_module
 
 if TYPE_CHECKING:
-    from mechkit.core.model import Model
+    from interpkit.core.model import Model
 
 
 def run_steer_vector(
@@ -24,7 +24,7 @@ def run_steer_vector(
     Both inputs are padded to the same length. The vector is the mean
     difference across the sequence dimension.
     """
-    from mechkit.ops.activations import run_activations
+    from interpkit.ops.activations import run_activations
 
     pos_act = run_activations(model, positive, at=at, print_stats=False)
     neg_act = run_activations(model, negative, at=at, print_stats=False)
@@ -53,7 +53,7 @@ def run_steer(
     save: str | None = None,
 ) -> dict[str, Any]:
     """Run inference with and without a steering vector, compare top predictions."""
-    from mechkit.core.render import render_steer
+    from interpkit.core.render import render_steer
 
     model_input = model._prepare(input_data)
 
@@ -82,7 +82,7 @@ def run_steer(
     render_steer(original_tokens, steered_tokens, at, scale)
 
     if save is not None:
-        from mechkit.core.plot import plot_steer
+        from interpkit.core.plot import plot_steer
 
         plot_steer(original_tokens, steered_tokens, module_name=at, scale=scale, save_path=save)
 

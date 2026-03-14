@@ -1,4 +1,4 @@
-"""CLI entry point — Typer app with all mechkit commands."""
+"""CLI entry point — Typer app with all interpkit commands."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from rich.table import Table
 from rich.text import Text
 
 app = typer.Typer(
-    name="mechkit",
+    name="interpkit",
     help="Mech interp for any HuggingFace model.",
     no_args_is_help=False,
     add_completion=False,
@@ -21,7 +21,7 @@ console = Console()
 
 
 def _load_model(model_name: str, device: str | None = None):
-    from mechkit.core.model import load
+    from interpkit.core.model import load
 
     with console.status(f"Loading {model_name}..."):
         return load(model_name, device=device)
@@ -39,20 +39,12 @@ def main(ctx: typer.Context) -> None:
         return
 
     logo = r"""
-          ____                                       ,--.
-        ,'  , `.                     ,---,       ,--/  /|           ___
-     ,-+-,.' _ |                   ,--.' |    ,---,': / '  ,--,   ,--.'|_
-  ,-+-. ;   , ||                   |  |  :    :   : '/ / ,--.'|   |  | :,'
- ,--.'|'   |  ;|                   :  :  :    |   '   ,  |  |,    :  : ' :
-|   |  ,', |  ':  ,---.     ,---.  :  |  |,--.'   |  /   `--'_  .;__,'  /
-|   | /  | |  || /     \   /     \ |  :  '   ||   ;  ;   ,' ,'| |  |   |
-'   | :  | :  |,/    /  | /    / ' |  |   /' ::   '   \  '  | | :__,'| :
-;   . |  ; |--'.    ' / |.    ' /  '  :  | | ||   |    ' |  | :   '  : |__
-|   : |  | ,   '   ;   /|'   ; :__ |  |  ' | :'   : |.  \'  : |__ |  | '.'|
-|   : '  |/    '   |  / |'   | '.'||  :  :_:,'|   | '_\.'|  | '.'|;  :    ;
-;   | |`-'     |   :    ||   :    :|  | ,'    '   : |    ;  :    ;|  ,   /
-|   ;/          \   \  /  \   \  / `--''      ;   |,'    |  ,   /  ---`-'
-'---'            `----'    `----'             '---'       ---`-'
+  ___       _                  _  ___ _
+ |_ _|_ __ | |_ ___ _ __ _ __| |/ (_) |_
+  | || '_ \| __/ _ \ '__| '_ \ ' /| | __|
+  | || | | | ||  __/ |  | |_) | . \| | |_
+ |___|_| |_|\__\___|_|  | .__/|_|\_\_|\__|
+                         |_|
 """
     console.print(f"[bold cyan]{logo}[/bold cyan]", highlight=False)
 
@@ -66,22 +58,22 @@ def main(ctx: typer.Context) -> None:
 
     rows = [
         ("", "[bold]Core Operations[/bold]", ""),
-        ("inspect", "Module tree with types, params, roles", "mechkit inspect gpt2"),
-        ("patch", "Activation patching at a module", "mechkit patch gpt2 --clean '...' --corrupted '...' --at transformer.h.8.mlp"),
-        ("trace", "Causal tracing — rank modules by effect", "mechkit trace gpt2 --clean '...' --corrupted '...'"),
-        ("lens", "Logit lens — project layers to vocab", "mechkit lens gpt2 'The capital of France is'"),
-        ("attribute", "Gradient saliency over inputs", "mechkit attribute gpt2 'The capital of France is'"),
+        ("inspect", "Module tree with types, params, roles", "interpkit inspect gpt2"),
+        ("patch", "Activation patching at a module", "interpkit patch gpt2 --clean '...' --corrupted '...' --at transformer.h.8.mlp"),
+        ("trace", "Causal tracing — rank modules by effect", "interpkit trace gpt2 --clean '...' --corrupted '...'"),
+        ("lens", "Logit lens — project layers to vocab", "interpkit lens gpt2 'The capital of France is'"),
+        ("attribute", "Gradient saliency over inputs", "interpkit attribute gpt2 'The capital of France is'"),
         ("", "", ""),
         ("", "[bold]Analysis Operations[/bold]", ""),
-        ("activations", "Extract raw activation tensors", "mechkit activations gpt2 '...' --at transformer.h.8"),
-        ("ablate", "Zero/mean ablate a component", "mechkit ablate gpt2 '...' --at transformer.h.8.mlp"),
-        ("attention", "Visualize attention patterns", "mechkit attention gpt2 '...' --layer 8"),
-        ("steer", "Apply a steering vector", "mechkit steer gpt2 '...' --positive Love --negative Hate --at transformer.h.8"),
-        ("probe", "Linear probe on activations", "mechkit probe gpt2 --at transformer.h.8 --data data.json"),
-        ("diff", "Compare two models' activations", "mechkit diff gpt2 my-finetuned-gpt2 '...'"),
+        ("activations", "Extract raw activation tensors", "interpkit activations gpt2 '...' --at transformer.h.8"),
+        ("ablate", "Zero/mean ablate a component", "interpkit ablate gpt2 '...' --at transformer.h.8.mlp"),
+        ("attention", "Visualize attention patterns", "interpkit attention gpt2 '...' --layer 8"),
+        ("steer", "Apply a steering vector", "interpkit steer gpt2 '...' --positive Love --negative Hate --at transformer.h.8"),
+        ("probe", "Linear probe on activations", "interpkit probe gpt2 --at transformer.h.8 --data data.json"),
+        ("diff", "Compare two models' activations", "interpkit diff gpt2 my-finetuned-gpt2 '...'"),
         ("", "", ""),
         ("", "[bold]Advanced[/bold]", ""),
-        ("features", "SAE feature decomposition", "mechkit features gpt2 '...' --at transformer.h.8 --sae jbloom/..."),
+        ("features", "SAE feature decomposition", "interpkit features gpt2 '...' --at transformer.h.8 --sae jbloom/..."),
     ]
 
     for cmd, desc, example in rows:
@@ -106,7 +98,7 @@ def main(ctx: typer.Context) -> None:
         (" for interactive visualizations.\n", ""),
     )
     console.print(save_hint)
-    console.print("  Run [bold cyan]mechkit <command> --help[/bold cyan] for detailed usage.\n")
+    console.print("  Run [bold cyan]interpkit <command> --help[/bold cyan] for detailed usage.\n")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -315,11 +307,11 @@ def diff(
     device: Optional[str] = typer.Option(None, help="Device"),
 ) -> None:
     """Compare activations between two models on the same input."""
-    import mechkit
+    import interpkit
 
     m_a = _load_model(model_a_name, device=device)
     m_b = _load_model(model_b_name, device=device)
-    mechkit.diff(m_a, m_b, input_data, save=save)
+    interpkit.diff(m_a, m_b, input_data, save=save)
 
 
 # ══════════════════════════════════════════════════════════════════
