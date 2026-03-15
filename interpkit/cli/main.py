@@ -57,22 +57,28 @@ IIIII nn   nn  tttt  eeeee rr     pp      KK  KK iii  tttt
     table.add_column("Example", style="dim")
 
     rows = [
+        ("", "[bold]Quick Start[/bold]", ""),
+        ("scan", "One-command overview — DLA, lens, attention, attribution", "interpkit scan gpt2 'The capital of France is'"),
+        ("", "", ""),
         ("", "[bold]Core Operations[/bold]", ""),
         ("inspect", "Module tree with types, params, roles", "interpkit inspect gpt2"),
-        ("patch", "Activation patching at a module", "interpkit patch gpt2 --clean '...' --corrupted '...' --at transformer.h.8.mlp"),
-        ("trace", "Causal tracing — rank modules by effect", "interpkit trace gpt2 --clean '...' --corrupted '...'"),
-        ("lens", "Logit lens — project layers to vocab", "interpkit lens gpt2 'The capital of France is'"),
+        ("dla", "Direct Logit Attribution — decompose logit by component", "interpkit dla gpt2 'The capital of France is'"),
+        ("trace", "Causal tracing — module or position-aware (Meng et al.)", "interpkit trace gpt2 --clean '...' --corrupted '...'"),
+        ("lens", "Logit lens — project layers to vocab (all positions)", "interpkit lens gpt2 'The capital of France is'"),
         ("attribute", "Gradient saliency over inputs", "interpkit attribute gpt2 'The capital of France is'"),
+        ("patch", "Activation patching at module/head/position", "interpkit patch gpt2 --clean '...' --corrupted '...' --at transformer.h.8.mlp"),
         ("", "", ""),
         ("", "[bold]Analysis Operations[/bold]", ""),
         ("activations", "Extract raw activation tensors", "interpkit activations gpt2 '...' --at transformer.h.8"),
         ("ablate", "Zero/mean ablate a component", "interpkit ablate gpt2 '...' --at transformer.h.8.mlp"),
         ("attention", "Visualize attention patterns", "interpkit attention gpt2 '...' --layer 8"),
+        ("decompose", "Residual stream decomposition by component", "interpkit decompose gpt2 'The capital of France is'"),
         ("steer", "Apply a steering vector", "interpkit steer gpt2 '...' --positive Love --negative Hate --at transformer.h.8"),
         ("probe", "Linear probe on activations", "interpkit probe gpt2 --at transformer.h.8 --data data.json"),
         ("diff", "Compare two models' activations", "interpkit diff gpt2 my-finetuned-gpt2 '...'"),
         ("", "", ""),
-        ("", "[bold]Advanced[/bold]", ""),
+        ("", "[bold]Circuit Analysis[/bold]", ""),
+        ("find-circuit", "Automated circuit discovery via iterative ablation", "interpkit find-circuit gpt2 --clean '...' --corrupted '...'"),
         ("features", "SAE feature decomposition", "interpkit features gpt2 '...' --at transformer.h.8 --sae jbloom/..."),
     ]
 
@@ -127,11 +133,16 @@ def patch(
     clean: str = typer.Option(..., "--clean", help="Clean input (text string or image path)"),
     corrupted: str = typer.Option(..., "--corrupted", help="Corrupted input (text string or image path)"),
     at: str = typer.Option(..., "--at", help="Module name to patch (e.g. transformer.h.8.mlp)"),
+    head: Optional[int] = typer.Option(None, "--head", help="Specific attention head to patch (requires attention module)"),
+    positions: Optional[str] = typer.Option(None, "--positions", help="Comma-separated token positions to patch (e.g. '3,4,5')"),
     device: Optional[str] = typer.Option(None, help="Device"),
 ) -> None:
     """Activation patching: swap one module's output from clean into corrupted run."""
     m = _load_model(model_name, device=device)
-    m.patch(clean, corrupted, at=at)
+    pos_list: list[int] | None = None
+    if positions is not None:
+        pos_list = [int(p.strip()) for p in positions.split(",")]
+    m.patch(clean, corrupted, at=at, head=head, positions=pos_list)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -145,14 +156,15 @@ def trace(
     clean: str = typer.Option(..., "--clean", help="Clean input"),
     corrupted: str = typer.Option(..., "--corrupted", help="Corrupted input"),
     top_k: int = typer.Option(20, "--top-k", help="Scan top-K modules by proxy score. 0 = scan all."),
-    save: Optional[str] = typer.Option(None, "--save", help="Save bar chart to file (e.g. trace.png)"),
+    mode: str = typer.Option("module", "--mode", help="Tracing mode: 'module' (default) or 'position' (Meng et al. 2D heatmap)"),
+    save: Optional[str] = typer.Option(None, "--save", help="Save bar chart / heatmap to file (e.g. trace.png)"),
     html_path: Optional[str] = typer.Option(None, "--html", help="Save interactive HTML to file (e.g. trace.html)"),
     device: Optional[str] = typer.Option(None, help="Device"),
 ) -> None:
     """Causal tracing: rank modules by how much patching them restores clean output."""
     effective_top_k: int | None = top_k if top_k > 0 else None
     m = _load_model(model_name, device=device)
-    m.trace(clean, corrupted, top_k=effective_top_k, save=save, html=html_path)
+    m.trace(clean, corrupted, top_k=effective_top_k, mode=mode, save=save, html=html_path)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -165,11 +177,12 @@ def lens(
     model_name: str = typer.Argument(..., help="HuggingFace model ID"),
     text: str = typer.Argument(..., help="Input text"),
     save: Optional[str] = typer.Option(None, "--save", help="Save heatmap to file (e.g. lens.png)"),
+    position: Optional[int] = typer.Option(None, "--position", help="Single token position to analyse (-1 = last). Omit for all positions."),
     device: Optional[str] = typer.Option(None, help="Device"),
 ) -> None:
     """Logit lens: project each layer's hidden state to vocabulary space."""
     m = _load_model(model_name, device=device)
-    m.lens(text, save=save)
+    m.lens(text, save=save, position=position)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -331,6 +344,84 @@ def features(
     """Decompose activations through a Sparse Autoencoder into interpretable features."""
     m = _load_model(model_name, device=device)
     m.features(input_data, at=at, sae=sae, top_k=top_k)
+
+
+# ══════════════════════════════════════════════════════════════════
+# scan
+# ══════════════════════════════════════════════════════════════════
+
+
+@app.command()
+def scan(
+    model_name: str = typer.Argument(..., help="HuggingFace model ID"),
+    input_data: str = typer.Argument(..., help="Input text"),
+    save: Optional[str] = typer.Option(None, "--save", help="Prefix for exported figures (e.g. scan → scan_dla.png, scan_lens.png)"),
+    device: Optional[str] = typer.Option(None, help="Device"),
+) -> None:
+    """One-command model overview: runs DLA, logit lens, attention, and attribution."""
+    m = _load_model(model_name, device=device)
+    m.scan(input_data, save=save)
+
+
+# ══════════════════════════════════════════════════════════════════
+# dla
+# ══════════════════════════════════════════════════════════════════
+
+
+@app.command()
+def dla(
+    model_name: str = typer.Argument(..., help="HuggingFace model ID"),
+    input_data: str = typer.Argument(..., help="Input text"),
+    token: Optional[str] = typer.Option(None, "--token", help="Target token (string or int). Uses top-1 prediction if omitted."),
+    position: int = typer.Option(-1, "--position", help="Token position to analyse (-1 = last)"),
+    top_k: int = typer.Option(10, "--top-k", help="Number of top/bottom contributors to show"),
+    save: Optional[str] = typer.Option(None, "--save", help="Save bar chart to file (e.g. dla.png)"),
+    device: Optional[str] = typer.Option(None, help="Device"),
+) -> None:
+    """Direct Logit Attribution: decompose output logits by component."""
+    m = _load_model(model_name, device=device)
+    parsed_token: int | str | None = None
+    if token is not None:
+        try:
+            parsed_token = int(token)
+        except ValueError:
+            parsed_token = token
+    m.dla(input_data, token=parsed_token, position=position, top_k=top_k, save=save)
+
+
+# ══════════════════════════════════════════════════════════════════
+# decompose
+# ══════════════════════════════════════════════════════════════════
+
+
+@app.command()
+def decompose(
+    model_name: str = typer.Argument(..., help="HuggingFace model ID"),
+    input_data: str = typer.Argument(..., help="Input text"),
+    position: int = typer.Option(-1, "--position", help="Token position to decompose (-1 = last)"),
+    device: Optional[str] = typer.Option(None, help="Device"),
+) -> None:
+    """Decompose the residual stream into per-component contributions."""
+    m = _load_model(model_name, device=device)
+    m.decompose(input_data, position=position)
+
+
+# ══════════════════════════════════════════════════════════════════
+# find-circuit
+# ══════════════════════════════════════════════════════════════════
+
+
+@app.command("find-circuit")
+def find_circuit(
+    model_name: str = typer.Argument(..., help="HuggingFace model ID"),
+    clean: str = typer.Option(..., "--clean", help="Clean input text"),
+    corrupted: str = typer.Option(..., "--corrupted", help="Corrupted input text"),
+    threshold: float = typer.Option(0.01, "--threshold", help="Minimum ablation effect to include in circuit (0-1)"),
+    device: Optional[str] = typer.Option(None, help="Device"),
+) -> None:
+    """Automated circuit discovery: find the minimal circuit for a behaviour."""
+    m = _load_model(model_name, device=device)
+    m.find_circuit(clean, corrupted, threshold=threshold)
 
 
 if __name__ == "__main__":

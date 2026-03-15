@@ -49,11 +49,17 @@ import interpkit
 
 model = interpkit.load("gpt2")
 
-model.inspect()                    # module tree with roles, params, shapes
-model.trace("...Paris...", "...Rome...", top_k=20)   # causal tracing
-model.patch("...Paris...", "...Rome...", at="transformer.h.8.mlp")
-model.lens("The capital of France is")               # logit lens
-model.attribute("The capital of France is")          # gradient saliency
+# One-command model overview — runs DLA, logit lens, attention, attribution
+# and surfaces the most interesting findings automatically
+model.scan("The capital of France is")
+
+# Or run individual operations:
+model.inspect()                                        # module tree
+model.dla("The capital of France is")                  # direct logit attribution
+model.trace("...Paris...", "...Rome...", top_k=20)     # causal tracing
+model.lens("The capital of France is")                 # logit lens (all positions)
+model.attribute("The capital of France is")            # gradient saliency
+model.decompose("The capital of France is")            # residual stream decomposition
 ```
 
 Works the same on any HF architecture:
@@ -70,20 +76,123 @@ model = interpkit.load("bert-base-uncased")
 
 | Operation | What it does | Works on |
 |-----------|-------------|----------|
+| **`scan`** | One-command model overview: runs DLA, lens, attention, attribution and surfaces key findings | LMs |
+| **`dla`** | Direct Logit Attribution — decompose output logits by head and MLP contribution | LMs |
 | `inspect` | Module tree with types, param counts, shapes | Any model |
-| `patch` | Activation patching at a named module | Any model |
-| `trace` | Causal tracing across modules, ranked by effect | Any model |
-| `attribute` | Gradient saliency over inputs | Any model |
-| `lens` | Logit lens — project activations to vocabulary | LMs (auto-detected) |
+| `patch` | Activation patching at a module, head, or position | Any model |
+| `trace` | Causal tracing — module-level or position-aware (Meng et al.) heatmap | Any model |
+| `attribute` | Gradient saliency over inputs (returns scores programmatically) | Any model |
+| `lens` | Logit lens — project activations to vocabulary at all positions | LMs (auto-detected) |
 | `activations` | Extract raw activation tensors at any module | Any model |
+| `head_activations` | Decompose attention output into per-head contributions | Transformers |
 | `ablate` | Zero/mean ablate a component and measure effect | Any model |
 | `attention` | Visualize attention patterns per layer/head | Transformers |
 | `steer` | Extract and apply steering vectors | LMs |
 | `probe` | Linear probe on activations | Any model |
 | `diff` | Compare activations between two models | Any model |
 | `features` | SAE feature decomposition | Any model |
+| **`decompose`** | Residual stream decomposition — per-component norms | Transformers |
+| **`ov_scores`** | OV circuit analysis — W_OV matrix per head | Transformers |
+| **`qk_scores`** | QK circuit analysis — W_QK matrix per head | Transformers |
+| **`composition`** | Q/K/V composition scores between heads in two layers | Transformers |
+| **`find_circuit`** | Automated circuit discovery via iterative ablation | Transformers |
+| **`batch`** | Run any operation over a dataset with result aggregation | Any model |
 
 ---
+
+## Scan — One-Command Model Overview
+
+The fastest way to understand what a model is doing on an input. Runs DLA, logit lens, attention analysis, and gradient attribution, then surfaces the most interesting findings in a ranked summary:
+
+```python
+model.scan("The capital of France is")
+# Output:
+#   Predictions: "the" (8.5%), "now" (4.8%), "a" (4.6%)
+#   Key Findings (ranked by significance):
+#     1. Top contributor to "the": L11.attn (+204.701)
+#     2. Top attention head: L11.H0 (+149.850)
+#     3. Most salient input token: "is" (score 12.435)
+#     4. Answer "the" first appears at layer 9/12
+
+model.scan("The capital of France is", save="scan")  # exports scan_dla.png, scan_lens.png, etc.
+```
+
+## Direct Logit Attribution (DLA)
+
+Answers the fundamental question: *why does the model predict this token?* Decomposes the output logit by component (attention block + MLP per layer) and by individual attention head:
+
+```python
+result = model.dla("The capital of France is")
+# result["contributions"]      — per-component logit contributions, sorted
+# result["head_contributions"] — per-head breakdown
+# result["target_token"]       — the token being attributed
+
+# Attribute a specific token
+model.dla("The capital of France is", token="Paris")
+
+# Save a bar chart
+model.dla("The capital of France is", save="dla.png")
+```
+
+## Causal Tracing
+
+```python
+# Module-level tracing (default) — rank modules by causal effect
+model.trace("...Paris...", "...Rome...", top_k=20)
+
+# Position-aware tracing (Meng et al. 2022) — (layer x position) heatmap
+model.trace("...Paris...", "...Rome...", mode="position", save="trace.png")
+```
+
+## Logit Lens
+
+Now analyses all token positions by default, producing the classic (layers x positions) heatmap:
+
+```python
+model.lens("The capital of France is")                      # all positions
+model.lens("The capital of France is", position=-1)         # last position only
+model.lens("The capital of France is", save="lens.png")     # 2D heatmap export
+```
+
+## Attribution
+
+Returns scores programmatically (no longer just prints):
+
+```python
+result = model.attribute("The capital of France is")
+result["tokens"]   # ["The", "capital", "of", "France", "is"]
+result["scores"]   # [8.88, 11.15, 7.24, 7.37, 12.43]
+result["target"]   # 262
+```
+
+## Activation Patching
+
+Supports module-level, head-level, and position-level patching:
+
+```python
+# Module-level (original)
+model.patch(clean, corrupted, at="transformer.h.8.mlp")
+
+# Head-level — patch only attention head 3
+model.patch(clean, corrupted, at="transformer.h.8", head=3)
+
+# Position-level — patch only positions 3 and 4
+model.patch(clean, corrupted, at="transformer.h.8", positions=[3, 4])
+
+# Combined — patch head 3 at positions 3 and 4
+model.patch(clean, corrupted, at="transformer.h.8", head=3, positions=[3, 4])
+```
+
+## Head-Level Activations
+
+Decompose an attention module's output into per-head contributions, optionally projected through W_O into residual-stream space:
+
+```python
+result = model.head_activations("The capital of France is", at="transformer.h.8")
+result["head_acts"]   # tensor (num_heads, batch, seq, d_model)
+result["num_heads"]   # 12
+result["head_dim"]    # 64
+```
 
 ## Activations, Ablation, Attention
 
@@ -101,15 +210,74 @@ model.attention("The capital of France is")                   # all layers
 model.attention("The capital of France is", layer=8, head=3)  # single head
 ```
 
-## Steering
+## Residual Stream Decomposition
 
-Steering vectors work by computing the difference in activations between two contrasting prompts and adding that vector back during inference. This is most useful on language models, where the effect on generated text is interpretable.
+Break down the residual stream at any position into contributions from each attention block and MLP:
 
 ```python
-# 1. Extract a steering vector
-vector = model.steer_vector("Love", "Hate", at="transformer.h.8")
+result = model.decompose("The capital of France is")
+# result["components"] — list of {"name": "L8.attn", "type": "attn", "norm": 8.94, ...}
+# result["residual"]   — final residual stream vector
+```
 
-# 2. Apply during inference — side-by-side comparison
+## OV / QK Circuit Analysis
+
+Analyse the effective weight matrices of attention heads:
+
+```python
+# OV circuit: what does each head write to the residual stream?
+model.ov_scores(layer=8)
+# Per-head Frobenius norm, top singular values, approximate rank of W_OV
+
+# QK circuit: what does each head attend to?
+model.qk_scores(layer=8)
+
+# Composition: how much does head j in layer 4 compose with head i in layer 8?
+model.composition(src_layer=4, dst_layer=8, comp_type="q")  # Q-composition
+model.composition(src_layer=4, dst_layer=8, comp_type="k")  # K-composition
+model.composition(src_layer=4, dst_layer=8, comp_type="v")  # V-composition
+```
+
+## Circuit Discovery
+
+Automatically find the minimal set of components that explain a behaviour:
+
+```python
+circuit = model.find_circuit(
+    "The Eiffel Tower is in Paris",
+    "The Eiffel Tower is in Rome",
+    threshold=0.05,
+)
+# circuit["circuit"]       — components in the circuit, sorted by effect
+# circuit["excluded"]      — components not in the circuit
+# circuit["verification"]  — faithfulness check (how much output is preserved
+#                            when all non-circuit components are ablated)
+```
+
+## Batch / Dataset Operations
+
+Run any operation over a dataset of examples with automatic result aggregation:
+
+```python
+# Generic batch runner
+results = model.batch("trace", [
+    {"clean": "...Paris...", "corrupted": "...Rome..."},
+    {"clean": "...Berlin...", "corrupted": "...Madrid..."},
+], op_kwargs={"top_k": 10})
+# results["summary"]["ranked_modules"] — modules ranked by mean effect across examples
+
+# Convenience: trace over a dataset
+results = model.trace_batch(dataset, clean_col="clean", corrupted_col="corrupted")
+
+# Convenience: DLA over a list of texts
+results = model.dla_batch(["The capital of France is", "The CEO of Apple is"])
+# results["summary"]["ranked_components"] — components ranked by mean contribution
+```
+
+## Steering
+
+```python
+vector = model.steer_vector("Love", "Hate", at="transformer.h.8")
 model.steer("The weather today is", vector=vector, at="transformer.h.8", scale=2.0)
 ```
 
@@ -167,9 +335,12 @@ Pass `save="path.png"` to export a static matplotlib figure, or `html="path.html
 ```python
 model.attention("hello world", layer=0, head=0, save="attention.png")
 model.trace("...Paris...", "...Rome...", save="trace.png")
+model.trace("...Paris...", "...Rome...", mode="position", save="position_trace.png")
 model.lens("The capital of France is", save="lens.png")
 model.steer("The weather is", vector=vector, at="transformer.h.8", save="steer.png")
 model.attribute("The capital of France is", save="attribution.png")
+model.dla("The capital of France is", save="dla.png")
+model.scan("The capital of France is", save="scan")
 interpkit.diff(base, finetuned, "...", save="diff.png")
 
 # Interactive HTML — self-contained files with hover tooltips, filters, and sliders
@@ -184,11 +355,17 @@ model.attribute("The capital of France is", html="attribution.html")
 
 ```bash
 interpkit inspect gpt2
+interpkit scan gpt2 "The capital of France is"
+interpkit dla gpt2 "The capital of France is"
 interpkit trace gpt2 --clean "...Paris..." --corrupted "...Rome..." --top-k 20
+interpkit trace gpt2 --clean "...Paris..." --corrupted "...Rome..." --mode position --save trace.png
 interpkit lens gpt2 "The capital of France is"
+interpkit lens gpt2 "The capital of France is" --position -1
 interpkit attention gpt2 "The capital of France is" --layer 8 --save attention.png
+interpkit attribute gpt2 "The capital of France is"
 interpkit steer gpt2 "The weather is" --positive Love --negative Hate --at transformer.h.8
 interpkit ablate gpt2 "The capital of France is" --at transformer.h.8.mlp
+interpkit decompose gpt2 "The capital of France is"
 interpkit diff gpt2 my-finetuned-gpt2 "The capital of France is" --save diff.png
 interpkit features gpt2 "The capital of France is" --at transformer.h.8 --sae jbloom/GPT2-Small-SAEs-Reformatted
 
@@ -217,6 +394,8 @@ tl_model = HookedTransformer.from_pretrained("gpt2")
 model = interpkit.load(tl_model)
 
 # All InterpKit operations work on TL models
+model.scan("The capital of France is")
+model.dla("The capital of France is")
 model.trace("The Eiffel Tower is in Paris", "The Eiffel Tower is in Rome", top_k=20)
 model.attention("The capital of France is", save="attention.png")
 model.steer("The weather is", vector=vector, at="blocks.8", scale=2.0)
@@ -252,13 +431,15 @@ See the [`examples/`](examples/) directory for Jupyter notebooks:
 
 | Notebook | Topics |
 |----------|--------|
-| `01_quickstart` | Inspect, trace, lens, attribution, patching, ablation |
+| `01_quickstart` | Inspect, scan, DLA, trace, lens, attribution, patching, ablation |
 | `02_attention_patterns` | Per-head heatmaps, layer filtering, HTML export |
 | `03_steering_vectors` | Extract and apply steering vectors at different layers/scales |
 | `04_sae_features` | Sparse Autoencoder feature decomposition |
 | `05_caching_and_probing` | Activation cache, linear probes across layers |
 | `06_model_comparison` | Diff two models, side-by-side tracing and logit lens |
 | `07_vision_models` | ResNet/ViT attribution, ablation, activations |
+| `08_dla_and_circuits` | DLA, head activations, residual decomposition, OV/QK analysis, composition, circuit discovery |
+| `09_scan_and_batch` | Auto-scan, batch operations, dataset workflows |
 
 ---
 

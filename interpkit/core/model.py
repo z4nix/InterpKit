@@ -62,10 +62,14 @@ class Model:
     def _forward(self, model_input: dict[str, torch.Tensor] | torch.Tensor) -> torch.Tensor:
         """Run a forward pass and return the output logits / final tensor."""
         with torch.no_grad():
-            if isinstance(model_input, dict):
-                out = self._model(**model_input)
-            else:
-                out = self._model(model_input)
+            return self._forward_with_grad(model_input)
+
+    def _forward_with_grad(self, model_input: dict[str, torch.Tensor] | torch.Tensor) -> torch.Tensor:
+        """Like ``_forward`` but without ``torch.no_grad()`` — use for gradient-based ops."""
+        if isinstance(model_input, dict):
+            out = self._model(**model_input)
+        else:
+            out = self._model(model_input)
 
         if hasattr(out, "logits"):
             return out.logits
@@ -169,6 +173,26 @@ class Model:
 
         return run_activations(self, input_data, at=at)
 
+    def head_activations(
+        self,
+        input_data: str | torch.Tensor | Any,
+        *,
+        at: str,
+        output_proj: bool = True,
+    ) -> dict[str, Any]:
+        """Decompose an attention module's output into per-head contributions.
+
+        Returns a dict with ``head_acts`` (tensor of shape
+        ``(num_heads, batch, seq, dim)``), ``num_heads``, ``head_dim``,
+        and ``module``.
+
+        When *output_proj* is True (default), each head's output is projected
+        through its slice of W_o so the result lives in residual-stream space.
+        """
+        from interpkit.ops.heads import run_head_activations
+
+        return run_head_activations(self, input_data, at=at, output_proj=output_proj)
+
     def steer_vector(
         self,
         positive: str | torch.Tensor | Any,
@@ -238,15 +262,25 @@ class Model:
         corrupted: str | torch.Tensor | Any,
         *,
         at: str,
+        head: int | None = None,
+        positions: list[int] | None = None,
     ) -> dict[str, Any]:
-        """Activation patching: swap a single module's output from clean into corrupted.
+        """Activation patching: swap a module's output from clean into corrupted.
+
+        Parameters
+        ----------
+        head:
+            Patch only this attention head (requires an attention module with
+            a detectable output projection).
+        positions:
+            Patch only these token positions.
 
         Returns a dict with ``clean_logits``, ``corrupted_logits``, ``patched_logits``,
         and ``effect`` (normalised scalar measuring how much the patch restored clean behaviour).
         """
         from interpkit.ops.patch import run_patch
 
-        return run_patch(self, clean, corrupted, at=at)
+        return run_patch(self, clean, corrupted, at=at, head=head, positions=positions)
 
     def trace(
         self,
@@ -254,34 +288,44 @@ class Model:
         corrupted: str | torch.Tensor | Any,
         *,
         top_k: int | None = 20,
+        mode: str = "module",
         save: str | None = None,
         html: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, Any]] | dict[str, Any]:
         """Causal tracing: rank modules by how much patching them restores clean output.
 
-        Uses a two-phase approach: fast proxy (activation norm delta) to shortlist,
-        then full patch-and-measure on the top-k candidates.
-        Pass ``save="path.png"`` to export a matplotlib bar chart.
+        Parameters
+        ----------
+        mode:
+            ``"module"`` (default) — two-phase module-level tracing.
+            ``"position"`` — Meng et al. style (layer x position) heatmap.
+
+        Pass ``save="path.png"`` to export a matplotlib figure.
         Pass ``html="path.html"`` to export an interactive HTML page.
         """
         from interpkit.ops.trace import run_trace
 
-        return run_trace(self, clean, corrupted, top_k=top_k, save=save, html=html)
+        return run_trace(self, clean, corrupted, top_k=top_k, mode=mode, save=save, html=html)
 
     def lens(
         self,
         text: str | torch.Tensor | Any,
         *,
         save: str | None = None,
+        position: int | None = None,
     ) -> list[dict[str, Any]] | None:
         """Logit lens: project each layer's output to vocabulary space.
 
-        Only available for language models with a detectable unembedding matrix.
+        Analyses all token positions by default, producing the classic
+        (layers x positions) heatmap.  Pass ``position=-1`` to analyse only
+        the last token (original behaviour) or ``position=N`` for any single
+        position.
+
         Pass ``save="path.png"`` to export a matplotlib heatmap.
         """
         from interpkit.ops.lens import run_lens
 
-        return run_lens(self, text, save=save)
+        return run_lens(self, text, save=save, position=position)
 
     def probe(
         self,
@@ -333,17 +377,208 @@ class Model:
         target: int | None = None,
         save: str | None = None,
         html: str | None = None,
-    ) -> None:
+    ) -> dict[str, Any]:
         """Gradient saliency over the input.
 
-        For NLP: prints coloured tokens by importance.
-        For vision: saves a heatmap image.
+        For NLP: returns ``{"tokens", "scores", "target"}`` with per-token importance.
+        For vision: returns ``{"grad", "target"}`` with the pixel-gradient tensor.
         Pass ``save="path.png"`` to export a matplotlib figure.
         Pass ``html="path.html"`` to export an interactive HTML page.
         """
         from interpkit.ops.attribute import run_attribute
 
-        run_attribute(self, input_data, target=target, save=save, html=html)
+        return run_attribute(self, input_data, target=target, save=save, html=html)
+
+    def dla(
+        self,
+        input_data: str | torch.Tensor | Any,
+        *,
+        token: int | str | None = None,
+        position: int = -1,
+        top_k: int = 10,
+        save: str | None = None,
+    ) -> dict[str, Any]:
+        """Direct Logit Attribution: decompose the output logit by component.
+
+        For each layer, measures how much the attention block and MLP
+        contribute to the logit of *token* by projecting their outputs
+        through the unembedding matrix.  Also provides a per-head breakdown.
+
+        Returns a dict with ``target_token``, ``target_id``,
+        ``contributions`` (list sorted by magnitude),
+        ``head_contributions`` (per-head breakdown), and ``total_logit``.
+        """
+        from interpkit.ops.dla import run_dla
+
+        return run_dla(
+            self, input_data, token=token, position=position,
+            top_k=top_k, save=save,
+        )
+
+    # ------------------------------------------------------------------
+    # Batch / dataset operations
+    # ------------------------------------------------------------------
+
+    def batch(
+        self,
+        operation: str,
+        dataset: list[dict[str, Any]],
+        *,
+        op_kwargs: dict[str, Any] | None = None,
+        aggregate: bool = True,
+    ) -> dict[str, Any]:
+        """Run any operation over a dataset of examples.
+
+        Parameters
+        ----------
+        operation:
+            Method name: ``"trace"``, ``"patch"``, ``"dla"``, ``"attribute"``, etc.
+        dataset:
+            List of dicts, each unpacked as kwargs to the operation.
+        op_kwargs:
+            Extra kwargs applied to every call.
+        aggregate:
+            Compute summary statistics across all results.
+        """
+        from interpkit.ops.batch import run_batch
+
+        return run_batch(
+            self, operation, dataset, op_kwargs=op_kwargs, aggregate=aggregate,
+        )
+
+    def trace_batch(
+        self,
+        dataset: list[dict[str, str]],
+        *,
+        clean_col: str = "clean",
+        corrupted_col: str = "corrupted",
+        top_k: int | None = 20,
+        mode: str = "module",
+    ) -> dict[str, Any]:
+        """Run causal tracing over a dataset of (clean, corrupted) pairs."""
+        from interpkit.ops.batch import run_trace_batch
+
+        return run_trace_batch(
+            self, dataset, clean_col=clean_col, corrupted_col=corrupted_col,
+            top_k=top_k, mode=mode,
+        )
+
+    def dla_batch(
+        self,
+        texts: list[str],
+        *,
+        top_k: int = 10,
+    ) -> dict[str, Any]:
+        """Run Direct Logit Attribution over a list of texts."""
+        from interpkit.ops.batch import run_dla_batch
+
+        return run_dla_batch(self, texts, top_k=top_k)
+
+    # ------------------------------------------------------------------
+    # Scan — automated multi-analysis
+    # ------------------------------------------------------------------
+
+    def scan(
+        self,
+        input_data: str | torch.Tensor | Any,
+        *,
+        save: str | None = None,
+    ) -> dict[str, Any]:
+        """One-command model overview: runs DLA, logit lens, and attention analysis.
+
+        Automatically surfaces the most interesting findings.  Pass
+        ``save="prefix"`` to export figures (e.g. ``prefix_dla.png``).
+        """
+        from interpkit.ops.scan import run_scan
+
+        return run_scan(self, input_data, save=save)
+
+    # ------------------------------------------------------------------
+    # Residual stream decomposition & circuit analysis
+    # ------------------------------------------------------------------
+
+    def decompose(
+        self,
+        input_data: str | torch.Tensor | Any,
+        *,
+        position: int = -1,
+    ) -> dict[str, Any]:
+        """Decompose the residual stream into per-component contributions.
+
+        Returns a dict with ``components`` (list of per-component
+        ``{name, layer, type, vector, norm}``), ``residual`` (final
+        residual stream vector), and ``position``.
+        """
+        from interpkit.ops.circuits import run_decompose
+
+        return run_decompose(self, input_data, position=position)
+
+    def ov_scores(self, *, layer: int) -> dict[str, Any]:
+        """Analyse OV circuits: compute W_OV = W_O @ W_V for each head.
+
+        Returns per-head Frobenius norms, singular values, and approximate
+        ranks of the effective OV matrix.
+        """
+        from interpkit.ops.circuits import run_ov_scores
+
+        return run_ov_scores(self, layer=layer)
+
+    def qk_scores(self, *, layer: int) -> dict[str, Any]:
+        """Analyse QK circuits: compute W_QK = W_Q^T @ W_K for each head.
+
+        Returns per-head Frobenius norms, singular values, and approximate
+        ranks of the effective QK matrix.
+        """
+        from interpkit.ops.circuits import run_qk_scores
+
+        return run_qk_scores(self, layer=layer)
+
+    def composition(
+        self,
+        *,
+        src_layer: int,
+        dst_layer: int,
+        comp_type: str = "q",
+    ) -> dict[str, Any]:
+        """Compute composition scores between heads in two layers.
+
+        Parameters
+        ----------
+        comp_type:
+            ``"q"`` for Q-composition, ``"k"`` for K-composition,
+            ``"v"`` for V-composition.
+
+        Returns a dict with ``scores`` (tensor ``dst_heads x src_heads``),
+        ``src_layer``, ``dst_layer``, ``comp_type``.
+        """
+        from interpkit.ops.circuits import run_composition
+
+        return run_composition(
+            self, src_layer=src_layer, dst_layer=dst_layer, comp_type=comp_type,
+        )
+
+    def find_circuit(
+        self,
+        clean: str | torch.Tensor | Any,
+        corrupted: str | torch.Tensor | Any,
+        *,
+        threshold: float = 0.01,
+    ) -> dict[str, Any]:
+        """Discover the minimal circuit that explains a behaviour.
+
+        Identifies which attention heads and MLPs are necessary by
+        individually ablating each component and keeping those whose
+        ablation changes the output by more than *threshold*.
+
+        Returns a dict with ``circuit`` (list of important components),
+        ``excluded``, ``verification`` (faithfulness check), and
+        ``threshold``.
+        """
+        from interpkit.ops.find_circuit import run_find_circuit
+
+        return run_find_circuit(
+            self, clean, corrupted, threshold=threshold,
+        )
 
 
 # ======================================================================

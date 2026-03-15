@@ -15,10 +15,29 @@ if TYPE_CHECKING:
 console = Console()
 
 
-def run_lens(model: "Model", text: Any, *, save: str | None = None) -> list[dict[str, Any]] | None:
+def run_lens(
+    model: "Model",
+    text: Any,
+    *,
+    save: str | None = None,
+    position: int | None = None,
+) -> list[dict[str, Any]] | None:
     """Project each layer's hidden state through the unembedding matrix.
 
-    Only works for language models with a detectable output head.
+    Analyses **all** token positions by default, producing the classic logit-lens
+    heatmap (layers x positions).  Pass ``position=N`` to analyse a single
+    token position (negative indices supported, e.g. ``position=-1`` for the
+    last token — matching the original behaviour).
+
+    Each entry in the returned list includes:
+
+    - ``layer_name``, ``top1_token``, ``top1_prob``, ``top5_tokens``, ``top5_probs``
+      for the *last* position (backward-compatible).
+    - ``positions``: a list of per-position dicts, each containing
+      ``pos``, ``top1_token``, ``top1_prob``, ``top5_tokens``, ``top5_probs``.
+
+    The return value also has a ``tokens`` key on each entry when all
+    positions are analysed, listing the input tokens.
     """
     from interpkit.core.render import render_lens
 
@@ -45,12 +64,10 @@ def run_lens(model: "Model", text: Any, *, save: str | None = None) -> list[dict
 
     text_input = model._prepare(text)
 
-    # Get the unembedding weight matrix (and optional bias)
     unembed_mod = _get_module(model._model, arch.unembedding_name)
-    unembed_weight = unembed_mod.weight  # shape: (vocab_size, hidden_size)
-    unembed_bias = getattr(unembed_mod, "bias", None)  # shape: (vocab_size,) or None
+    unembed_weight = unembed_mod.weight  # (vocab_size, hidden_size)
+    unembed_bias = getattr(unembed_mod, "bias", None)
 
-    # Capture hidden states at the output of each layer
     layer_outputs: dict[str, torch.Tensor] = {}
 
     def _make_hook(name: str):
@@ -80,9 +97,15 @@ def run_lens(model: "Model", text: Any, *, save: str | None = None) -> list[dict
         console.print("\n  [yellow]lens:[/yellow] no layer outputs captured.\n")
         return None
 
-    # Apply layer norm if the model has a final layer norm before the head
-    # (common pattern: ln_f, model.norm, etc.)
     final_norm = _find_final_norm(model._model, arch)
+
+    # Recover input tokens for labelling
+    input_tokens: list[str] | None = None
+    if isinstance(text, str) and model._tokenizer is not None:
+        encoded = model._tokenizer(text, return_tensors="pt")
+        input_tokens = model._tokenizer.convert_ids_to_tokens(
+            encoded["input_ids"][0].tolist()
+        )
 
     predictions: list[dict[str, Any]] = []
 
@@ -90,35 +113,60 @@ def run_lens(model: "Model", text: Any, *, save: str | None = None) -> list[dict
         if layer_name not in layer_outputs:
             continue
 
-        hidden = layer_outputs[layer_name].float()
+        hidden = layer_outputs[layer_name].float()  # (batch, seq, hidden) or (seq, hidden)
 
-        # Take the last token position
-        if hidden.dim() == 3:
-            hidden = hidden[:, -1, :]  # (batch, hidden)
-        elif hidden.dim() == 2:
-            hidden = hidden[-1:, :]
+        if hidden.dim() == 2:
+            hidden = hidden.unsqueeze(0)  # -> (1, seq, hidden)
 
-        # Apply final norm if found
+        seq_len = hidden.shape[1]
+
         if final_norm is not None:
             hidden = final_norm(hidden)
 
-        # Project through unembedding: logits = hidden @ W^T (+ bias)
-        logits = hidden @ unembed_weight.float().T  # (batch, vocab)
+        # Project all positions at once: (batch, seq, hidden) @ (hidden, vocab) -> (batch, seq, vocab)
+        logits = hidden @ unembed_weight.float().T
         if unembed_bias is not None:
             logits = logits + unembed_bias.float()
-        probs = torch.softmax(logits, dim=-1)
+        probs = torch.softmax(logits, dim=-1)  # (batch, seq, vocab)
 
-        top5_probs, top5_ids = probs[0].topk(5)
-        top5_tokens = [model._tokenizer.decode([tid]) for tid in top5_ids.tolist()]
-        top5_probs_list = top5_probs.tolist()
+        # Determine which positions to report
+        if position is not None:
+            pos_idx = position if position >= 0 else seq_len + position
+            pos_indices = [pos_idx]
+        else:
+            pos_indices = list(range(seq_len))
 
-        predictions.append({
+        per_position: list[dict[str, Any]] = []
+        for pos in pos_indices:
+            if pos < 0 or pos >= seq_len:
+                continue
+            top5_probs_t, top5_ids_t = probs[0, pos].topk(min(5, probs.shape[-1]))
+            top5_tokens = [model._tokenizer.decode([tid]) for tid in top5_ids_t.tolist()]
+            top5_probs_list = top5_probs_t.tolist()
+            per_position.append({
+                "pos": pos,
+                "top1_token": top5_tokens[0],
+                "top1_prob": top5_probs_list[0],
+                "top5_tokens": top5_tokens,
+                "top5_probs": top5_probs_list,
+            })
+
+        # Backward-compatible top-level fields use the last position
+        last_pos_data = per_position[-1] if per_position else {
+            "top1_token": "", "top1_prob": 0.0, "top5_tokens": [], "top5_probs": [],
+        }
+
+        entry: dict[str, Any] = {
             "layer_name": layer_name,
-            "top1_token": top5_tokens[0],
-            "top1_prob": top5_probs_list[0],
-            "top5_tokens": top5_tokens,
-            "top5_probs": top5_probs_list,
-        })
+            "top1_token": last_pos_data["top1_token"],
+            "top1_prob": last_pos_data["top1_prob"],
+            "top5_tokens": last_pos_data["top5_tokens"],
+            "top5_probs": last_pos_data["top5_probs"],
+            "positions": per_position,
+        }
+        if input_tokens is not None:
+            entry["tokens"] = input_tokens
+        predictions.append(entry)
 
     model_name = arch.arch_family or "model"
     render_lens(predictions, model_name)
@@ -126,7 +174,7 @@ def run_lens(model: "Model", text: Any, *, save: str | None = None) -> list[dict
     if save is not None:
         from interpkit.core.plot import plot_lens
 
-        plot_lens(predictions, save_path=save)
+        plot_lens(predictions, save_path=save, input_tokens=input_tokens)
 
     return predictions
 

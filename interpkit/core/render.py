@@ -123,6 +123,41 @@ def render_trace(
         console.print()
 
 
+def render_position_trace(result: dict[str, Any]) -> None:
+    """Print a summary table for position-aware causal tracing."""
+    effects = result["effects"]  # (num_layers, seq_len)
+    layer_names = result["layer_names"]
+    tokens = result.get("tokens")
+
+    console.print("\n[bold]Position-Aware Causal Trace[/bold]")
+
+    num_layers, seq_len = effects.shape
+
+    # Find top-5 (layer, position) pairs by effect
+    flat = effects.view(-1)
+    top_k = min(10, flat.numel())
+    top_vals, top_idxs = flat.topk(top_k)
+
+    table = Table(show_header=True, header_style="bold", show_lines=False)
+    table.add_column("Rank", justify="right", style="dim")
+    table.add_column("Layer", style="cyan")
+    table.add_column("Position", justify="right")
+    table.add_column("Token", style="yellow")
+    table.add_column("Effect", justify="right", style="bold")
+
+    for rank, (val, idx) in enumerate(zip(top_vals.tolist(), top_idxs.tolist()), 1):
+        li = idx // seq_len
+        pi = idx % seq_len
+        tok = tokens[pi] if tokens and pi < len(tokens) else str(pi)
+        table.add_row(str(rank), layer_names[li], str(pi), tok, f"{val:.3f}")
+
+    console.print(table)
+    console.print(
+        f"\n  Heatmap: {num_layers} layers x {seq_len} positions. "
+        f"Use save= to export the full (layer, position) heatmap.\n"
+    )
+
+
 # ------------------------------------------------------------------
 # Logit lens rendering
 # ------------------------------------------------------------------
@@ -468,6 +503,99 @@ def render_features(result: dict[str, Any]) -> None:
         table.add_row(str(rank), str(idx), f"{val:.4f}", f"[green]{bar}[/green]")
 
     console.print(table)
+    console.print()
+
+
+# ------------------------------------------------------------------
+# Direct Logit Attribution rendering
+# ------------------------------------------------------------------
+
+
+def render_decompose(result: dict[str, Any]) -> None:
+    """Print residual stream decomposition."""
+    components = result["components"]
+    position = result["position"]
+
+    console.print(f"\n[bold]Residual Stream Decomposition (position {position})[/bold]")
+
+    table = Table(show_header=True, header_style="bold", show_lines=False)
+    table.add_column("Component", style="cyan")
+    table.add_column("Type", style="dim")
+    table.add_column("Norm", justify="right")
+    table.add_column("", min_width=20)
+
+    max_norm = max((c["norm"] for c in components), default=1.0) or 1.0
+
+    for c in components:
+        bar_len = int(c["norm"] / max_norm * 15)
+        bar = f"[green]{'█' * bar_len}[/green]"
+        table.add_row(c["name"], c["type"], f"{c['norm']:.3f}", bar)
+
+    console.print(table)
+
+    if result.get("residual") is not None:
+        console.print(f"  Final residual norm: {result['residual'].norm().item():.3f}")
+    console.print()
+
+
+def render_dla(result: dict[str, Any], *, top_k: int = 10) -> None:
+    """Print DLA results — top contributors to the target logit."""
+    target = result["target_token"]
+    contributions = result["contributions"]
+    head_contribs = result.get("head_contributions", [])
+
+    console.print(f"\n[bold]Direct Logit Attribution → \"{target}\"[/bold]")
+    console.print(f"  Total component logit sum: {result['total_logit']:.3f}\n")
+
+    # Component-level table (attn + mlp per layer)
+    table = Table(show_header=True, header_style="bold", show_lines=False)
+    table.add_column("Component", style="cyan")
+    table.add_column("Type", style="dim")
+    table.add_column("Contribution", justify="right")
+    table.add_column("", min_width=20)
+
+    max_abs = max((abs(c["logit_contribution"]) for c in contributions), default=1.0) or 1.0
+
+    for c in contributions[:top_k]:
+        val = c["logit_contribution"]
+        bar_len = int(abs(val) / max_abs * 15)
+        if val >= 0:
+            bar = f"[green]{'█' * bar_len}[/green]"
+        else:
+            bar = f"[red]{'█' * bar_len}[/red]"
+        table.add_row(c["component"], c["type"], f"{val:+.4f}", bar)
+
+    if len(contributions) > top_k:
+        table.add_row("...", "", "", f"({len(contributions) - top_k} more)")
+
+    console.print(table)
+
+    # Per-head table
+    if head_contribs:
+        console.print(f"\n[bold]  Per-Head Breakdown (top {top_k})[/bold]")
+        htable = Table(show_header=True, header_style="bold", show_lines=False)
+        htable.add_column("Head", style="cyan")
+        htable.add_column("Contribution", justify="right")
+        htable.add_column("", min_width=20)
+
+        max_abs_h = max((abs(c["logit_contribution"]) for c in head_contribs), default=1.0) or 1.0
+        shown = head_contribs[:top_k] + head_contribs[-top_k:] if len(head_contribs) > 2 * top_k else head_contribs
+        seen = set()
+        for c in shown:
+            key = c["component"]
+            if key in seen:
+                continue
+            seen.add(key)
+            val = c["logit_contribution"]
+            bar_len = int(abs(val) / max_abs_h * 15)
+            if val >= 0:
+                bar = f"[green]{'█' * bar_len}[/green]"
+            else:
+                bar = f"[red]{'█' * bar_len}[/red]"
+            htable.add_row(key, f"{val:+.4f}", bar)
+
+        console.print(htable)
+
     console.print()
 
 

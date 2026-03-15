@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -191,41 +192,148 @@ def plot_trace(
         return _save_and_show(fig, save_path, "causal_trace.png")
 
 
+def plot_position_trace(
+    result: dict[str, Any],
+    save_path: str | None = None,
+) -> str:
+    """2D heatmap of position-aware causal tracing (Meng et al. style)."""
+    effects = result["effects"]  # tensor (num_layers, seq_len)
+    layer_names = result["layer_names"]
+    tokens = result.get("tokens")
+
+    if not isinstance(effects, torch.Tensor):
+        effects = torch.tensor(effects)
+
+    data = effects.numpy()
+    num_layers, seq_len = data.shape
+
+    cmap = mcolors.LinearSegmentedColormap.from_list(
+        "interpkit_trace", ["#1a1a2e", "#0f3460", "#e94560", "#ffdd57"]
+    )
+
+    with plt.rc_context(_INTERPKIT_RC):
+        fig_w = max(6, seq_len * 0.7)
+        fig_h = max(4, num_layers * 0.4)
+        fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+
+        im = ax.imshow(data, cmap=cmap, aspect="auto", vmin=0, vmax=max(1.0, data.max()))
+
+        ax.set_yticks(range(num_layers))
+        short_names = []
+        for ln in layer_names:
+            m = re.search(r"\.(\d+)$", ln)
+            short_names.append(f"L{m.group(1)}" if m else ln.split(".")[-1])
+        ax.set_yticklabels(short_names, fontsize=7)
+
+        if tokens and len(tokens) == seq_len:
+            xlabels = [t.replace("\u0120", " ") for t in tokens]
+        else:
+            xlabels = [str(i) for i in range(seq_len)]
+        ax.set_xticks(range(seq_len))
+        ax.set_xticklabels(xlabels, fontsize=7, rotation=45, ha="right")
+
+        ax.set_xlabel("Token position", fontsize=10)
+        ax.set_ylabel("Layer", fontsize=10)
+        ax.set_title("Causal Trace — (Layer, Position)", fontsize=11, fontweight="bold")
+
+        cbar = fig.colorbar(im, ax=ax, fraction=0.05, pad=0.04)
+        cbar.set_label("Recovery effect", fontsize=9)
+        cbar.ax.tick_params(labelsize=8)
+
+        fig.tight_layout()
+        return _save_and_show(fig, save_path, "position_trace.png")
+
+
 # ── Logit lens heatmap ───────────────────────────────────────────
 
 
 def plot_lens(
     predictions: list[dict[str, Any]],
     save_path: str | None = None,
+    input_tokens: list[str] | None = None,
 ) -> str:
-    """Heatmap: layers on y-axis, top-1 token confidence as color, token text annotated."""
+    """Logit lens heatmap.
+
+    When predictions contain per-position data (``positions`` key), renders the
+    classic 2D heatmap with layers on the y-axis and token positions on the
+    x-axis, coloured by top-1 probability.  Falls back to a 1D column when
+    only a single position is present per layer.
+    """
     if not predictions:
         return ""
 
+    has_multi_pos = (
+        "positions" in predictions[0]
+        and len(predictions[0]["positions"]) > 1
+    )
+
+    cmap = mcolors.LinearSegmentedColormap.from_list(
+        "interpkit_lens", ["#1a1a2e", "#0f3460", "#28a745", "#ffdd57"]
+    )
+
     with plt.rc_context(_INTERPKIT_RC):
         layers = [p["layer_name"] for p in predictions]
-        probs = [p["top1_prob"] for p in predictions]
-        token_labels = [p["top1_token"] for p in predictions]
 
-        fig, ax = plt.subplots(figsize=(6, max(3, len(layers) * 0.4)))
+        if has_multi_pos:
+            num_pos = len(predictions[0]["positions"])
+            data = np.zeros((len(layers), num_pos))
+            annotations = [[" "] * num_pos for _ in layers]
 
-        cmap = mcolors.LinearSegmentedColormap.from_list(
-            "interpkit_lens", ["#1a1a2e", "#0f3460", "#28a745", "#ffdd57"]
-        )
+            for i, pred in enumerate(predictions):
+                for pp in pred["positions"]:
+                    j = pp["pos"]
+                    if j < num_pos:
+                        data[i, j] = pp["top1_prob"]
+                        annotations[i][j] = pp["top1_token"]
 
-        data = np.array(probs).reshape(-1, 1)
-        im = ax.imshow(data, cmap=cmap, aspect=0.3, vmin=0, vmax=1)
+            fig_w = max(6, num_pos * 0.9)
+            fig_h = max(3, len(layers) * 0.45)
+            fig, ax = plt.subplots(figsize=(fig_w, fig_h))
 
-        ax.set_yticks(range(len(layers)))
-        ax.set_yticklabels(layers, fontsize=8)
-        ax.set_xticks([])
+            im = ax.imshow(data, cmap=cmap, aspect="auto", vmin=0, vmax=1)
 
-        for i, (tok, prob) in enumerate(zip(token_labels, probs)):
-            text_color = _PALETTE["bg"] if prob > 0.5 else _PALETTE["text"]
-            ax.text(0, i, f" {tok} ({prob:.2f})", ha="center", va="center",
-                    fontsize=8, fontweight="bold", color=text_color)
+            ax.set_yticks(range(len(layers)))
+            ax.set_yticklabels(layers, fontsize=7)
 
-        ax.set_title("Logit Lens — Top-1 per Layer", fontsize=11, fontweight="bold")
+            if input_tokens is not None and len(input_tokens) == num_pos:
+                xlabels = [t.replace("\u0120", " ") for t in input_tokens]
+            else:
+                xlabels = [str(i) for i in range(num_pos)]
+            ax.set_xticks(range(num_pos))
+            ax.set_xticklabels(xlabels, fontsize=7, rotation=45, ha="right")
+
+            if num_pos <= 20:
+                for i in range(len(layers)):
+                    for j in range(num_pos):
+                        prob = data[i, j]
+                        tok = annotations[i][j].strip()
+                        if tok:
+                            text_color = _PALETTE["bg"] if prob > 0.5 else _PALETTE["text"]
+                            ax.text(j, i, tok, ha="center", va="center",
+                                    fontsize=6, color=text_color)
+
+            ax.set_title("Logit Lens — Top-1 per (Layer, Position)", fontsize=11, fontweight="bold")
+            ax.set_xlabel("Token position", fontsize=9)
+
+        else:
+            probs = [p["top1_prob"] for p in predictions]
+            token_labels = [p["top1_token"] for p in predictions]
+
+            fig, ax = plt.subplots(figsize=(6, max(3, len(layers) * 0.4)))
+
+            data = np.array(probs).reshape(-1, 1)
+            im = ax.imshow(data, cmap=cmap, aspect=0.3, vmin=0, vmax=1)
+
+            ax.set_yticks(range(len(layers)))
+            ax.set_yticklabels(layers, fontsize=8)
+            ax.set_xticks([])
+
+            for i, (tok, prob) in enumerate(zip(token_labels, probs)):
+                text_color = _PALETTE["bg"] if prob > 0.5 else _PALETTE["text"]
+                ax.text(0, i, f" {tok} ({prob:.2f})", ha="center", va="center",
+                        fontsize=8, fontweight="bold", color=text_color)
+
+            ax.set_title("Logit Lens — Top-1 per Layer", fontsize=11, fontweight="bold")
 
         cbar = fig.colorbar(im, ax=ax, fraction=0.05, pad=0.04)
         cbar.set_label("Probability", fontsize=9)
@@ -354,3 +462,67 @@ def plot_attribution(
 
         fig.tight_layout()
         return _save_and_show(fig, save_path, "attribution.png")
+
+
+# ── Direct Logit Attribution ─────────────────────────────────────
+
+
+def plot_dla(
+    result: dict[str, Any],
+    top_k: int = 10,
+    save_path: str | None = None,
+) -> str:
+    """Horizontal bar chart of component contributions to the target logit."""
+    contributions = result["contributions"]
+    if not contributions:
+        return ""
+
+    shown = contributions[:top_k]
+
+    with plt.rc_context(_INTERPKIT_RC):
+        labels = [c["component"] for c in shown]
+        values = [c["logit_contribution"] for c in shown]
+
+        fig, ax = plt.subplots(figsize=(8, max(3, len(shown) * 0.35)))
+
+        colors = [_PALETTE["accent"] if v < 0 else "#28a745" for v in values]
+        y_pos = range(len(labels))
+        ax.barh(y_pos, values, color=colors, height=0.6)
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(labels, fontsize=8)
+        ax.invert_yaxis()
+        ax.set_xlabel("Logit contribution", fontsize=10)
+        ax.axvline(0, color=_PALETTE["muted"], linewidth=0.8)
+        target_tok = result.get("target_token", "?")
+        ax.set_title(
+            f"Direct Logit Attribution → \"{target_tok}\"",
+            fontsize=11, fontweight="bold",
+        )
+        ax.grid(axis="x", alpha=0.2)
+
+        # Head breakdown subplot if available
+        head_contribs = result.get("head_contributions", [])
+        if head_contribs:
+            head_shown = head_contribs[:top_k]
+            fig2, ax2 = plt.subplots(figsize=(8, max(3, len(head_shown) * 0.3)))
+            hlabels = [c["component"] for c in head_shown]
+            hvalues = [c["logit_contribution"] for c in head_shown]
+            hcolors = [_PALETTE["accent"] if v < 0 else "#28a745" for v in hvalues]
+            ax2.barh(range(len(hlabels)), hvalues, color=hcolors, height=0.6)
+            ax2.set_yticks(range(len(hlabels)))
+            ax2.set_yticklabels(hlabels, fontsize=7)
+            ax2.invert_yaxis()
+            ax2.set_xlabel("Logit contribution", fontsize=10)
+            ax2.axvline(0, color=_PALETTE["muted"], linewidth=0.8)
+            ax2.set_title("Per-Head Contributions", fontsize=11, fontweight="bold")
+            ax2.grid(axis="x", alpha=0.2)
+            fig2.tight_layout()
+            if save_path:
+                head_path = save_path.rsplit(".", 1)
+                head_save = f"{head_path[0]}_heads.{head_path[1]}" if len(head_path) == 2 else f"{save_path}_heads"
+                _save_and_show(fig2, head_save, "dla_heads.png")
+            else:
+                _save_and_show(fig2, None, "dla_heads.png")
+
+        fig.tight_layout()
+        return _save_and_show(fig, save_path, "dla.png")

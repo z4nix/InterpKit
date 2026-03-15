@@ -17,24 +17,27 @@ def run_attribute(
     target: int | None = None,
     save: str | None = None,
     html: str | None = None,
-) -> None:
+) -> dict[str, Any]:
     """Compute gradient-based saliency and render results.
 
-    For text inputs: shows coloured tokens by importance.
-    For image/tensor inputs: saves a heatmap to disk.
+    For text inputs: returns ``{"tokens", "scores", "target"}`` with per-token importance.
+    For image inputs: returns ``{"grad", "target"}`` with the pixel-gradient tensor.
+    For tensor inputs: returns ``{"labels", "scores", "target"}``.
     """
-    is_text = isinstance(input_data, str) and not _is_image_path(input_data)
-    is_image = isinstance(input_data, str) and _is_image_path(input_data)
+    from interpkit.core.inputs import _looks_like_image_path
+
+    is_text = isinstance(input_data, str) and not _looks_like_image_path(input_data)
+    is_image = isinstance(input_data, str) and _looks_like_image_path(input_data)
 
     if is_text:
-        _attribute_text(model, input_data, target=target, save=save, html=html)
+        return _attribute_text(model, input_data, target=target, save=save, html=html)
     elif is_image:
-        _attribute_image(model, input_data, target=target, save=save)
+        return _attribute_image(model, input_data, target=target, save=save)
     else:
-        _attribute_tensor(model, input_data, target=target)
+        return _attribute_tensor(model, input_data, target=target)
 
 
-def _attribute_text(model: "Model", text: str, *, target: int | None, save: str | None = None, html: str | None = None) -> None:
+def _attribute_text(model: "Model", text: str, *, target: int | None, save: str | None = None, html: str | None = None) -> dict[str, Any]:
     from interpkit.core.render import render_attribution_tokens
 
     if model._tokenizer is None:
@@ -43,7 +46,6 @@ def _attribute_text(model: "Model", text: str, *, target: int | None, save: str 
     encoded = model._tokenizer(text, return_tensors="pt")
     input_ids = encoded["input_ids"].to(model._device)
 
-    # Get embedding layer
     embed_layer = _find_embedding(model._model)
     if embed_layer is None:
         raise RuntimeError("Could not find embedding layer for gradient attribution.")
@@ -51,7 +53,6 @@ def _attribute_text(model: "Model", text: str, *, target: int | None, save: str 
     embeddings = embed_layer(input_ids)
     embeddings = embeddings.detach().requires_grad_(True)
 
-    # Replace embedding output with our gradient-tracked version
     original_forward = embed_layer.forward
 
     def _patched_forward(*args: Any, **kwargs: Any) -> torch.Tensor:
@@ -60,12 +61,9 @@ def _attribute_text(model: "Model", text: str, *, target: int | None, save: str 
     embed_layer.forward = _patched_forward  # type: ignore[assignment]
 
     try:
-        model_kwargs = {k: v.to(model._device) for k, v in encoded.items() if k != "input_ids"}
-        out = model._model(input_ids, **model_kwargs)
+        model_input = {k: v.to(model._device) for k, v in encoded.items()}
+        logits = model._forward_with_grad(model_input)
 
-        logits = out.logits if hasattr(out, "logits") else (out[0] if isinstance(out, (tuple, list)) else out)
-
-        # Pick target: last-position argmax if not specified
         if logits.dim() == 3:
             logits_last = logits[0, -1, :]
         else:
@@ -82,7 +80,6 @@ def _attribute_text(model: "Model", text: str, *, target: int | None, save: str 
     if embeddings.grad is None:
         raise RuntimeError("Gradient computation failed — no gradients on embeddings.")
 
-    # Per-token importance: L2 norm of gradient over the embedding dimension
     token_grads = embeddings.grad[0]  # (seq_len, hidden)
     token_scores = token_grads.norm(dim=-1).tolist()  # (seq_len,)
 
@@ -100,8 +97,10 @@ def _attribute_text(model: "Model", text: str, *, target: int | None, save: str 
 
         save_html(gen_html_attribution(tokens, token_scores), html)
 
+    return {"tokens": tokens, "scores": token_scores, "target": target}
 
-def _attribute_image(model: "Model", image_path: str, *, target: int | None, save: str | None = None) -> None:
+
+def _attribute_image(model: "Model", image_path: str, *, target: int | None, save: str | None = None) -> dict[str, Any]:
     from interpkit.core.inputs import _load_image
     from interpkit.core.render import render_attribution_heatmap
 
@@ -115,12 +114,11 @@ def _attribute_image(model: "Model", image_path: str, *, target: int | None, sav
         pixel_key = "pixel_values" if "pixel_values" in processed else list(processed.keys())[0]
         pixel_values = processed[pixel_key].requires_grad_(True)
         model_input = {**processed, pixel_key: pixel_values}
-        out = model._model(**model_input)
     else:
         pixel_values = processed.requires_grad_(True)
-        out = model._model(pixel_values)
+        model_input = pixel_values
 
-    logits = out.logits if hasattr(out, "logits") else (out[0] if isinstance(out, (tuple, list)) else out)
+    logits = model._forward_with_grad(model_input)
 
     if logits.dim() > 1:
         logits_flat = logits[0]
@@ -136,17 +134,19 @@ def _attribute_image(model: "Model", image_path: str, *, target: int | None, sav
     if pixel_values.grad is None:
         raise RuntimeError("Gradient computation failed — no gradients on pixel values.")
 
+    grad = pixel_values.grad[0].detach()
     out_path = save or "attribution_heatmap.png"
-    render_attribution_heatmap(pixel_values.grad[0], output_path=out_path)
+    render_attribution_heatmap(grad, output_path=out_path)
+
+    return {"grad": grad, "target": target}
 
 
-def _attribute_tensor(model: "Model", tensor_input: Any, *, target: int | None) -> None:
+def _attribute_tensor(model: "Model", tensor_input: Any, *, target: int | None) -> dict[str, Any]:
     from interpkit.core.render import render_attribution_tokens
 
     inp = model._prepare(tensor_input)
 
     if isinstance(inp, dict):
-        # Pick the first tensor-valued entry
         for k, v in inp.items():
             if isinstance(v, torch.Tensor) and v.is_floating_point():
                 inp[k] = v.requires_grad_(True)
@@ -154,13 +154,11 @@ def _attribute_tensor(model: "Model", tensor_input: Any, *, target: int | None) 
                 break
         else:
             raise ValueError("No floating-point tensor found in input dict.")
-        out = model._model(**inp)
     else:
         inp = inp.requires_grad_(True)
         grad_tensor = inp
-        out = model._model(inp)
 
-    logits = out.logits if hasattr(out, "logits") else (out[0] if isinstance(out, (tuple, list)) else out)
+    logits = model._forward_with_grad(inp)
 
     if logits.dim() == 3:
         logits_last = logits[0, -1, :]
@@ -178,7 +176,6 @@ def _attribute_tensor(model: "Model", tensor_input: Any, *, target: int | None) 
     if grad_tensor.grad is None:
         raise RuntimeError("Gradient computation failed.")
 
-    # Flatten to feature importance
     grad = grad_tensor.grad.detach().float()
     if grad.dim() > 1:
         feature_scores = grad.view(grad.shape[0], -1).norm(dim=0).tolist()
@@ -187,6 +184,8 @@ def _attribute_tensor(model: "Model", tensor_input: Any, *, target: int | None) 
 
     labels = [f"feat_{i}" for i in range(len(feature_scores))]
     render_attribution_tokens(labels, feature_scores)
+
+    return {"labels": labels, "scores": feature_scores, "target": target}
 
 
 def _find_embedding(model: torch.nn.Module) -> torch.nn.Module | None:
@@ -214,5 +213,7 @@ def _find_embedding(model: torch.nn.Module) -> torch.nn.Module | None:
 
 
 def _is_image_path(s: str) -> bool:
-    import os
-    return os.path.splitext(s)[1].lower() in {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
+    """Deprecated — use ``interpkit.core.inputs._looks_like_image_path``."""
+    from interpkit.core.inputs import _looks_like_image_path
+
+    return _looks_like_image_path(s)

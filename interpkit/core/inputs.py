@@ -37,10 +37,7 @@ def prepare_input(
 
         # .pt tensor file?
         if raw.endswith(".pt"):
-            tensor = torch.load(raw, map_location=device, weights_only=True)
-            if isinstance(tensor, torch.Tensor):
-                return tensor
-            return tensor  # could be a dict
+            return torch.load(raw, map_location=device, weights_only=True)
 
         # Text
         if tokenizer is None:

@@ -18,7 +18,7 @@ _ATTENTION_PATTERNS = re.compile(
     r"(^|\.)(self_attn|attn|attention|mha|multi_head_attention)(\.|\b)", re.IGNORECASE
 )
 _MLP_PATTERNS = re.compile(
-    r"(^|\.)(mlp|ffn|feed_forward|dense|fc_?\d*|intermediate)(\.|\b)", re.IGNORECASE
+    r"(^|\.)(mlp|ffn|feed_forward|fc_?\d*)(\.|\b)", re.IGNORECASE
 )
 _HEAD_PATTERNS = re.compile(
     r"(^|\.)(lm_head|head|classifier|output_projection|qa_outputs)(\.|\b)", re.IGNORECASE
