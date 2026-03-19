@@ -365,6 +365,329 @@ renderAttribution(0);
     return _wrap_page("Attribution", body, extra_js=js)
 
 
+def html_lens(predictions: list[dict[str, Any]], input_tokens: list[str] | None = None) -> str:
+    """Interactive logit lens heatmap — layer x position with hover predictions."""
+    if not predictions:
+        return _wrap_page("Logit Lens", "<h1>Logit Lens</h1><p>No data.</p>")
+
+    data_json = json.dumps(predictions, default=str)
+    tok_json = json.dumps([html.escape(t) for t in input_tokens] if input_tokens else [])
+
+    body = """
+<h1>Logit Lens</h1>
+<p class="subtitle">Each cell shows the model's top-1 prediction at that (layer, position).</p>
+<div class="controls panel">
+    <label>Color by: <select id="colorBy" onchange="renderLens()">
+        <option value="prob">Probability</option>
+        <option value="entropy">Entropy</option>
+    </select></label>
+</div>
+<div id="lensContainer" class="panel" style="overflow-x:auto"></div>
+"""
+
+    js = f"""
+const LENS_DATA = {data_json};
+const LENS_TOKENS = {tok_json};
+
+function renderLens() {{
+    const container = document.getElementById('lensContainer');
+    if (!LENS_DATA.length) {{ container.innerHTML = '<p>No data</p>'; return; }}
+
+    const layers = [...new Set(LENS_DATA.map(d => d.layer || 0))].sort((a,b) => a-b);
+    const positions = [...new Set(LENS_DATA.map(d => d.position || 0))].sort((a,b) => a-b);
+
+    const lookup = {{}};
+    for (const d of LENS_DATA) {{
+        lookup[(d.layer||0) + ',' + (d.position||0)] = d;
+    }}
+
+    let h = '<table><tr><th>Layer \\\\ Pos</th>';
+    for (const p of positions) {{
+        const tok = LENS_TOKENS[p] || p;
+        h += '<th style="font-size:10px;max-width:50px;overflow:hidden">' + tok + '</th>';
+    }}
+    h += '</tr>';
+
+    for (const l of layers) {{
+        h += '<tr><td style="font-weight:600">L' + l + '</td>';
+        for (const p of positions) {{
+            const d = lookup[l + ',' + p];
+            if (!d) {{ h += '<td>-</td>'; continue; }}
+            const pred = d.top_prediction || d.prediction || '-';
+            const prob = d.probability || d.prob || 0;
+            const intensity = Math.min(prob * 2, 1);
+            const r = Math.round(233 * intensity + 26 * (1-intensity));
+            const g = Math.round(69 * intensity + 33 * (1-intensity));
+            const b = Math.round(96 * intensity + 62 * (1-intensity));
+            const bg = 'rgb('+r+','+g+','+b+')';
+            const tip = 'L'+l+' pos'+p+': '+pred+' ('+prob.toFixed(3)+')';
+            h += '<td class="heatmap-cell" style="background:'+bg+';font-size:9px;color:white"' +
+                ' onmousemove="showTip(event,\\''+tip.replace(/'/g,"\\\\'")+'\\')" onmouseleave="hideTip()">' +
+                (pred.length > 6 ? pred.slice(0,5)+'…' : pred) + '</td>';
+        }}
+        h += '</tr>';
+    }}
+    h += '</table>';
+    container.innerHTML = h;
+}}
+renderLens();
+"""
+
+    return _wrap_page("Logit Lens", body, extra_js=js)
+
+
+def html_dla(result: dict[str, Any]) -> str:
+    """Interactive DLA bar chart — sortable, with head breakdown tabs."""
+    contributions = result.get("contributions", [])
+    if not contributions:
+        return _wrap_page("Direct Logit Attribution", "<h1>DLA</h1><p>No data.</p>")
+
+    target_token = result.get("target_token", "?")
+    total_logit = result.get("total_logit", 0)
+    note = result.get("approximation_note", "")
+
+    data_json = json.dumps([
+        {
+            "component": c.get("component", ""),
+            "layer": c.get("layer", 0),
+            "type": c.get("type", ""),
+            "logit": round(c.get("logit_contribution", 0), 4),
+        }
+        for c in contributions
+    ])
+
+    body = f"""
+<h1>Direct Logit Attribution</h1>
+<p class="subtitle">Target: <strong>{html.escape(str(target_token))}</strong> | Total logit (approx): {total_logit:.3f}</p>
+{"<p class='subtitle' style='font-size:0.8em'>" + html.escape(note) + "</p>" if note else ""}
+<div class="controls panel">
+    <label>Sort by:
+        <select id="sortBy" onchange="renderDLA()">
+            <option value="abs">|Contribution|</option>
+            <option value="pos">Positive first</option>
+            <option value="neg">Negative first</option>
+        </select>
+    </label>
+    <label style="margin-left:16px">Show:
+        <select id="filterType" onchange="renderDLA()">
+            <option value="all">All</option>
+            <option value="attn">Attention only</option>
+            <option value="mlp">MLP only</option>
+        </select>
+    </label>
+</div>
+<div id="dlaContainer" class="panel"></div>
+"""
+
+    js = f"""
+const DLA_DATA = {data_json};
+
+function renderDLA() {{
+    const sortBy = document.getElementById('sortBy').value;
+    const filterType = document.getElementById('filterType').value;
+    let data = [...DLA_DATA];
+    if (filterType !== 'all') data = data.filter(d => d.type === filterType);
+    if (sortBy === 'abs') data.sort((a,b) => Math.abs(b.logit) - Math.abs(a.logit));
+    else if (sortBy === 'pos') data.sort((a,b) => b.logit - a.logit);
+    else data.sort((a,b) => a.logit - b.logit);
+
+    const maxAbs = Math.max(...data.map(d => Math.abs(d.logit)), 0.001);
+    let h = '<table><tr><th>Component</th><th>Type</th><th style="width:50%">Contribution</th><th>Logit</th></tr>';
+    for (const d of data.slice(0, 50)) {{
+        const pct = (Math.abs(d.logit) / maxAbs * 100).toFixed(1);
+        const color = d.logit >= 0 ? '{_GREEN}' : '{_HIGHLIGHT}';
+        h += '<tr onmousemove="showTip(event, \\'' + d.component + ': ' + d.logit.toFixed(4) + '\\')" onmouseleave="hideTip()">' +
+            '<td style="font-family:monospace;font-size:0.85em">' + d.component + '</td>' +
+            '<td style="color:{_DIM_TEXT}">' + d.type + '</td>' +
+            '<td><div class="bar" style="width:' + pct + '%;background:' + color + '"></div></td>' +
+            '<td style="text-align:right;font-weight:600;color:' + color + '">' + d.logit.toFixed(4) + '</td></tr>';
+    }}
+    h += '</table>';
+    document.getElementById('dlaContainer').innerHTML = h;
+}}
+renderDLA();
+"""
+
+    return _wrap_page("Direct Logit Attribution", body, extra_js=js)
+
+
+def html_position_trace(result: dict[str, Any]) -> str:
+    """Interactive position-level causal trace heatmap (Meng et al. style)."""
+    effects = result.get("effects")
+    layer_names = result.get("layer_names", [])
+    tokens = result.get("tokens", [])
+
+    if effects is None:
+        return _wrap_page("Position Trace", "<h1>Position Trace</h1><p>No data.</p>")
+
+    import torch
+    if isinstance(effects, torch.Tensor):
+        effects_list = effects.detach().cpu().tolist()
+    else:
+        effects_list = effects
+
+    data_json = json.dumps(effects_list)
+    layers_json = json.dumps(layer_names)
+    tokens_json = json.dumps([html.escape(str(t)) for t in tokens] if tokens else [])
+
+    body = """
+<h1>Position-Level Causal Trace</h1>
+<p class="subtitle">Rows = layers, columns = token positions. Brighter = higher recovery effect.</p>
+<div id="ptContainer" class="panel" style="overflow-x:auto"></div>
+"""
+
+    js = f"""
+const PT_EFFECTS = {data_json};
+const PT_LAYERS = {layers_json};
+const PT_TOKENS = {tokens_json};
+
+(function() {{
+    const container = document.getElementById('ptContainer');
+    const nLayers = PT_EFFECTS.length;
+    if (!nLayers) {{ container.innerHTML = '<p>No data</p>'; return; }}
+    const nPos = PT_EFFECTS[0].length;
+
+    let maxVal = 0;
+    for (let i = 0; i < nLayers; i++)
+        for (let j = 0; j < nPos; j++)
+            if (PT_EFFECTS[i][j] > maxVal) maxVal = PT_EFFECTS[i][j];
+    if (maxVal < 0.001) maxVal = 1;
+
+    let h = '<table><tr><th></th>';
+    for (let j = 0; j < nPos; j++) {{
+        h += '<th style="font-size:9px;max-width:40px;overflow:hidden">' + (PT_TOKENS[j] || j) + '</th>';
+    }}
+    h += '</tr>';
+
+    for (let i = 0; i < nLayers; i++) {{
+        const lbl = PT_LAYERS[i] || ('L' + i);
+        h += '<tr><td style="font-size:10px;font-weight:600;white-space:nowrap">' + lbl + '</td>';
+        for (let j = 0; j < nPos; j++) {{
+            const v = PT_EFFECTS[i][j];
+            const intensity = v / maxVal;
+            const r = Math.round(233 * intensity + 26 * (1-intensity));
+            const g = Math.round(69 * intensity + 33 * (1-intensity));
+            const b = Math.round(96 * intensity + 62 * (1-intensity));
+            const tip = lbl + ', pos ' + j + ': ' + v.toFixed(4);
+            h += '<td class="heatmap-cell" style="background:rgb('+r+','+g+','+b+')"' +
+                ' onmousemove="showTip(event,\\''+tip+'\\')" onmouseleave="hideTip()"></td>';
+        }}
+        h += '</tr>';
+    }}
+    h += '</table>';
+    container.innerHTML = h;
+}})();
+"""
+
+    return _wrap_page("Position Trace", body, extra_js=js)
+
+
+def html_steer(
+    original: dict[str, Any],
+    steered: dict[str, Any],
+    module: str,
+    scale: float,
+) -> str:
+    """Side-by-side comparison of original vs steered top predictions."""
+    orig_preds = original.get("top_predictions", original.get("predictions", []))
+    steer_preds = steered.get("top_predictions", steered.get("predictions", []))
+
+    orig_json = json.dumps(orig_preds[:20], default=str)
+    steer_json = json.dumps(steer_preds[:20], default=str)
+
+    body = f"""
+<h1>Steering Comparison</h1>
+<p class="subtitle">Module: <strong>{html.escape(module)}</strong> | Scale: {scale}</p>
+<div style="display:flex;gap:16px;flex-wrap:wrap">
+    <div class="panel" style="flex:1;min-width:300px">
+        <h2>Original</h2>
+        <div id="origContainer"></div>
+    </div>
+    <div class="panel" style="flex:1;min-width:300px">
+        <h2>Steered</h2>
+        <div id="steerContainer"></div>
+    </div>
+</div>
+"""
+
+    js = f"""
+const ORIG = {orig_json};
+const STEERED = {steer_json};
+
+function renderPreds(data, containerId) {{
+    const c = document.getElementById(containerId);
+    if (!data.length) {{ c.innerHTML = '<p>No predictions</p>'; return; }}
+    const maxP = Math.max(...data.map(d => typeof d === 'object' ? (d.prob || d.probability || 0) : 0), 0.001);
+    let h = '<table><tr><th>Token</th><th style="width:60%">Probability</th><th>Value</th></tr>';
+    for (const d of data) {{
+        const token = typeof d === 'object' ? (d.token || d.word || '?') : String(d);
+        const prob = typeof d === 'object' ? (d.prob || d.probability || 0) : 0;
+        const pct = (prob / maxP * 100).toFixed(1);
+        h += '<tr><td style="font-weight:600">' + token + '</td>' +
+            '<td><div class="bar" style="width:'+pct+'%;background:{_GREEN}"></div></td>' +
+            '<td style="text-align:right">' + prob.toFixed(4) + '</td></tr>';
+    }}
+    h += '</table>';
+    c.innerHTML = h;
+}}
+renderPreds(ORIG, 'origContainer');
+renderPreds(STEERED, 'steerContainer');
+"""
+
+    return _wrap_page("Steering", body, extra_js=js)
+
+
+def html_diff(results: dict[str, Any], model_a: str, model_b: str) -> str:
+    """Per-module distance bars comparing two models' activations."""
+    distances = results.get("distances", results.get("module_distances", []))
+    if not distances:
+        return _wrap_page("Model Diff", "<h1>Diff</h1><p>No data.</p>")
+
+    data_json = json.dumps(distances, default=str)
+
+    body = f"""
+<h1>Model Diff</h1>
+<p class="subtitle">{html.escape(model_a)} vs {html.escape(model_b)}</p>
+<div class="controls panel">
+    <label>Sort:
+        <select id="diffSort" onchange="renderDiff()">
+            <option value="desc">Largest first</option>
+            <option value="asc">Smallest first</option>
+            <option value="name">By name</option>
+        </select>
+    </label>
+</div>
+<div id="diffContainer" class="panel"></div>
+"""
+
+    js = f"""
+const DIFF_DATA = {data_json};
+
+function renderDiff() {{
+    const sort = document.getElementById('diffSort').value;
+    let data = [...DIFF_DATA];
+    if (sort === 'desc') data.sort((a,b) => (b.distance||0) - (a.distance||0));
+    else if (sort === 'asc') data.sort((a,b) => (a.distance||0) - (b.distance||0));
+    else data.sort((a,b) => (a.module||'').localeCompare(b.module||''));
+
+    const maxD = Math.max(...data.map(d => d.distance || 0), 0.001);
+    let h = '<table><tr><th>Module</th><th style="width:50%">Distance</th><th>Value</th></tr>';
+    for (const d of data.slice(0, 50)) {{
+        const dist = d.distance || 0;
+        const pct = (dist / maxD * 100).toFixed(1);
+        h += '<tr><td style="font-family:monospace;font-size:0.85em">' + (d.module || '') + '</td>' +
+            '<td><div class="bar" style="width:' + pct + '%;background:linear-gradient(90deg,{_GREEN},{_HIGHLIGHT})"></div></td>' +
+            '<td style="text-align:right;font-weight:600">' + dist.toFixed(4) + '</td></tr>';
+    }}
+    h += '</table>';
+    document.getElementById('diffContainer').innerHTML = h;
+}}
+renderDiff();
+"""
+
+    return _wrap_page("Model Diff", body, extra_js=js)
+
+
 def save_html(content: str, path: str) -> None:
     """Write HTML content to a file and print confirmation."""
     from pathlib import Path

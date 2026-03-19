@@ -15,10 +15,21 @@ def run_attribute(
     input_data: Any,
     *,
     target: int | None = None,
+    method: str = "integrated_gradients",
+    n_steps: int = 50,
     save: str | None = None,
     html: str | None = None,
 ) -> dict[str, Any]:
-    """Compute gradient-based saliency and render results.
+    """Compute gradient-based attribution and render results.
+
+    Parameters
+    ----------
+    method:
+        ``"integrated_gradients"`` (default) — Sundararajan et al. 2017.
+        ``"gradient"`` — vanilla gradient saliency.
+        ``"gradient_x_input"`` — gradient times input embedding.
+    n_steps:
+        Interpolation steps for integrated gradients (default 50).
 
     For text inputs: returns ``{"tokens", "scores", "target"}`` with per-token importance.
     For image inputs: returns ``{"grad", "target"}`` with the pixel-gradient tensor.
@@ -30,14 +41,23 @@ def run_attribute(
     is_image = isinstance(input_data, str) and _looks_like_image_path(input_data)
 
     if is_text:
-        return _attribute_text(model, input_data, target=target, save=save, html=html)
+        return _attribute_text(model, input_data, target=target, method=method, n_steps=n_steps, save=save, html=html)
     elif is_image:
         return _attribute_image(model, input_data, target=target, save=save)
     else:
         return _attribute_tensor(model, input_data, target=target)
 
 
-def _attribute_text(model: "Model", text: str, *, target: int | None, save: str | None = None, html: str | None = None) -> dict[str, Any]:
+def _attribute_text(
+    model: "Model",
+    text: str,
+    *,
+    target: int | None,
+    method: str = "integrated_gradients",
+    n_steps: int = 50,
+    save: str | None = None,
+    html: str | None = None,
+) -> dict[str, Any]:
     from interpkit.core.render import render_attribution_tokens
 
     if model._tokenizer is None:
@@ -50,38 +70,97 @@ def _attribute_text(model: "Model", text: str, *, target: int | None, save: str 
     if embed_layer is None:
         raise RuntimeError("Could not find embedding layer for gradient attribution.")
 
-    embeddings = embed_layer(input_ids)
-    embeddings = embeddings.detach().requires_grad_(True)
-
+    base_embeddings = embed_layer(input_ids).detach()
     original_forward = embed_layer.forward
 
-    def _patched_forward(*args: Any, **kwargs: Any) -> torch.Tensor:
-        return embeddings
+    # Determine target class on a clean forward pass
+    if target is None:
+        with torch.no_grad():
+            model_input_clean = {k: v.to(model._device) for k, v in encoded.items()}
+            logits_clean = model._forward(model_input_clean)
+            if logits_clean.dim() == 3:
+                target = logits_clean[0, -1, :].argmax().item()
+            else:
+                target = logits_clean[0].argmax().item()
 
-    embed_layer.forward = _patched_forward  # type: ignore[assignment]
+    if method == "integrated_gradients":
+        # Sundararajan et al. 2017: integrate gradients along path from
+        # zero baseline to actual embeddings
+        accumulated_grads = torch.zeros_like(base_embeddings)
+        for step in range(n_steps):
+            alpha = (step + 0.5) / n_steps
+            interpolated = alpha * base_embeddings
+            interpolated = interpolated.requires_grad_(True)
 
-    try:
-        model_input = {k: v.to(model._device) for k, v in encoded.items()}
-        logits = model._forward_with_grad(model_input)
+            def _patched_forward_ig(*args: Any, **kwargs: Any) -> torch.Tensor:
+                return interpolated
 
-        if logits.dim() == 3:
-            logits_last = logits[0, -1, :]
-        else:
-            logits_last = logits[0]
+            embed_layer.forward = _patched_forward_ig  # type: ignore[assignment]
+            try:
+                model_input = {k: v.to(model._device) for k, v in encoded.items()}
+                logits = model._forward_with_grad(model_input)
+                if logits.dim() == 3:
+                    logits_last = logits[0, -1, :]
+                else:
+                    logits_last = logits[0]
 
-        if target is None:
-            target = logits_last.argmax().item()
+                score = logits_last[target]
+                score.backward()
+            finally:
+                embed_layer.forward = original_forward  # type: ignore[assignment]
 
-        score = logits_last[target]
-        score.backward()
-    finally:
-        embed_layer.forward = original_forward  # type: ignore[assignment]
+            if interpolated.grad is not None:
+                accumulated_grads += interpolated.grad.detach()
 
-    if embeddings.grad is None:
-        raise RuntimeError("Gradient computation failed — no gradients on embeddings.")
+        ig = (base_embeddings / n_steps) * accumulated_grads
+        token_scores = ig[0].norm(dim=-1).tolist()
 
-    token_grads = embeddings.grad[0]  # (seq_len, hidden)
-    token_scores = token_grads.norm(dim=-1).tolist()  # (seq_len,)
+    elif method == "gradient_x_input":
+        embeddings = base_embeddings.requires_grad_(True)
+
+        def _patched_forward_gxi(*args: Any, **kwargs: Any) -> torch.Tensor:
+            return embeddings
+
+        embed_layer.forward = _patched_forward_gxi  # type: ignore[assignment]
+        try:
+            model_input = {k: v.to(model._device) for k, v in encoded.items()}
+            logits = model._forward_with_grad(model_input)
+            if logits.dim() == 3:
+                logits_last = logits[0, -1, :]
+            else:
+                logits_last = logits[0]
+            score = logits_last[target]
+            score.backward()
+        finally:
+            embed_layer.forward = original_forward  # type: ignore[assignment]
+
+        if embeddings.grad is None:
+            raise RuntimeError("Gradient computation failed — no gradients on embeddings.")
+        gxi = embeddings.grad[0] * base_embeddings[0]
+        token_scores = gxi.norm(dim=-1).tolist()
+
+    else:  # "gradient" — vanilla saliency
+        embeddings = base_embeddings.requires_grad_(True)
+
+        def _patched_forward_grad(*args: Any, **kwargs: Any) -> torch.Tensor:
+            return embeddings
+
+        embed_layer.forward = _patched_forward_grad  # type: ignore[assignment]
+        try:
+            model_input = {k: v.to(model._device) for k, v in encoded.items()}
+            logits = model._forward_with_grad(model_input)
+            if logits.dim() == 3:
+                logits_last = logits[0, -1, :]
+            else:
+                logits_last = logits[0]
+            score = logits_last[target]
+            score.backward()
+        finally:
+            embed_layer.forward = original_forward  # type: ignore[assignment]
+
+        if embeddings.grad is None:
+            raise RuntimeError("Gradient computation failed — no gradients on embeddings.")
+        token_scores = embeddings.grad[0].norm(dim=-1).tolist()
 
     tokens = model._tokenizer.convert_ids_to_tokens(input_ids[0].tolist())
     render_attribution_tokens(tokens, token_scores)
@@ -97,7 +176,7 @@ def _attribute_text(model: "Model", text: str, *, target: int | None, save: str 
 
         save_html(gen_html_attribution(tokens, token_scores), html)
 
-    return {"tokens": tokens, "scores": token_scores, "target": target}
+    return {"tokens": tokens, "scores": token_scores, "target": target, "method": method}
 
 
 def _attribute_image(model: "Model", image_path: str, *, target: int | None, save: str | None = None) -> dict[str, Any]:

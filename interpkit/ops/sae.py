@@ -110,9 +110,18 @@ def run_features(
     at: str,
     sae: SAE,
     top_k: int = 20,
+    attribute: bool = False,
     print_results: bool = True,
 ) -> dict[str, Any]:
     """Decompose activations at *at* through the SAE and return top features.
+
+    Parameters
+    ----------
+    attribute:
+        When ``True``, compute each feature's logit contribution by
+        projecting ``feature_activation * W_dec_row`` through the model's
+        unembedding matrix toward the predicted token.  Adds
+        ``feature_attributions`` to the result dict.
 
     Returns a dict with ``top_features``, ``reconstruction_error``, ``sparsity``.
     """
@@ -122,7 +131,6 @@ def run_features(
     if not isinstance(act, torch.Tensor):
         raise TypeError(f"Expected tensor from activations, got {type(act).__name__}")
 
-    # Flatten to 2D: (batch * seq, d_model)
     if act.dim() == 1:
         flat = act.unsqueeze(0).float()
     else:
@@ -136,13 +144,9 @@ def run_features(
 
     features, x_hat = sae.forward(flat)
 
-    # Reconstruction error (mean L2 across positions)
     recon_error = (flat - x_hat).norm(dim=-1).mean().item()
-
-    # Sparsity: fraction of features that are zero
     sparsity = (features == 0).float().mean().item()
 
-    # Top-K features by mean activation (across all positions)
     mean_activations = features.mean(dim=0)
     topk_vals, topk_idxs = mean_activations.topk(min(top_k, sae.d_sae))
 
@@ -151,7 +155,7 @@ def run_features(
         for idx, val in zip(topk_idxs, topk_vals)
     ]
 
-    result = {
+    result: dict[str, Any] = {
         "module": at,
         "top_features": top_features,
         "reconstruction_error": recon_error,
@@ -161,12 +165,86 @@ def run_features(
         "feature_activations": features.detach(),
     }
 
+    if attribute:
+        result["feature_attributions"] = _compute_feature_attribution(
+            model, sae, features, topk_idxs,
+        )
+
     if print_results:
         from interpkit.core.render import render_features
 
         render_features(result)
 
     return result
+
+
+def _compute_feature_attribution(
+    model: "Model",
+    sae: SAE,
+    features: torch.Tensor,
+    topk_idxs: torch.Tensor,
+) -> list[dict[str, Any]]:
+    """Project each top feature through the decoder → unembedding to get logit contributions."""
+    arch = model.arch_info
+    if not arch.unembedding_name:
+        return []
+
+    from interpkit.ops.patch import _get_module
+
+    unembed_mod = _get_module(model._model, arch.unembedding_name)
+    w_unembed = None
+    for name, param in unembed_mod.named_parameters():
+        if "weight" in name:
+            w_unembed = param.data.float()
+            break
+
+    if w_unembed is None:
+        return []
+
+    # w_unembed: (vocab_size, d_model) for nn.Linear, transposed for Conv1D
+    if type(unembed_mod).__name__ == "Conv1D":
+        w_unembed = w_unembed.T  # -> (vocab_size, d_model)
+
+    last_pos_feats = features[-1]  # (d_sae,)
+
+    attributions = []
+    tokenizer = model._tokenizer
+
+    for feat_idx in topk_idxs.tolist():
+        feat_act = last_pos_feats[feat_idx].item()
+        if feat_act == 0:
+            attributions.append({
+                "feature_idx": feat_idx,
+                "activation": 0.0,
+                "top_logit_contributions": [],
+            })
+            continue
+
+        # feature contribution to residual stream: feat_act * W_dec[feat_idx]
+        dec_row = sae.W_dec[feat_idx].float()  # (d_model,)
+        logit_contribution = feat_act * (w_unembed @ dec_row)  # (vocab_size,)
+
+        top_vals, top_ids = logit_contribution.topk(5)
+        bot_vals, bot_ids = logit_contribution.topk(5, largest=False)
+
+        top_contribs = []
+        for tok_id, val in zip(top_ids.tolist(), top_vals.tolist()):
+            tok_str = tokenizer.decode([tok_id]) if tokenizer else str(tok_id)
+            top_contribs.append({"token": tok_str, "token_id": tok_id, "logit": val})
+
+        bot_contribs = []
+        for tok_id, val in zip(bot_ids.tolist(), bot_vals.tolist()):
+            tok_str = tokenizer.decode([tok_id]) if tokenizer else str(tok_id)
+            bot_contribs.append({"token": tok_str, "token_id": tok_id, "logit": val})
+
+        attributions.append({
+            "feature_idx": feat_idx,
+            "activation": feat_act,
+            "top_logit_contributions": top_contribs,
+            "bottom_logit_contributions": bot_contribs,
+        })
+
+    return attributions
 
 
 def _download_weights(hf_id: str) -> dict[str, torch.Tensor]:

@@ -34,4 +34,4 @@ def test_trace_gpt2_results_have_fields(gpt2_model):
     for r in results:
         assert "module" in r
         assert "effect" in r
-        assert 0.0 <= r["effect"] <= 1.0
+        assert isinstance(r["effect"], float)

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import torch
+import torch.nn.functional as F
 
 if TYPE_CHECKING:
     from interpkit.core.model import Model
@@ -26,6 +27,7 @@ def run_patch(
     at: str,
     head: int | None = None,
     positions: list[int] | None = None,
+    metric: str = "logit_diff",
 ) -> dict[str, Any]:
     """Patch the output of module *at* from the clean run into the corrupted run.
 
@@ -38,9 +40,12 @@ def run_patch(
     positions:
         If specified, patch only these token positions.  Can be combined
         with *head* for fine-grained patching.
+    metric:
+        Effect metric: ``"logit_diff"`` (default), ``"kl_div"``,
+        ``"target_prob"``, or ``"l2_prob"`` (legacy).
 
-    Returns a dict with ``effect`` — a normalised scalar in [0, 1] measuring how
-    much the patched corrupted run's output shifted toward the clean output.
+    Returns a dict with ``effect`` measuring how much the patched corrupted
+    run's output shifted toward the clean output.
     """
     from interpkit.core.render import render_patch
 
@@ -160,7 +165,7 @@ def run_patch(
         patched_logits = model._forward(corrupted_input)
         handle.remove()
 
-    effect = _compute_effect(clean_logits, corrupted_logits, patched_logits)
+    effect = _compute_effect(clean_logits, corrupted_logits, patched_logits, metric=metric)
 
     result = {
         "module": at,
@@ -182,30 +187,71 @@ def _compute_effect(
     clean: torch.Tensor,
     corrupted: torch.Tensor,
     patched: torch.Tensor,
+    *,
+    metric: str = "logit_diff",
 ) -> float:
     """Normalised patching effect: 0 = patched == corrupted, 1 = patched == clean.
 
-    Uses L2 distance between probability distributions as the distance metric.
+    Parameters
+    ----------
+    metric:
+        ``"logit_diff"`` — Logit difference of the top clean token,
+            normalised by the clean-vs-corrupted gap.  Standard in
+            circuit analysis (Wang et al. 2022).
+        ``"kl_div"`` — KL(clean || patched) normalised by
+            KL(clean || corrupted).  Captures full distributional shift.
+        ``"target_prob"`` — Probability of the top clean token in the
+            patched run (not normalised, raw probability).
+        ``"l2_prob"`` — Legacy metric: L2 distance between probability
+            vectors, normalised.
     """
     clean_flat = clean.view(-1, clean.shape[-1]).float()
     corrupted_flat = corrupted.view(-1, corrupted.shape[-1]).float()
     patched_flat = patched.view(-1, patched.shape[-1]).float()
 
-    # Take last position for sequence models
     if clean_flat.shape[0] > 1:
         clean_flat = clean_flat[-1:]
         corrupted_flat = corrupted_flat[-1:]
         patched_flat = patched_flat[-1:]
 
-    clean_probs = torch.softmax(clean_flat, dim=-1)
-    corrupted_probs = torch.softmax(corrupted_flat, dim=-1)
-    patched_probs = torch.softmax(patched_flat, dim=-1)
+    if metric == "logit_diff":
+        target_idx = clean_flat[0].argmax().item()
+        clean_logit = clean_flat[0, target_idx].item()
+        corrupted_logit = corrupted_flat[0, target_idx].item()
+        patched_logit = patched_flat[0, target_idx].item()
+        denom = clean_logit - corrupted_logit
+        if abs(denom) < 1e-8:
+            return 0.0
+        return (patched_logit - corrupted_logit) / denom
 
-    dist_corrupted_clean = torch.norm(corrupted_probs - clean_probs).item()
-    dist_patched_clean = torch.norm(patched_probs - clean_probs).item()
+    elif metric == "kl_div":
+        clean_lp = F.log_softmax(clean_flat, dim=-1)
+        corrupted_lp = F.log_softmax(corrupted_flat, dim=-1)
+        patched_lp = F.log_softmax(patched_flat, dim=-1)
+        clean_probs = clean_lp.exp()
+        kl_corrupted = F.kl_div(corrupted_lp, clean_probs, reduction="batchmean").item()
+        kl_patched = F.kl_div(patched_lp, clean_probs, reduction="batchmean").item()
+        if kl_corrupted < 1e-10:
+            return 0.0
+        return 1.0 - (kl_patched / kl_corrupted)
 
-    if dist_corrupted_clean < 1e-8:
-        return 0.0
+    elif metric == "target_prob":
+        target_idx = clean_flat[0].argmax().item()
+        patched_probs = torch.softmax(patched_flat, dim=-1)
+        return patched_probs[0, target_idx].item()
 
-    effect = 1.0 - (dist_patched_clean / dist_corrupted_clean)
-    return max(0.0, min(1.0, effect))
+    elif metric == "l2_prob":
+        clean_probs = torch.softmax(clean_flat, dim=-1)
+        corrupted_probs = torch.softmax(corrupted_flat, dim=-1)
+        patched_probs = torch.softmax(patched_flat, dim=-1)
+        dist_corrupted_clean = torch.norm(corrupted_probs - clean_probs).item()
+        dist_patched_clean = torch.norm(patched_probs - clean_probs).item()
+        if dist_corrupted_clean < 1e-8:
+            return 0.0
+        return 1.0 - (dist_patched_clean / dist_corrupted_clean)
+
+    else:
+        raise ValueError(
+            f"Unknown metric {metric!r}. "
+            f"Use 'logit_diff', 'kl_div', 'target_prob', or 'l2_prob'."
+        )

@@ -42,8 +42,15 @@ _INTERPKIT_RC = {
 
 
 def _save_and_show(fig: plt.Figure, path: str | None, default_name: str) -> str:
+    """Save figure to *path* (or *default_name*).
+
+    Supports ``.png``, ``.svg``, and ``.pdf`` output — the format is
+    detected from the file extension.
+    """
     out = path or default_name
-    fig.savefig(out, bbox_inches="tight", dpi=150, facecolor=fig.get_facecolor())
+    ext = out.rsplit(".", 1)[-1].lower() if "." in out else "png"
+    dpi = 300 if ext in ("svg", "pdf") else 150
+    fig.savefig(out, bbox_inches="tight", dpi=dpi, facecolor=fig.get_facecolor())
     plt.close(fig)
     console.print(f"  Saved to [bold]{out}[/bold]")
     return out

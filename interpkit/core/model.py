@@ -229,17 +229,23 @@ class Model:
         *,
         layer: int | None = None,
         head: int | None = None,
+        causal: bool | None = None,
         save: str | None = None,
         html: str | None = None,
     ) -> list[dict[str, Any]] | None:
         """Show attention patterns. Returns None for non-transformer models.
+
+        Parameters
+        ----------
+        causal:
+            Apply causal mask.  Auto-detected from config if *None*.
 
         Pass ``save="path.png"`` to export a matplotlib heatmap.
         Pass ``html="path.html"`` to export an interactive HTML page.
         """
         from interpkit.ops.attention import run_attention
 
-        return run_attention(self, input_data, layer=layer, head=head, save=save, html=html)
+        return run_attention(self, input_data, layer=layer, head=head, causal=causal, save=save, html=html)
 
     def ablate(
         self,
@@ -247,14 +253,24 @@ class Model:
         *,
         at: str,
         method: str = "zero",
+        reference: str | torch.Tensor | Any | None = None,
     ) -> dict[str, Any]:
-        """Ablate a module (zero or mean) and measure effect on output.
+        """Ablate a module and measure effect on output.
+
+        Parameters
+        ----------
+        method:
+            ``"zero"``, ``"mean"``, or ``"resample"`` (replace with
+            activations from *reference*).
+        reference:
+            Input whose activations replace the target module's output
+            when ``method="resample"``.
 
         Returns a dict with ``effect`` (0 = no change, 1 = max change).
         """
         from interpkit.ops.ablate import run_ablate
 
-        return run_ablate(self, input_data, at=at, method=method)
+        return run_ablate(self, input_data, at=at, method=method, reference=reference)
 
     def patch(
         self,
@@ -264,6 +280,7 @@ class Model:
         at: str,
         head: int | None = None,
         positions: list[int] | None = None,
+        metric: str = "logit_diff",
     ) -> dict[str, Any]:
         """Activation patching: swap a module's output from clean into corrupted.
 
@@ -274,13 +291,16 @@ class Model:
             a detectable output projection).
         positions:
             Patch only these token positions.
+        metric:
+            Effect metric: ``"logit_diff"`` (default), ``"kl_div"``,
+            ``"target_prob"``, or ``"l2_prob"``.
 
         Returns a dict with ``clean_logits``, ``corrupted_logits``, ``patched_logits``,
-        and ``effect`` (normalised scalar measuring how much the patch restored clean behaviour).
+        and ``effect``.
         """
         from interpkit.ops.patch import run_patch
 
-        return run_patch(self, clean, corrupted, at=at, head=head, positions=positions)
+        return run_patch(self, clean, corrupted, at=at, head=head, positions=positions, metric=metric)
 
     def trace(
         self,
@@ -289,6 +309,7 @@ class Model:
         *,
         top_k: int | None = 20,
         mode: str = "module",
+        metric: str = "logit_diff",
         save: str | None = None,
         html: str | None = None,
     ) -> list[dict[str, Any]] | dict[str, Any]:
@@ -299,19 +320,23 @@ class Model:
         mode:
             ``"module"`` (default) — two-phase module-level tracing.
             ``"position"`` — Meng et al. style (layer x position) heatmap.
+        metric:
+            Effect metric: ``"logit_diff"`` (default), ``"kl_div"``,
+            ``"target_prob"``, or ``"l2_prob"``.
 
         Pass ``save="path.png"`` to export a matplotlib figure.
         Pass ``html="path.html"`` to export an interactive HTML page.
         """
         from interpkit.ops.trace import run_trace
 
-        return run_trace(self, clean, corrupted, top_k=top_k, mode=mode, save=save, html=html)
+        return run_trace(self, clean, corrupted, top_k=top_k, mode=mode, metric=metric, save=save, html=html)
 
     def lens(
         self,
         text: str | torch.Tensor | Any,
         *,
         save: str | None = None,
+        html: str | None = None,
         position: int | None = None,
     ) -> list[dict[str, Any]] | None:
         """Logit lens: project each layer's output to vocabulary space.
@@ -322,10 +347,11 @@ class Model:
         position.
 
         Pass ``save="path.png"`` to export a matplotlib heatmap.
+        Pass ``html="path.html"`` to export an interactive HTML page.
         """
         from interpkit.ops.lens import run_lens
 
-        return run_lens(self, text, save=save, position=position)
+        return run_lens(self, text, save=save, html=html, position=position)
 
     def probe(
         self,
@@ -351,6 +377,7 @@ class Model:
         at: str,
         sae: str | Any,
         top_k: int = 20,
+        attribute: bool = False,
     ) -> dict[str, Any]:
         """Decompose activations at *at* through a Sparse Autoencoder.
 
@@ -359,6 +386,9 @@ class Model:
         sae:
             Either a HuggingFace repo ID (``"jbloom/GPT2-Small-SAEs-Reformatted"``)
             or a pre-loaded :class:`interpkit.ops.sae.SAE` object.
+        attribute:
+            When ``True``, compute each top feature's logit contribution
+            through the decoder → unembedding path.
         """
         from interpkit.ops.sae import SAE as SAEClass
         from interpkit.ops.sae import load_sae, run_features
@@ -368,17 +398,27 @@ class Model:
         elif not isinstance(sae, SAEClass):
             raise TypeError(f"Expected SAE or HF repo ID string, got {type(sae).__name__}")
 
-        return run_features(self, input_data, at=at, sae=sae, top_k=top_k)
+        return run_features(self, input_data, at=at, sae=sae, top_k=top_k, attribute=attribute)
 
     def attribute(
         self,
         input_data: str | torch.Tensor | Any,
         *,
         target: int | None = None,
+        method: str = "integrated_gradients",
+        n_steps: int = 50,
         save: str | None = None,
         html: str | None = None,
     ) -> dict[str, Any]:
-        """Gradient saliency over the input.
+        """Gradient-based attribution over the input.
+
+        Parameters
+        ----------
+        method:
+            ``"integrated_gradients"`` (default), ``"gradient"``, or
+            ``"gradient_x_input"``.
+        n_steps:
+            Interpolation steps for integrated gradients (default 50).
 
         For NLP: returns ``{"tokens", "scores", "target"}`` with per-token importance.
         For vision: returns ``{"grad", "target"}`` with the pixel-gradient tensor.
@@ -387,7 +427,7 @@ class Model:
         """
         from interpkit.ops.attribute import run_attribute
 
-        return run_attribute(self, input_data, target=target, save=save, html=html)
+        return run_attribute(self, input_data, target=target, method=method, n_steps=n_steps, save=save, html=html)
 
     def dla(
         self,
@@ -397,6 +437,7 @@ class Model:
         position: int = -1,
         top_k: int = 10,
         save: str | None = None,
+        html: str | None = None,
     ) -> dict[str, Any]:
         """Direct Logit Attribution: decompose the output logit by component.
 
@@ -412,7 +453,7 @@ class Model:
 
         return run_dla(
             self, input_data, token=token, position=position,
-            top_k=top_k, save=save,
+            top_k=top_k, save=save, html=html,
         )
 
     # ------------------------------------------------------------------
@@ -563,12 +604,23 @@ class Model:
         corrupted: str | torch.Tensor | Any,
         *,
         threshold: float = 0.01,
+        method: str = "mean",
+        metric: str = "logit_diff",
     ) -> dict[str, Any]:
         """Discover the minimal circuit that explains a behaviour.
 
         Identifies which attention heads and MLPs are necessary by
         individually ablating each component and keeping those whose
         ablation changes the output by more than *threshold*.
+
+        Parameters
+        ----------
+        method:
+            Ablation method: ``"mean"`` (default), ``"zero"``, or
+            ``"resample"`` (uses corrupted activations).
+        metric:
+            Effect metric: ``"logit_diff"`` (default), ``"kl_div"``,
+            ``"target_prob"``, or ``"l2_prob"``.
 
         Returns a dict with ``circuit`` (list of important components),
         ``excluded``, ``verification`` (faithfulness check), and
@@ -577,8 +629,24 @@ class Model:
         from interpkit.ops.find_circuit import run_find_circuit
 
         return run_find_circuit(
-            self, clean, corrupted, threshold=threshold,
+            self, clean, corrupted, threshold=threshold, method=method, metric=metric,
         )
+
+
+    def report(
+        self,
+        input_data: str | torch.Tensor | Any,
+        *,
+        save: str = "report.html",
+    ) -> dict[str, Any]:
+        """Generate a comprehensive HTML report: prediction, DLA, logit lens,
+        attention, and attribution combined in a single interactive document.
+
+        Returns a dict with section results and ``html_path``.
+        """
+        from interpkit.ops.report import run_report
+
+        return run_report(self, input_data, save=save)
 
 
 # ======================================================================
@@ -592,6 +660,8 @@ def load(
     tokenizer: Any | None = None,
     image_processor: Any | None = None,
     device: str | torch.device | None = None,
+    dtype: str | torch.dtype | None = None,
+    device_map: str | dict | None = None,
 ) -> Model:
     """Load a model for mechanistic interpretability.
 
@@ -606,15 +676,45 @@ def load(
         An explicit image processor. Auto-loaded for HF vision models if not provided.
     device:
         Device to run on. Defaults to CUDA if available, else CPU.
+        Ignored when *device_map* is set (HF handles placement).
+    dtype:
+        Model dtype: ``"float16"``, ``"bfloat16"``, ``"float32"``,
+        ``"auto"``, or a ``torch.dtype``.  Maps to ``torch_dtype`` in
+        HuggingFace ``from_pretrained``.
+    device_map:
+        HuggingFace ``device_map`` for multi-GPU / offload placement
+        (e.g. ``"auto"``).  Requires the ``accelerate`` package.
     """
-    if device is None:
+    # Resolve dtype string shortcuts
+    _dtype_map = {
+        "float16": torch.float16,
+        "fp16": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "bf16": torch.bfloat16,
+        "float32": torch.float32,
+        "fp32": torch.float32,
+        "auto": "auto",
+    }
+    torch_dtype: torch.dtype | str | None = None
+    if dtype is not None:
+        if isinstance(dtype, str):
+            torch_dtype = _dtype_map.get(dtype, dtype)
+        else:
+            torch_dtype = dtype
+
+    if device is None and device_map is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
     is_tl = False
 
     if isinstance(model_or_name, str):
         model, tokenizer, image_processor = _load_from_hf(
-            model_or_name, tokenizer=tokenizer, image_processor=image_processor, device=device
+            model_or_name,
+            tokenizer=tokenizer,
+            image_processor=image_processor,
+            device=device,
+            torch_dtype=torch_dtype,
+            device_map=device_map,
         )
     else:
         model = model_or_name
@@ -629,9 +729,13 @@ def load(
                     if hasattr(tokenizer, "pad_token") and tokenizer.pad_token is None:
                         tokenizer.pad_token = tokenizer.eos_token
 
-        model.to(device)
+        if device_map is None and device is not None:
+            model.to(device)
 
     model.eval()
+
+    if device is None and device_map is not None:
+        device = next(model.parameters()).device
     registration = get_registration(model)
 
     # Build a dummy input for shape enumeration
@@ -672,11 +776,18 @@ def _load_from_hf(
     *,
     tokenizer: Any | None,
     image_processor: Any | None,
-    device: str | torch.device,
+    device: str | torch.device | None,
+    torch_dtype: torch.dtype | str | None = None,
+    device_map: str | dict | None = None,
 ) -> tuple[nn.Module, Any | None, Any | None]:
     from transformers import AutoModel, AutoTokenizer
 
-    # Try loading as a causal/seq2seq/masked LM first, then fall back to AutoModel
+    extra_kwargs: dict[str, Any] = {}
+    if torch_dtype is not None:
+        extra_kwargs["torch_dtype"] = torch_dtype
+    if device_map is not None:
+        extra_kwargs["device_map"] = device_map
+
     model = None
     for auto_cls_name in (
         "AutoModelForCausalLM",
@@ -692,15 +803,16 @@ def _load_from_hf(
             import transformers
 
             auto_cls = getattr(transformers, auto_cls_name)
-            model = auto_cls.from_pretrained(name, config=config)
+            model = auto_cls.from_pretrained(name, config=config, **extra_kwargs)
             break
         except (ValueError, OSError, KeyError):
             continue
 
     if model is None:
-        model = AutoModel.from_pretrained(name)
+        model = AutoModel.from_pretrained(name, **extra_kwargs)
 
-    model = model.to(device)
+    if device_map is None and device is not None:
+        model = model.to(device)
 
     if tokenizer is None:
         try:

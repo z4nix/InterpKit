@@ -22,12 +22,23 @@ def run_dla(
     position: int = -1,
     top_k: int = 10,
     save: str | None = None,
+    html: str | None = None,
 ) -> dict[str, Any]:
     """Direct Logit Attribution: decompose output logits by component.
 
     For each layer, measures how much the attention heads and MLP contribute
     to the logit of a target token by projecting their outputs through the
     unembedding matrix.
+
+    **Note on the LayerNorm approximation:** The true model logit is
+    ``W_U @ LayerNorm(residual)``.  Because LayerNorm is nonlinear, the
+    contribution of each component cannot be decomposed exactly through
+    it.  This implementation projects each component's raw output directly
+    through W_U, bypassing LayerNorm.  As a result, ``total_logit`` (the
+    sum of all component contributions) will *not* exactly equal the
+    model's actual logit for the target token.  Component *rankings* are
+    still meaningful — this is the same approximation used by
+    TransformerLens and other standard DLA implementations.
 
     Parameters
     ----------
@@ -46,7 +57,8 @@ def run_dla(
     dict with:
         ``target_token`` (str), ``target_id`` (int),
         ``contributions`` (list of ``{"component", "layer", "type", "logit_contribution"}``),
-        ``total_logit`` (float).
+        ``total_logit`` (float),
+        ``approximation_note`` (str) — explains the LayerNorm caveat.
     """
     from interpkit.core.render import render_dla
 
@@ -244,6 +256,12 @@ def run_dla(
         "contributions": contributions,
         "head_contributions": head_contributions,
         "total_logit": total_logit,
+        "approximation_note": (
+            "total_logit is the sum of per-component contributions projected "
+            "through the unembedding matrix, bypassing the final LayerNorm. "
+            "Because LayerNorm is nonlinear, this sum will not exactly match "
+            "the model's true logit. Component rankings remain valid."
+        ),
     }
 
     render_dla(result, top_k=top_k)
@@ -252,6 +270,11 @@ def run_dla(
         from interpkit.core.plot import plot_dla
 
         plot_dla(result, top_k=top_k, save_path=save)
+
+    if html is not None:
+        from interpkit.core.html import html_dla as gen_html_dla, save_html
+
+        save_html(gen_html_dla(result), html)
 
     return result
 

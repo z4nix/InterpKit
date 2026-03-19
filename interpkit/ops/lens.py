@@ -20,6 +20,7 @@ def run_lens(
     text: Any,
     *,
     save: str | None = None,
+    html: str | None = None,
     position: int | None = None,
 ) -> list[dict[str, Any]] | None:
     """Project each layer's hidden state through the unembedding matrix.
@@ -175,6 +176,24 @@ def run_lens(
         from interpkit.core.plot import plot_lens
 
         plot_lens(predictions, save_path=save, input_tokens=input_tokens)
+
+    if html is not None:
+        import re as _re_html
+
+        from interpkit.core.html import html_lens as gen_html_lens, save_html
+
+        flat_preds = []
+        for pred in predictions:
+            _lm = _re_html.search(r"\.(\d+)", pred.get("layer_name", ""))
+            li = int(_lm.group(1)) if _lm else 0
+            for pos_data in pred.get("positions", []):
+                flat_preds.append({
+                    "layer": li,
+                    "position": pos_data.get("pos", 0),
+                    "prediction": pos_data.get("top1_token", "?"),
+                    "prob": pos_data.get("top1_prob", 0.0),
+                })
+        save_html(gen_html_lens(flat_preds, input_tokens), html)
 
     return predictions
 

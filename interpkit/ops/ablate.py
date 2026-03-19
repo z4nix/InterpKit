@@ -18,6 +18,7 @@ def run_ablate(
     *,
     at: str,
     method: str = "zero",
+    reference: Any | None = None,
 ) -> dict[str, Any]:
     """Ablate module *at* and measure the effect on output logits.
 
@@ -26,6 +27,10 @@ def run_ablate(
     method:
         ``"zero"`` replaces the module output with zeros.
         ``"mean"`` replaces it with the mean activation across the sequence dimension.
+        ``"resample"`` replaces it with activations from a *reference* input.
+    reference:
+        A different input whose activations replace the target module's
+        output.  Required when ``method="resample"``.
     """
     from interpkit.core.render import render_ablate
 
@@ -33,9 +38,30 @@ def run_ablate(
     target_mod = _get_module(model._model, at)
 
     # 1. Clean forward — get baseline logits
-    clean_logits = model._forward(model_input)
+    with torch.no_grad():
+        clean_logits = model._forward(model_input)
 
-    # 2. Ablated forward
+    # 2. For resample, cache the reference activation
+    resample_act: torch.Tensor | None = None
+    if method == "resample":
+        if reference is None:
+            raise ValueError("method='resample' requires a 'reference' input.")
+        ref_input = model._prepare(reference)
+
+        def _cache_hook(_mod: torch.nn.Module, _inp: Any, output: Any) -> None:
+            nonlocal resample_act
+            t = output if isinstance(output, torch.Tensor) else (
+                output[0] if isinstance(output, (tuple, list)) and isinstance(output[0], torch.Tensor) else None
+            )
+            if t is not None:
+                resample_act = t.detach().clone()
+
+        h = target_mod.register_forward_hook(_cache_hook)
+        with torch.no_grad():
+            model._forward(ref_input)
+        h.remove()
+
+    # 3. Ablated forward
     def _ablate_hook(_mod: torch.nn.Module, _inp: Any, output: Any) -> Any:
         t = output if isinstance(output, torch.Tensor) else (
             output[0] if isinstance(output, (tuple, list)) and isinstance(output[0], torch.Tensor) else None
@@ -50,15 +76,18 @@ def run_ablate(
                 replacement = t.mean(dim=-2, keepdim=True).expand_as(t)
             else:
                 replacement = t.mean(dim=0, keepdim=True).expand_as(t)
+        elif method == "resample":
+            replacement = resample_act.to(t.device) if resample_act is not None else torch.zeros_like(t)
         else:
-            raise ValueError(f"Unknown ablation method: {method!r}. Use 'zero' or 'mean'.")
+            raise ValueError(f"Unknown ablation method: {method!r}. Use 'zero', 'mean', or 'resample'.")
 
         if isinstance(output, torch.Tensor):
             return replacement
         return (replacement,) + tuple(output[1:])
 
     handle = target_mod.register_forward_hook(_ablate_hook)
-    ablated_logits = model._forward(model_input)
+    with torch.no_grad():
+        ablated_logits = model._forward(model_input)
     handle.remove()
 
     effect = _compute_ablation_effect(clean_logits, ablated_logits)

@@ -309,6 +309,9 @@ def run_composition(
     Measures how much head *j* in *src_layer* composes with head *i* in
     *dst_layer* via the specified projection (Q, K, or V).
 
+    Uses the full W_OV matrix (``W_O @ W_V``) for the source head per
+    Elhage et al., "A Mathematical Framework for Transformer Circuits".
+
     Parameters
     ----------
     comp_type:
@@ -326,7 +329,7 @@ def run_composition(
 
     num_heads = arch.num_attention_heads
 
-    # Source layer: get W_OV for each head (the output of src heads into residual)
+    # Source layer: build W_OV = W_O @ W_V for each head
     src_layer_name = arch.layer_names[src_layer]
     src_mod = _get_module(model._model, src_layer_name)
     src_attn = _find_attn_submodule(src_mod)
@@ -342,6 +345,11 @@ def run_composition(
     w_o_src = raw_w_o_src.T if is_conv1d else raw_w_o_src  # -> (d_model, H*D_h)
     d_model = w_o_src.shape[0]
     head_dim = w_o_src.shape[1] // num_heads
+
+    w_v_src = _find_proj_weight(src_attn[1], ("v_proj", "value", "c_attn"), "v")
+    if w_v_src is None:
+        raise ValueError(f"Could not find V projection in source layer {src_layer}.")
+    w_v_src = w_v_src.float()  # (H*D_h, d_model)
 
     # Destination layer: get the composition target projection
     dst_layer_name = arch.layer_names[dst_layer]
@@ -360,7 +368,7 @@ def run_composition(
 
     w_dst = w_dst.float()
 
-    # Compute composition scores: || W_{dst,i}^T @ W_{O,j} ||_F / (|| W_{dst,i} ||_F * || W_{O,j} ||_F)
+    # score(i,j) = || W_dst_i @ W_OV_j ||_F / (|| W_dst_i ||_F * || W_OV_j ||_F)
     scores = torch.zeros(num_heads, num_heads)
 
     for i in range(num_heads):
@@ -372,13 +380,15 @@ def run_composition(
         for j in range(num_heads):
             src_start = j * head_dim
             src_end = src_start + head_dim
-            w_o_h = w_o_src[:, src_start:src_end]  # (d_model, head_dim)
+            w_o_h = w_o_src[:, src_start:src_end]   # (d_model, head_dim)
+            w_v_h = w_v_src[src_start:src_end, :]    # (head_dim, d_model)
+            w_ov_h = w_o_h @ w_v_h                   # (d_model, d_model)
 
-            composition = w_dst_h @ w_o_h  # (head_dim, head_dim)
-            src_norm = w_o_h.norm()
+            composition = w_dst_h @ w_ov_h  # (head_dim, d_model)
+            ov_norm = w_ov_h.norm()
 
-            if dst_norm > 0 and src_norm > 0:
-                scores[i, j] = composition.norm() / (dst_norm * src_norm)
+            if dst_norm > 0 and ov_norm > 0:
+                scores[i, j] = composition.norm() / (dst_norm * ov_norm)
 
     result = {
         "scores": scores,

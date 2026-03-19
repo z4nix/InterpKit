@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json as _json
 from typing import Optional
 
 import typer
@@ -19,12 +20,33 @@ app = typer.Typer(
 )
 console = Console()
 
+_output_format: str = "rich"
 
-def _load_model(model_name: str, device: str | None = None):
+
+def _json_dump(result: dict) -> None:
+    """Pretty-print a result dict as JSON, converting tensors to lists."""
+    import torch
+
+    def _default(obj):
+        if isinstance(obj, torch.Tensor):
+            return obj.detach().cpu().tolist()
+        if hasattr(obj, "__float__"):
+            return float(obj)
+        return str(obj)
+
+    print(_json.dumps(result, indent=2, default=_default))
+
+
+def _load_model(
+    model_name: str,
+    device: str | None = None,
+    dtype: str | None = None,
+    device_map: str | None = None,
+):
     from interpkit.core.model import load
 
     with console.status(f"Loading {model_name}..."):
-        return load(model_name, device=device)
+        return load(model_name, device=device, dtype=dtype, device_map=device_map)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -33,8 +55,13 @@ def _load_model(model_name: str, device: str | None = None):
 
 
 @app.callback(invoke_without_command=True)
-def main(ctx: typer.Context) -> None:
+def main(
+    ctx: typer.Context,
+    fmt: str = typer.Option("rich", "--format", help="Output format: rich (default) or json"),
+) -> None:
     """Mech interp for any HuggingFace model."""
+    global _output_format
+    _output_format = fmt
     if ctx.invoked_subcommand is not None:
         return
 
@@ -116,9 +143,11 @@ IIIII nn   nn  tttt  eeeee rr     pp      KK  KK iii  tttt
 def inspect(
     model_name: str = typer.Argument(..., help="HuggingFace model ID (e.g. gpt2, microsoft/resnet-50)"),
     device: Optional[str] = typer.Option(None, help="Device (cpu, cuda, mps). Auto-detected if omitted."),
+    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Print the model's module tree with types, param counts, and detected roles."""
-    m = _load_model(model_name, device=device)
+    m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
     m.inspect()
 
 
@@ -135,14 +164,19 @@ def patch(
     at: str = typer.Option(..., "--at", help="Module name to patch (e.g. transformer.h.8.mlp)"),
     head: Optional[int] = typer.Option(None, "--head", help="Specific attention head to patch (requires attention module)"),
     positions: Optional[str] = typer.Option(None, "--positions", help="Comma-separated token positions to patch (e.g. '3,4,5')"),
+    metric: str = typer.Option("logit_diff", "--metric", help="Effect metric: logit_diff, kl_div, target_prob, l2_prob"),
     device: Optional[str] = typer.Option(None, help="Device"),
+    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Activation patching: swap one module's output from clean into corrupted run."""
-    m = _load_model(model_name, device=device)
+    m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
     pos_list: list[int] | None = None
     if positions is not None:
         pos_list = [int(p.strip()) for p in positions.split(",")]
-    m.patch(clean, corrupted, at=at, head=head, positions=pos_list)
+    result = m.patch(clean, corrupted, at=at, head=head, positions=pos_list, metric=metric)
+    if _output_format == "json":
+        _json_dump(result)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -157,14 +191,19 @@ def trace(
     corrupted: str = typer.Option(..., "--corrupted", help="Corrupted input"),
     top_k: int = typer.Option(20, "--top-k", help="Scan top-K modules by proxy score. 0 = scan all."),
     mode: str = typer.Option("module", "--mode", help="Tracing mode: 'module' (default) or 'position' (Meng et al. 2D heatmap)"),
+    metric: str = typer.Option("logit_diff", "--metric", help="Effect metric: logit_diff, kl_div, target_prob, l2_prob"),
     save: Optional[str] = typer.Option(None, "--save", help="Save bar chart / heatmap to file (e.g. trace.png)"),
     html_path: Optional[str] = typer.Option(None, "--html", help="Save interactive HTML to file (e.g. trace.html)"),
     device: Optional[str] = typer.Option(None, help="Device"),
+    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Causal tracing: rank modules by how much patching them restores clean output."""
     effective_top_k: int | None = top_k if top_k > 0 else None
-    m = _load_model(model_name, device=device)
-    m.trace(clean, corrupted, top_k=effective_top_k, mode=mode, save=save, html=html_path)
+    m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
+    result = m.trace(clean, corrupted, top_k=effective_top_k, mode=mode, metric=metric, save=save, html=html_path)
+    if _output_format == "json":
+        _json_dump(result if isinstance(result, dict) else {"results": result})
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -177,12 +216,17 @@ def lens(
     model_name: str = typer.Argument(..., help="HuggingFace model ID"),
     text: str = typer.Argument(..., help="Input text"),
     save: Optional[str] = typer.Option(None, "--save", help="Save heatmap to file (e.g. lens.png)"),
+    html_path: Optional[str] = typer.Option(None, "--html", help="Save interactive HTML to file"),
     position: Optional[int] = typer.Option(None, "--position", help="Single token position to analyse (-1 = last). Omit for all positions."),
     device: Optional[str] = typer.Option(None, help="Device"),
+    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Logit lens: project each layer's hidden state to vocabulary space."""
-    m = _load_model(model_name, device=device)
-    m.lens(text, save=save, position=position)
+    m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
+    result = m.lens(text, save=save, html=html_path, position=position)
+    if _output_format == "json":
+        _json_dump(result if isinstance(result, dict) else {"results": result})
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -195,13 +239,18 @@ def attribute(
     model_name: str = typer.Argument(..., help="HuggingFace model ID"),
     input_data: str = typer.Argument(..., help="Input text or image path"),
     target: Optional[int] = typer.Option(None, "--target", help="Target class/token index for attribution"),
+    method: str = typer.Option("integrated_gradients", "--method", help="Attribution method: integrated_gradients, gradient, gradient_x_input"),
     save: Optional[str] = typer.Option(None, "--save", help="Save figure to file (e.g. attribution.png)"),
     html_path: Optional[str] = typer.Option(None, "--html", help="Save interactive HTML to file (e.g. attribution.html)"),
     device: Optional[str] = typer.Option(None, help="Device"),
+    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
-    """Gradient saliency over input tokens or pixels."""
-    m = _load_model(model_name, device=device)
-    m.attribute(input_data, target=target, save=save, html=html_path)
+    """Gradient-based attribution over input tokens or pixels."""
+    m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
+    result = m.attribute(input_data, target=target, method=method, save=save, html=html_path)
+    if _output_format == "json":
+        _json_dump(result)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -215,9 +264,11 @@ def activations(
     input_data: str = typer.Argument(..., help="Input text or image path"),
     at: str = typer.Option(..., "--at", help="Module name(s) to extract, comma-separated"),
     device: Optional[str] = typer.Option(None, help="Device"),
+    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Extract and display activation statistics at named modules."""
-    m = _load_model(model_name, device=device)
+    m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
     modules = [s.strip() for s in at.split(",")]
     if len(modules) == 1:
         m.activations(input_data, at=modules[0])
@@ -235,12 +286,17 @@ def ablate(
     model_name: str = typer.Argument(..., help="HuggingFace model ID"),
     input_data: str = typer.Argument(..., help="Input text or image path"),
     at: str = typer.Option(..., "--at", help="Module name to ablate"),
-    method: str = typer.Option("zero", "--method", help="Ablation method: zero or mean"),
+    method: str = typer.Option("zero", "--method", help="Ablation method: zero, mean, or resample"),
+    reference: Optional[str] = typer.Option(None, "--reference", help="Reference input for resample ablation"),
     device: Optional[str] = typer.Option(None, help="Device"),
+    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
-    """Zero or mean ablate a module and measure the effect on output."""
-    m = _load_model(model_name, device=device)
-    m.ablate(input_data, at=at, method=method)
+    """Zero, mean, or resample ablate a module and measure the effect on output."""
+    m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
+    result = m.ablate(input_data, at=at, method=method, reference=reference)
+    if _output_format == "json":
+        _json_dump(result)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -257,10 +313,14 @@ def attention(
     save: Optional[str] = typer.Option(None, "--save", help="Save heatmap to file (e.g. attention.png)"),
     html_path: Optional[str] = typer.Option(None, "--html", help="Save interactive HTML to file (e.g. attention.html)"),
     device: Optional[str] = typer.Option(None, help="Device"),
+    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Show attention patterns for transformer models."""
-    m = _load_model(model_name, device=device)
-    m.attention(input_data, layer=layer, head=head, save=save, html=html_path)
+    m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
+    result = m.attention(input_data, layer=layer, head=head, save=save, html=html_path)
+    if _output_format == "json" and result is not None:
+        _json_dump({"results": result} if isinstance(result, list) else result)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -278,11 +338,15 @@ def steer(
     scale: float = typer.Option(2.0, "--scale", help="Steering vector scale factor"),
     save: Optional[str] = typer.Option(None, "--save", help="Save comparison chart to file"),
     device: Optional[str] = typer.Option(None, help="Device"),
+    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Extract a steering vector and apply it during inference."""
-    m = _load_model(model_name, device=device)
+    m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
     vector = m.steer_vector(positive, negative, at=at)
-    m.steer(input_data, vector=vector, at=at, scale=scale, save=save)
+    result = m.steer(input_data, vector=vector, at=at, scale=scale, save=save)
+    if _output_format == "json":
+        _json_dump(result)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -296,14 +360,18 @@ def probe(
     at: str = typer.Option(..., "--at", help="Module name to probe"),
     data: str = typer.Option(..., "--data", help="JSON file with {texts: [...], labels: [...]}"),
     device: Optional[str] = typer.Option(None, help="Device"),
+    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Train a linear probe on activations to test linear separability."""
     import json
     from pathlib import Path
 
     probe_data = json.loads(Path(data).read_text())
-    m = _load_model(model_name, device=device)
-    m.probe(texts=probe_data["texts"], labels=probe_data["labels"], at=at)
+    m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
+    result = m.probe(texts=probe_data["texts"], labels=probe_data["labels"], at=at)
+    if _output_format == "json":
+        _json_dump(result)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -318,13 +386,17 @@ def diff(
     input_data: str = typer.Argument(..., help="Input text to compare on"),
     save: Optional[str] = typer.Option(None, "--save", help="Save bar chart to file"),
     device: Optional[str] = typer.Option(None, help="Device"),
+    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Compare activations between two models on the same input."""
     import interpkit
 
-    m_a = _load_model(model_a_name, device=device)
-    m_b = _load_model(model_b_name, device=device)
-    interpkit.diff(m_a, m_b, input_data, save=save)
+    m_a = _load_model(model_a_name, device=device, dtype=dtype, device_map=device_map)
+    m_b = _load_model(model_b_name, device=device, dtype=dtype, device_map=device_map)
+    result = interpkit.diff(m_a, m_b, input_data, save=save)
+    if _output_format == "json":
+        _json_dump(result)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -340,10 +412,14 @@ def features(
     sae: str = typer.Option(..., "--sae", help="HuggingFace repo ID for the SAE weights"),
     top_k: int = typer.Option(20, "--top-k", help="Number of top features to display"),
     device: Optional[str] = typer.Option(None, help="Device"),
+    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Decompose activations through a Sparse Autoencoder into interpretable features."""
-    m = _load_model(model_name, device=device)
-    m.features(input_data, at=at, sae=sae, top_k=top_k)
+    m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
+    result = m.features(input_data, at=at, sae=sae, top_k=top_k)
+    if _output_format == "json":
+        _json_dump(result)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -357,10 +433,14 @@ def scan(
     input_data: str = typer.Argument(..., help="Input text"),
     save: Optional[str] = typer.Option(None, "--save", help="Prefix for exported figures (e.g. scan → scan_dla.png, scan_lens.png)"),
     device: Optional[str] = typer.Option(None, help="Device"),
+    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """One-command model overview: runs DLA, logit lens, attention, and attribution."""
-    m = _load_model(model_name, device=device)
-    m.scan(input_data, save=save)
+    m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
+    result = m.scan(input_data, save=save)
+    if _output_format == "json":
+        _json_dump(result)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -376,17 +456,22 @@ def dla(
     position: int = typer.Option(-1, "--position", help="Token position to analyse (-1 = last)"),
     top_k: int = typer.Option(10, "--top-k", help="Number of top/bottom contributors to show"),
     save: Optional[str] = typer.Option(None, "--save", help="Save bar chart to file (e.g. dla.png)"),
+    html_path: Optional[str] = typer.Option(None, "--html", help="Save interactive HTML to file"),
     device: Optional[str] = typer.Option(None, help="Device"),
+    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Direct Logit Attribution: decompose output logits by component."""
-    m = _load_model(model_name, device=device)
+    m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
     parsed_token: int | str | None = None
     if token is not None:
         try:
             parsed_token = int(token)
         except ValueError:
             parsed_token = token
-    m.dla(input_data, token=parsed_token, position=position, top_k=top_k, save=save)
+    result = m.dla(input_data, token=parsed_token, position=position, top_k=top_k, save=save, html=html_path)
+    if _output_format == "json":
+        _json_dump(result)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -400,10 +485,14 @@ def decompose(
     input_data: str = typer.Argument(..., help="Input text"),
     position: int = typer.Option(-1, "--position", help="Token position to decompose (-1 = last)"),
     device: Optional[str] = typer.Option(None, help="Device"),
+    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Decompose the residual stream into per-component contributions."""
-    m = _load_model(model_name, device=device)
-    m.decompose(input_data, position=position)
+    m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
+    result = m.decompose(input_data, position=position)
+    if _output_format == "json":
+        _json_dump(result)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -417,11 +506,38 @@ def find_circuit(
     clean: str = typer.Option(..., "--clean", help="Clean input text"),
     corrupted: str = typer.Option(..., "--corrupted", help="Corrupted input text"),
     threshold: float = typer.Option(0.01, "--threshold", help="Minimum ablation effect to include in circuit (0-1)"),
+    method: str = typer.Option("mean", "--method", help="Ablation method: mean (default), zero, resample"),
+    metric: str = typer.Option("logit_diff", "--metric", help="Effect metric: logit_diff, kl_div, target_prob, l2_prob"),
     device: Optional[str] = typer.Option(None, help="Device"),
+    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Automated circuit discovery: find the minimal circuit for a behaviour."""
-    m = _load_model(model_name, device=device)
-    m.find_circuit(clean, corrupted, threshold=threshold)
+    m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
+    result = m.find_circuit(clean, corrupted, threshold=threshold, method=method, metric=metric)
+    if _output_format == "json":
+        _json_dump(result)
+
+
+# ══════════════════════════════════════════════════════════════════
+# report
+# ══════════════════════════════════════════════════════════════════
+
+
+@app.command()
+def report(
+    model_name: str = typer.Argument(..., help="HuggingFace model ID"),
+    input_data: str = typer.Argument(..., help="Input text"),
+    save: str = typer.Option("report.html", "--save", help="Output HTML report path"),
+    device: Optional[str] = typer.Option(None, help="Device"),
+    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
+) -> None:
+    """Generate a comprehensive HTML report: prediction, DLA, logit lens, attention, attribution."""
+    m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
+    result = m.report(input_data, save=save)
+    if _output_format == "json":
+        _json_dump(result)
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ def run_trace(
     *,
     top_k: int | None = 20,
     mode: str = "module",
+    metric: str = "logit_diff",
     save: str | None = None,
     html: str | None = None,
 ) -> list[dict[str, Any]] | dict[str, Any]:
@@ -39,13 +40,17 @@ def run_trace(
         clean activation during the corrupted run and measures recovery.
         Returns a dict with ``"effects"`` (tensor of shape
         ``num_layers x seq_len``), ``"layer_names"``, ``"tokens"``.
+    metric:
+        Effect metric passed to ``_compute_effect``.  One of
+        ``"logit_diff"`` (default), ``"kl_div"``, ``"target_prob"``,
+        ``"l2_prob"``.
     """
     if mode == "position":
         return _run_position_trace(
-            model, clean, corrupted, save=save, html=html,
+            model, clean, corrupted, metric=metric, save=save, html=html,
         )
     return _run_module_trace(
-        model, clean, corrupted, top_k=top_k, save=save, html=html,
+        model, clean, corrupted, top_k=top_k, metric=metric, save=save, html=html,
     )
 
 
@@ -59,6 +64,7 @@ def _run_module_trace(
     corrupted: Any,
     *,
     top_k: int | None = 20,
+    metric: str = "logit_diff",
     save: str | None = None,
     html: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -168,7 +174,7 @@ def _run_module_trace(
             patched_logits = model._forward(corrupted_input)
             handle.remove()
 
-            effect = _compute_effect(clean_logits, corrupted_logits, patched_logits)
+            effect = _compute_effect(clean_logits, corrupted_logits, patched_logits, metric=metric)
             results.append({
                 "module": name,
                 "role": module_role_map.get(name),
@@ -204,6 +210,7 @@ def _run_position_trace(
     clean: Any,
     corrupted: Any,
     *,
+    metric: str = "logit_diff",
     save: str | None = None,
     html: str | None = None,
 ) -> dict[str, Any]:
@@ -311,7 +318,7 @@ def _run_position_trace(
                 handle.remove()
 
                 effects[li, pos] = _compute_effect(
-                    clean_logits, corrupted_logits, patched_logits
+                    clean_logits, corrupted_logits, patched_logits, metric=metric
                 )
                 progress.advance(task)
 
@@ -327,5 +334,10 @@ def _run_position_trace(
         from interpkit.core.plot import plot_position_trace
 
         plot_position_trace(result, save_path=save)
+
+    if html is not None:
+        from interpkit.core.html import html_position_trace as gen_html_pt, save_html
+
+        save_html(gen_html_pt(result), html)
 
     return result
