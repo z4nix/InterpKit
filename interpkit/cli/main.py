@@ -271,9 +271,11 @@ def activations(
     m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
     modules = [s.strip() for s in at.split(",")]
     if len(modules) == 1:
-        m.activations(input_data, at=modules[0])
+        result = m.activations(input_data, at=modules[0])
     else:
-        m.activations(input_data, at=modules)
+        result = m.activations(input_data, at=modules)
+    if _output_format == "json":
+        _json_dump(result if isinstance(result, dict) else {"activations": result})
 
 
 # ══════════════════════════════════════════════════════════════════

@@ -67,8 +67,8 @@ def run_diff(
         if name not in acts_a or name not in acts_b:
             continue
 
-        a = acts_a[name].float().view(-1)
-        b = acts_b[name].float().view(-1)
+        a = acts_a[name].float().cpu().view(-1)
+        b = acts_b[name].float().cpu().view(-1)
 
         if a.shape != b.shape:
             min_size = min(a.numel(), b.numel())

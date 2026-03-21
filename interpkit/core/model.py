@@ -42,22 +42,41 @@ class Model:
     # ------------------------------------------------------------------
 
     def _prepare(self, raw: str | torch.Tensor | Any) -> dict[str, torch.Tensor] | torch.Tensor:
-        return prepare_input(
+        result = prepare_input(
             raw,
             tokenizer=self._tokenizer,
             image_processor=self._image_processor,
             device=self._device,
         )
+        return self._inject_decoder_ids(result)
 
     def _prepare_pair(
         self, raw_a: str | torch.Tensor | Any, raw_b: str | torch.Tensor | Any,
     ) -> tuple[dict[str, torch.Tensor] | torch.Tensor, dict[str, torch.Tensor] | torch.Tensor]:
-        return prepare_pair(
+        a, b = prepare_pair(
             raw_a, raw_b,
             tokenizer=self._tokenizer,
             image_processor=self._image_processor,
             device=self._device,
         )
+        return self._inject_decoder_ids(a), self._inject_decoder_ids(b)
+
+    def _inject_decoder_ids(
+        self, model_input: dict[str, torch.Tensor] | torch.Tensor,
+    ) -> dict[str, torch.Tensor] | torch.Tensor:
+        """Add ``decoder_input_ids`` for encoder-decoder models when missing."""
+        if not isinstance(model_input, dict):
+            return model_input
+        if "decoder_input_ids" in model_input:
+            return model_input
+        config = getattr(self._model, "config", None)
+        if not getattr(config, "is_encoder_decoder", False):
+            return model_input
+        decoder_start = getattr(config, "decoder_start_token_id", 0) or 0
+        model_input["decoder_input_ids"] = torch.tensor(
+            [[decoder_start]], dtype=torch.long, device=self._device,
+        )
+        return model_input
 
     def _forward(self, model_input: dict[str, torch.Tensor] | torch.Tensor) -> torch.Tensor:
         """Run a forward pass and return the output logits / final tensor."""
@@ -112,6 +131,11 @@ class Model:
 
         if at is None:
             at = [m.name for m in self.arch_info.modules if m.param_count > 0]
+
+        if not at:
+            self._cache = {}
+            self._cache_input_hash = input_hash
+            return self
 
         result = run_activations(self, input_data, at=at, print_stats=False)
         self._cache = result if isinstance(result, dict) else {at[0]: result}
@@ -780,7 +804,7 @@ def _load_from_hf(
     torch_dtype: torch.dtype | str | None = None,
     device_map: str | dict | None = None,
 ) -> tuple[nn.Module, Any | None, Any | None]:
-    from transformers import AutoModel, AutoTokenizer
+    from transformers import AutoConfig, AutoModel, AutoTokenizer
 
     extra_kwargs: dict[str, Any] = {}
     if torch_dtype is not None:
@@ -788,21 +812,41 @@ def _load_from_hf(
     if device_map is not None:
         extra_kwargs["device_map"] = device_map
 
-    model = None
-    for auto_cls_name in (
+    config = AutoConfig.from_pretrained(name)
+
+    # Build Auto class priority from config.architectures so we pick the
+    # right task head (e.g. QuestionAnswering, not CausalLM) automatically.
+    _TASK_HINTS: list[tuple[str, str]] = [
+        ("questionanswering", "AutoModelForQuestionAnswering"),
+        ("tokenclassification", "AutoModelForTokenClassification"),
+        ("sequenceclassification", "AutoModelForSequenceClassification"),
+        ("maskgeneration", "AutoModelForMaskGeneration"),
+        ("objectdetection", "AutoModelForObjectDetection"),
+        ("semanticsegmentation", "AutoModelForSemanticSegmentation"),
+    ]
+    architectures = getattr(config, "architectures", None) or []
+    arch_str = " ".join(architectures).lower()
+
+    auto_order: list[str] = []
+    for keyword, cls_name in _TASK_HINTS:
+        if keyword in arch_str:
+            auto_order.append(cls_name)
+    auto_order.extend([
         "AutoModelForCausalLM",
         "AutoModelForSeq2SeqLM",
         "AutoModelForMaskedLM",
         "AutoModelForImageClassification",
         "AutoModel",
-    ):
+    ])
+
+    import transformers
+
+    model = None
+    for auto_cls_name in auto_order:
+        auto_cls = getattr(transformers, auto_cls_name, None)
+        if auto_cls is None:
+            continue
         try:
-            from transformers import AutoConfig
-
-            config = AutoConfig.from_pretrained(name)
-            import transformers
-
-            auto_cls = getattr(transformers, auto_cls_name)
             model = auto_cls.from_pretrained(name, config=config, **extra_kwargs)
             break
         except (ValueError, OSError, KeyError):
@@ -845,7 +889,15 @@ def _make_dummy_input(
     if tokenizer is not None:
         try:
             encoded = tokenizer("hello", return_tensors="pt")
-            return {k: v.to(device) for k, v in encoded.items()}
+            result = {k: v.to(device) for k, v in encoded.items()}
+            config = getattr(model, "config", None)
+            is_enc_dec = getattr(config, "is_encoder_decoder", False)
+            if is_enc_dec and "decoder_input_ids" not in result:
+                decoder_start = getattr(config, "decoder_start_token_id", 0) or 0
+                result["decoder_input_ids"] = torch.tensor(
+                    [[decoder_start]], dtype=torch.long, device=device,
+                )
+            return result
         except Exception:
             pass
 
@@ -882,7 +934,10 @@ def _hash_input(model_input: dict[str, torch.Tensor] | torch.Tensor) -> int:
         for k in sorted(model_input.keys()):
             v = model_input[k]
             h.update(k.encode())
-            h.update(v.detach().cpu().float().contiguous().numpy().tobytes())
+            if isinstance(v, torch.Tensor):
+                h.update(v.detach().cpu().float().contiguous().numpy().tobytes())
+            else:
+                h.update(repr(v).encode())
     else:
         h.update(model_input.detach().cpu().float().contiguous().numpy().tobytes())
     return int.from_bytes(h.digest()[:8], "little")

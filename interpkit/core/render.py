@@ -129,6 +129,9 @@ def render_position_trace(result: dict[str, Any]) -> None:
     layer_names = result["layer_names"]
     tokens = result.get("tokens")
 
+    if not isinstance(effects, torch.Tensor):
+        effects = torch.tensor(effects)
+
     console.print("\n[bold]Position-Aware Causal Trace[/bold]")
 
     num_layers, seq_len = effects.shape

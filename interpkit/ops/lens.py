@@ -66,8 +66,16 @@ def run_lens(
     text_input = model._prepare(text)
 
     unembed_mod = _get_module(model._model, arch.unembedding_name)
-    unembed_weight = unembed_mod.weight  # (vocab_size, hidden_size)
+    unembed_weight = unembed_mod.weight  # (vocab_size, embed_dim)
     unembed_bias = getattr(unembed_mod, "bias", None)
+
+    # Handle models where embed_dim != hidden_size (e.g. OPT-350m)
+    project_out_mod = None
+    if arch.project_out_path:
+        try:
+            project_out_mod = _get_module(model._model, arch.project_out_path)
+        except AttributeError:
+            pass
 
     layer_outputs: dict[str, torch.Tensor] = {}
 
@@ -124,8 +132,12 @@ def run_lens(
         if final_norm is not None:
             hidden = final_norm(hidden)
 
-        # Project all positions at once: (batch, seq, hidden) @ (hidden, vocab) -> (batch, seq, vocab)
-        logits = hidden @ unembed_weight.float().T
+        # Project through project_out if the model has embed_dim != hidden_size
+        projected = hidden
+        if project_out_mod is not None:
+            projected = project_out_mod(projected)
+
+        logits = projected @ unembed_weight.float().T
         if unembed_bias is not None:
             logits = logits + unembed_bias.float()
         probs = torch.softmax(logits, dim=-1)  # (batch, seq, vocab)

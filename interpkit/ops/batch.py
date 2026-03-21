@@ -63,7 +63,7 @@ def run_batch(
         task = progress.add_task(f"Batch {operation}", total=len(dataset))
         for i, example in enumerate(dataset):
             try:
-                merged = {**example, **op_kwargs}
+                merged = {**op_kwargs, **example}
                 result = method(**merged)
                 results.append(result)
             except Exception as e:

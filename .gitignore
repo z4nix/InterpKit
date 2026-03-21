@@ -27,6 +27,8 @@ env/
 .coverage
 htmlcov/
 .tox/
+tests/
+FAILURES.md
 
 # Cursor
 .cursor/

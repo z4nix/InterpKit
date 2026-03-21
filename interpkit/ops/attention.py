@@ -72,92 +72,111 @@ def run_attention(
         token_ids = encoded["input_ids"][0].tolist()
         tokens = model._tokenizer.convert_ids_to_tokens(token_ids)
 
-    # Strategy: try output_attentions=True first (gives post-RoPE weights),
-    # fall back to manual Q/K reconstruction.
+    # Strategy: try output_attentions=True first (gives correct post-softmax
+    # weights including RoPE, ALiBi, etc.), fall back to manual Q/K
+    # reconstruction if that returns nothing (e.g. SDPA kernels).
     results: list[dict[str, Any]] = []
     used_output_attentions = False
 
-    # Check if any attention module uses RoPE
-    has_rope = False
-    for mod_info in attn_modules:
-        attn_mod = _get_module(model._model, mod_info.name)
-        for child_name, _ in attn_mod.named_modules():
-            if re.search(r"(rotary_emb|rope|rotary)", child_name, re.IGNORECASE):
-                has_rope = True
-                break
-        if has_rope:
-            break
-
-    # If RoPE is present, try output_attentions=True for correct post-RoPE weights
-    if has_rope:
-        config = getattr(model._model, "config", None)
-        if config is not None:
-            old_val = getattr(config, "output_attentions", None)
-            try:
-                config.output_attentions = True
-                with torch.no_grad():
-                    if isinstance(model_input, dict):
-                        out = model._model(**model_input)
-                    else:
-                        out = model._model(model_input)
-                attentions = getattr(out, "attentions", None)
-                if attentions is not None and len(attentions) > 0:
-                    used_output_attentions = True
-                    for li, attn_tensor in enumerate(attentions):
-                        if layer is not None and li != layer:
+    config = getattr(model._model, "config", None)
+    if config is not None:
+        old_output_attn = getattr(config, "output_attentions", None)
+        old_attn_impl = getattr(config, "_attn_implementation", None)
+        try:
+            config.output_attentions = True
+            # Force eager attention so SDPA backends actually return weights
+            config._attn_implementation = "eager"
+            with torch.no_grad():
+                if isinstance(model_input, dict):
+                    out = model._model(**model_input)
+                else:
+                    out = model._model(model_input)
+            attentions = getattr(out, "attentions", None)
+            if attentions is not None and len(attentions) > 0:
+                used_output_attentions = True
+                for li, attn_tensor in enumerate(attentions):
+                    if layer is not None and li != layer:
+                        continue
+                    aw = attn_tensor[0].detach()  # (num_heads, seq, seq)
+                    for head_idx in range(aw.shape[0]):
+                        if head is not None and head_idx != head:
                             continue
-                        # attn_tensor: (batch, num_heads, seq, seq)
-                        aw = attn_tensor[0].detach()  # (num_heads, seq, seq)
-                        for head_idx in range(aw.shape[0]):
-                            if head is not None and head_idx != head:
-                                continue
-                            head_attn = aw[head_idx]
-                            top_pairs = _get_top_pairs(head_attn, k=5)
-                            entropy = _attention_entropy(head_attn)
-                            results.append({
-                                "layer": li,
-                                "head": head_idx,
-                                "top_pairs": top_pairs,
-                                "entropy": entropy,
-                                "weights": head_attn,
-                            })
-            except Exception:
-                used_output_attentions = False
-            finally:
-                if config is not None:
-                    if old_val is None:
-                        config.output_attentions = False
-                    else:
-                        config.output_attentions = old_val
+                        head_attn = aw[head_idx]
+                        top_pairs = _get_top_pairs(head_attn, k=5)
+                        entropy = _attention_entropy(head_attn)
+                        results.append({
+                            "layer": li,
+                            "head": head_idx,
+                            "top_pairs": top_pairs,
+                            "entropy": entropy,
+                            "weights": head_attn,
+                        })
+        except Exception as exc:
+            console.print(
+                f"  [dim]attention: output_attentions failed "
+                f"({type(exc).__name__}: {exc}), falling back to Q/K reconstruction.[/dim]"
+            )
+            used_output_attentions = False
+        finally:
+            if old_output_attn is None:
+                config.output_attentions = False
+            else:
+                config.output_attentions = old_output_attn
+            if old_attn_impl is None:
+                try:
+                    del config._attn_implementation
+                except AttributeError:
+                    pass
+            else:
+                config._attn_implementation = old_attn_impl
 
     # Fallback: manual Q/K reconstruction (pre-RoPE for models with rotary embeddings)
     if not used_output_attentions:
         qk_cache: dict[str, dict[str, torch.Tensor]] = {}
         hooks = []
 
-        for mod_info in attn_modules:
-            if layer is not None:
-                layer_match = re.search(r"\.(\d+)\.", mod_info.name)
-                if layer_match and int(layer_match.group(1)) != layer:
+        def _make_qk_hook(name: str, attn_name: str):
+            def hook_fn(_mod: torch.nn.Module, _inp: Any, output: Any) -> None:
+                t = output if isinstance(output, torch.Tensor) else (
+                    output[0] if isinstance(output, (tuple, list)) else None
+                )
+                if t is not None:
+                    qk_cache.setdefault(attn_name, {})[name] = t.detach()
+            return hook_fn
+
+        # Use pre-resolved layer_infos when available
+        if arch.layer_infos:
+            for li in arch.layer_infos:
+                if layer is not None and li.index != layer:
                     continue
-
-            attn_mod = _get_module(model._model, mod_info.name)
-
-            for child_name, child_mod in attn_mod.named_modules():
-                is_qkv = any(p in child_name.lower() for p in ("c_attn", "qkv", "q_proj", "query"))
-                is_k = any(p in child_name.lower() for p in ("k_proj", "key"))
-
-                if is_qkv or is_k:
-                    def _make_qk_hook(name: str, attn_name: str):
-                        def hook_fn(_mod: torch.nn.Module, _inp: Any, output: Any) -> None:
-                            t = output if isinstance(output, torch.Tensor) else (
-                                output[0] if isinstance(output, (tuple, list)) else None
-                            )
-                            if t is not None:
-                                qk_cache.setdefault(attn_name, {})[name] = t.detach()
-                        return hook_fn
-
-                    hooks.append(child_mod.register_forward_hook(_make_qk_hook(child_name, mod_info.name)))
+                if li.attn_path is None:
+                    continue
+                attn_key = li.attn_path
+                if li.qkv_style == "fused" and li.qkv_proj_path:
+                    qkv_mod = _get_module(model._model, li.qkv_proj_path)
+                    child_name = li.qkv_proj_path.rsplit(".", 1)[-1]
+                    hooks.append(qkv_mod.register_forward_hook(_make_qk_hook(child_name, attn_key)))
+                elif li.qkv_style == "separate":
+                    if li.q_proj_path:
+                        q_mod = _get_module(model._model, li.q_proj_path)
+                        hooks.append(q_mod.register_forward_hook(
+                            _make_qk_hook(li.q_proj_path.rsplit(".", 1)[-1], attn_key)))
+                    if li.k_proj_path:
+                        k_mod = _get_module(model._model, li.k_proj_path)
+                        hooks.append(k_mod.register_forward_hook(
+                            _make_qk_hook(li.k_proj_path.rsplit(".", 1)[-1], attn_key)))
+        else:
+            for mod_info in attn_modules:
+                if layer is not None:
+                    layer_match = re.search(r"\.(\d+)\.", mod_info.name)
+                    if layer_match and int(layer_match.group(1)) != layer:
+                        continue
+                attn_mod = _get_module(model._model, mod_info.name)
+                for child_name, child_mod in attn_mod.named_modules():
+                    is_qkv = any(p in child_name.lower() for p in ("c_attn", "qkv", "query_key_value", "q_proj", "query", "q_lin"))
+                    is_k = any(p in child_name.lower() for p in ("k_proj", "key", "k_lin"))
+                    if is_qkv or is_k:
+                        hooks.append(child_mod.register_forward_hook(_make_qk_hook(child_name, mod_info.name)))
 
         with torch.no_grad():
             model._forward(model_input)
@@ -174,6 +193,10 @@ def run_attention(
             )
 
             if attn_weights is None:
+                console.print(
+                    f"  [dim]attention: could not compute weights for {attn_name} "
+                    f"(captured projections: {list(projections.keys())})[/dim]"
+                )
                 continue
 
             num_heads_found = attn_weights.shape[0]
@@ -234,9 +257,9 @@ def _compute_attention_from_projections(
     causal: bool = True,
 ) -> torch.Tensor | None:
     """Compute attention weights from captured QKV or Q/K projections."""
-    # GPT-2 style: c_attn produces [Q, K, V] concatenated
+    # Fused QKV: c_attn / qkv / query_key_value produce [Q, K, V] concatenated
     for key, tensor in projections.items():
-        if "c_attn" in key or "qkv" in key:
+        if "c_attn" in key or "qkv" in key or "query_key_value" in key:
             if tensor.dim() == 3:
                 tensor = tensor[0]  # drop batch
             hidden = tensor.shape[-1] // 3
@@ -247,9 +270,9 @@ def _compute_attention_from_projections(
     q_tensor = None
     k_tensor = None
     for key, tensor in projections.items():
-        if "q_proj" in key or "query" in key:
+        if "q_proj" in key or "query" in key or "q_lin" in key:
             q_tensor = tensor
-        elif "k_proj" in key or "key" in key:
+        elif "k_proj" in key or "key" in key or "k_lin" in key:
             k_tensor = tensor
 
     if q_tensor is not None and k_tensor is not None:

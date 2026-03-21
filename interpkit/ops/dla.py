@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import re
+from collections import deque
 from typing import TYPE_CHECKING, Any
 
 import torch
 
 from interpkit.ops.patch import _get_module
-from interpkit.ops.heads import _find_output_proj
 
 if TYPE_CHECKING:
     from interpkit.core.model import Model
@@ -81,7 +81,16 @@ def run_dla(
 
     # Get unembedding direction for the target token
     unembed_mod = _get_module(model._model, arch.unembedding_name)
-    unembed_weight = unembed_mod.weight.float()  # (vocab, d_model)
+    unembed_weight = unembed_mod.weight.float()  # (vocab, embed_dim)
+
+    # Handle models where embed_dim != hidden_size (e.g. OPT-350m)
+    project_out_weight = None
+    if arch.project_out_path:
+        try:
+            po_mod = _get_module(model._model, arch.project_out_path)
+            project_out_weight = po_mod.weight.float()  # (embed_dim, hidden_size)
+        except AttributeError:
+            pass
 
     # Determine target token id
     if token is None:
@@ -101,20 +110,25 @@ def run_dla(
         target_id = token
 
     target_token_str = model._tokenizer.decode([target_id])
-    unembed_dir = unembed_weight[target_id]  # (d_model,)
+
+    # Compute effective unembedding direction in residual-stream space.
+    # For standard models: unembed_dir = W_U[target_id] with shape (d_model,).
+    # For OPT-style models: hidden -> project_out -> lm_head, so the
+    # effective direction is W_project_out^T @ W_U[target_id].
+    raw_unembed_dir = unembed_weight[target_id]  # (embed_dim,)
+    if project_out_weight is not None:
+        unembed_dir = project_out_weight.T @ raw_unembed_dir  # (hidden_size,)
+    else:
+        unembed_dir = raw_unembed_dir  # (d_model,)
 
     # Capture outputs of each attention output-projection and each MLP
     component_outputs: dict[str, torch.Tensor] = {}
     hooks: list[torch.utils.hooks.RemovableHook] = []
 
-    for layer_name in arch.layer_names:
-        layer_mod = _get_module(model._model, layer_name)
-
-        # Attention: capture the full attention block output (after o_proj)
-        attn_child = _find_attn_submodule(layer_mod)
-        if attn_child is not None:
-            attn_name = f"{layer_name}.{attn_child[0]}" if attn_child[0] else layer_name
-            comp_key = f"{layer_name}::attn"
+    for li in arch.layer_infos:
+        comp_key_attn = f"{li.name}::attn"
+        if li.attn_path:
+            attn_mod = _get_module(model._model, li.attn_path)
 
             def _make_attn_hook(key: str):
                 def hook_fn(_mod: torch.nn.Module, _inp: Any, output: Any) -> None:
@@ -125,12 +139,11 @@ def run_dla(
                         component_outputs[key] = t.detach().float()
                 return hook_fn
 
-            hooks.append(attn_child[1].register_forward_hook(_make_attn_hook(comp_key)))
+            hooks.append(attn_mod.register_forward_hook(_make_attn_hook(comp_key_attn)))
 
-        # MLP: capture MLP block output
-        mlp_child = _find_mlp_submodule(layer_mod)
-        if mlp_child is not None:
-            comp_key = f"{layer_name}::mlp"
+        if li.mlp_path:
+            mlp_mod = _get_module(model._model, li.mlp_path)
+            comp_key_mlp = f"{li.name}::mlp"
 
             def _make_mlp_hook(key: str):
                 def hook_fn(_mod: torch.nn.Module, _inp: Any, output: Any) -> None:
@@ -141,7 +154,7 @@ def run_dla(
                         component_outputs[key] = t.detach().float()
                 return hook_fn
 
-            hooks.append(mlp_child[1].register_forward_hook(_make_mlp_hook(comp_key)))
+            hooks.append(mlp_mod.register_forward_hook(_make_mlp_hook(comp_key_mlp)))
 
     model._forward(model_input)
 
@@ -180,18 +193,20 @@ def run_dla(
     proj_info: list[tuple[str, torch.nn.Module]] = []
     pre_proj_captures: dict[str, list[torch.Tensor]] = {}
 
-    for layer_name in arch.layer_names:
-        _, _, proj_mod = _find_output_proj(model._model, layer_name)
-        if proj_mod is None or not hasattr(proj_mod, "weight"):
+    for li in arch.layer_infos:
+        if not li.o_proj_path or not li.attn_path:
             continue
-        comp_key = f"{layer_name}::attn"
+        try:
+            proj_mod = _get_module(model._model, li.o_proj_path)
+        except AttributeError:
+            continue
+        if not hasattr(proj_mod, "weight"):
+            continue
+        comp_key = f"{li.name}::attn"
         if comp_key not in component_outputs:
             continue
-        attn_child = _find_attn_submodule(_get_module(model._model, layer_name))
-        if attn_child is None:
-            continue
-        proj_info.append((layer_name, proj_mod))
-        pre_proj_captures[layer_name] = []
+        proj_info.append((li.name, proj_mod))
+        pre_proj_captures[li.name] = []
 
     if proj_info:
         capture_hooks: list[torch.utils.hooks.RemovableHook] = []
@@ -282,18 +297,32 @@ def run_dla(
 def _find_attn_submodule(
     layer_mod: torch.nn.Module,
 ) -> tuple[str, torch.nn.Module] | None:
-    """Find the attention submodule inside a layer."""
+    """Find the attention submodule inside a layer (recursive BFS)."""
+    queue: deque[tuple[str, torch.nn.Module]] = deque()
     for name, mod in layer_mod.named_children():
-        if re.search(r"(self_attn|attn|attention)", name, re.IGNORECASE):
-            return name, mod
+        queue.append((name, mod))
+    while queue:
+        rel_name, mod = queue.popleft()
+        base = rel_name.split(".")[-1]
+        if re.search(r"(self_attn|attn|attention)", base, re.IGNORECASE):
+            return rel_name, mod
+        for child_name, child_mod in mod.named_children():
+            queue.append((f"{rel_name}.{child_name}", child_mod))
     return None
 
 
 def _find_mlp_submodule(
     layer_mod: torch.nn.Module,
 ) -> tuple[str, torch.nn.Module] | None:
-    """Find the MLP submodule inside a layer."""
+    """Find the MLP submodule inside a layer (recursive BFS)."""
+    queue: deque[tuple[str, torch.nn.Module]] = deque()
     for name, mod in layer_mod.named_children():
-        if re.search(r"(mlp|ffn|feed_forward)", name, re.IGNORECASE):
-            return name, mod
+        queue.append((name, mod))
+    while queue:
+        rel_name, mod = queue.popleft()
+        base = rel_name.split(".")[-1]
+        if re.search(r"(mlp|ffn|feed_forward)", base, re.IGNORECASE):
+            return rel_name, mod
+        for child_name, child_mod in mod.named_children():
+            queue.append((f"{rel_name}.{child_name}", child_mod))
     return None

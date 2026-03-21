@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -10,7 +9,6 @@ from rich.console import Console
 from rich.progress import Progress
 
 from interpkit.ops.patch import _compute_effect, _get_module
-from interpkit.ops.dla import _find_attn_submodule, _find_mlp_submodule
 
 if TYPE_CHECKING:
     from interpkit.core.model import Model
@@ -107,29 +105,24 @@ def run_find_circuit(
 
     # Enumerate all attention and MLP components
     components: list[dict[str, Any]] = []
-    for layer_name in arch.layer_names:
-        layer_mod = _get_module(model._model, layer_name)
-        layer_match = re.search(r"\.(\d+)", layer_name)
-        layer_idx = int(layer_match.group(1)) if layer_match else 0
-
-        attn_child = _find_attn_submodule(layer_mod)
-        if attn_child is not None:
+    for li in arch.layer_infos:
+        if li.attn_path:
+            attn_mod = _get_module(model._model, li.attn_path)
             components.append({
-                "component": f"L{layer_idx}.attn",
-                "layer": layer_idx,
+                "component": f"L{li.index}.attn",
+                "layer": li.index,
                 "type": "attn",
-                "module_name": f"{layer_name}.{attn_child[0]}",
-                "module": attn_child[1],
+                "module_name": li.attn_path,
+                "module": attn_mod,
             })
-
-        mlp_child = _find_mlp_submodule(layer_mod)
-        if mlp_child is not None:
+        if li.mlp_path:
+            mlp_mod = _get_module(model._model, li.mlp_path)
             components.append({
-                "component": f"L{layer_idx}.mlp",
-                "layer": layer_idx,
+                "component": f"L{li.index}.mlp",
+                "layer": li.index,
                 "type": "mlp",
-                "module_name": f"{layer_name}.{mlp_child[0]}",
-                "module": mlp_child[1],
+                "module_name": li.mlp_path,
+                "module": mlp_mod,
             })
 
     if not components:

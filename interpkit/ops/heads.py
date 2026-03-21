@@ -54,11 +54,23 @@ def run_head_activations(
             "Make sure the model has an HF config with num_attention_heads."
         )
 
-    attn_mod_name, proj_child_name, proj_mod = _find_output_proj(model._model, at)
+    # Try pre-resolved layer_infos first, fall back to ad-hoc search
+    proj_mod = None
+    attn_mod_name = at
+    proj_child_name = ""
+    for li in arch.layer_infos:
+        if li.name == at or li.attn_path == at:
+            if li.o_proj_path:
+                proj_mod = _get_module(model._model, li.o_proj_path)
+                attn_mod_name = li.attn_path or at
+                proj_child_name = li.o_proj_path.split(".")[-1]
+            break
+    if proj_mod is None:
+        attn_mod_name, proj_child_name, proj_mod = _find_output_proj(model._model, at)
 
     if proj_mod is None:
         raise RuntimeError(
-            f"Could not find output projection (c_proj / out_proj / o_proj / dense) "
+            f"Could not find output projection (c_proj / out_proj / o_proj / dense / out_lin) "
             f"inside '{at}'. Head decomposition requires an identifiable output projection."
         )
 
@@ -121,17 +133,14 @@ def _find_output_proj(
     """
     target = _get_module(model, at)
 
-    proj_patterns = ("c_proj", "out_proj", "o_proj", "dense")
+    proj_patterns = ("c_proj", "out_proj", "o_proj", "dense", "out_lin", "o")
 
-    # Direct children of target
-    for child_name, child_mod in target.named_modules():
-        if not child_name:
-            continue
-        base = child_name.split(".")[-1]
-        if base in proj_patterns and hasattr(child_mod, "weight"):
+    # Direct children of the target module
+    for child_name, child_mod in target.named_children():
+        if child_name in proj_patterns and hasattr(child_mod, "weight"):
             return at, child_name, child_mod
 
-    # If 'at' points to a layer (not attention), look one level deeper
+    # If 'at' points to a layer (not attention), look deeper via named_modules
     for child_name, child_mod in target.named_modules():
         if not child_name:
             continue
@@ -144,5 +153,14 @@ def _find_output_proj(
                 base = sub_name.split(".")[-1]
                 if base in proj_patterns and hasattr(sub_mod, "weight"):
                     return attn_full, sub_name, sub_mod
+
+    # Last resort: search all descendants (handles deep nesting like
+    # attention.output.dense in BERT/ViT models)
+    for child_name, child_mod in target.named_modules():
+        if not child_name:
+            continue
+        base = child_name.split(".")[-1]
+        if base in proj_patterns and hasattr(child_mod, "weight"):
+            return at, child_name, child_mod
 
     return at, "", None

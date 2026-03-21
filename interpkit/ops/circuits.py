@@ -9,8 +9,7 @@ import torch
 from rich.console import Console
 
 from interpkit.ops.patch import _get_module
-from interpkit.ops.dla import _find_attn_submodule, _find_mlp_submodule
-from interpkit.ops.heads import _find_output_proj
+from interpkit.core.discovery import extract_proj_weight, _get_mod_by_path
 
 if TYPE_CHECKING:
     from interpkit.core.model import Model
@@ -53,12 +52,10 @@ def run_decompose(
     component_outputs: dict[str, torch.Tensor] = {}
     hooks: list[torch.utils.hooks.RemovableHook] = []
 
-    for layer_name in arch.layer_names:
-        layer_mod = _get_module(model._model, layer_name)
-
-        attn_child = _find_attn_submodule(layer_mod)
-        if attn_child is not None:
-            key = f"{layer_name}::attn"
+    for li in arch.layer_infos:
+        if li.attn_path:
+            attn_mod = _get_module(model._model, li.attn_path)
+            key = f"{li.name}::attn"
 
             def _make_hook(k: str):
                 def hook_fn(_mod, _inp, output):
@@ -69,11 +66,11 @@ def run_decompose(
                         component_outputs[k] = t.detach().float()
                 return hook_fn
 
-            hooks.append(attn_child[1].register_forward_hook(_make_hook(key)))
+            hooks.append(attn_mod.register_forward_hook(_make_hook(key)))
 
-        mlp_child = _find_mlp_submodule(layer_mod)
-        if mlp_child is not None:
-            key = f"{layer_name}::mlp"
+        if li.mlp_path:
+            mlp_mod = _get_module(model._model, li.mlp_path)
+            key = f"{li.name}::mlp"
 
             def _make_mlp_hook(k: str):
                 def hook_fn(_mod, _inp, output):
@@ -84,7 +81,7 @@ def run_decompose(
                         component_outputs[k] = t.detach().float()
                 return hook_fn
 
-            hooks.append(mlp_child[1].register_forward_hook(_make_mlp_hook(key)))
+            hooks.append(mlp_mod.register_forward_hook(_make_mlp_hook(key)))
 
     # Also capture the final residual (output of last layer)
     last_layer = arch.layer_names[-1]
@@ -174,22 +171,24 @@ def run_ov_scores(
         raise ValueError("OV analysis requires detected layer structure and head count.")
 
     num_heads = arch.num_attention_heads
-    layer_name = arch.layer_names[layer]
-    layer_mod = _get_module(model._model, layer_name)
+    li = arch.layer_infos[layer] if layer < len(arch.layer_infos) else None
 
-    attn_child = _find_attn_submodule(layer_mod)
-    if attn_child is None:
+    if li is None or li.attn_path is None:
         raise ValueError(f"No attention submodule found in layer {layer}.")
 
-    attn_mod = attn_child[1]
+    # Find V projection weight via centralised extractor
+    w_v = extract_proj_weight(
+        model._model, li, "v", num_heads, arch.num_key_value_heads,
+    )
 
-    # Find V projection and O projection weights
-    w_v = _find_proj_weight(attn_mod, ("v_proj", "value", "c_attn"), "v")
-    _, _, proj_mod = _find_output_proj(model._model, layer_name)
+    # Find O projection weight
+    if li.o_proj_path is None:
+        raise ValueError(f"Could not find output projection weight in layer {layer}.")
+    proj_mod = _get_mod_by_path(model._model, li.o_proj_path)
 
     if w_v is None:
         raise ValueError(f"Could not find V projection weight in layer {layer}.")
-    if proj_mod is None or not hasattr(proj_mod, "weight"):
+    if not hasattr(proj_mod, "weight"):
         raise ValueError(f"Could not find output projection weight in layer {layer}.")
 
     # Normalise W_O to (d_model, num_heads * head_dim)
@@ -197,23 +196,30 @@ def run_ov_scores(
     is_conv1d = type(proj_mod).__name__ == "Conv1D"
     w_o = raw_w_o.T if is_conv1d else raw_w_o  # -> (d_model, H*D_h)
 
-    w_v = w_v.float()  # (H*D_h, d_model) from _find_proj_weight
+    w_v = w_v.float()  # (kv_heads*D_h, d_model)
 
-    head_dim = w_v.shape[0] // num_heads
+    # GQA: V may have fewer head slices than O
+    num_kv_heads = arch.num_key_value_heads or num_heads
+    head_dim = w_o.shape[1] // num_heads
     d_model = w_o.shape[0]
 
     heads: list[dict[str, Any]] = []
     for h in range(num_heads):
-        start = h * head_dim
-        end = start + head_dim
+        o_start = h * head_dim
+        o_end = o_start + head_dim
 
-        w_v_h = w_v[start:end, :]  # (head_dim, d_model)
-        w_o_h = w_o[:, start:end]  # (d_model, head_dim)
+        # Map Q head to its KV head group
+        kv_idx = h * num_kv_heads // num_heads
+        v_start = kv_idx * head_dim
+        v_end = v_start + head_dim
+
+        w_v_h = w_v[v_start:v_end, :]  # (head_dim, d_model)
+        w_o_h = w_o[:, o_start:o_end]  # (d_model, head_dim)
 
         # W_OV = W_O_h @ W_V_h : (d_model, d_model)
         w_ov = w_o_h @ w_v_h  # (d_model, d_model)
 
-        svd_vals = torch.linalg.svdvals(w_ov)
+        svd_vals = torch.linalg.svdvals(w_ov.cpu())
         fro_norm = w_ov.norm().item()
         approx_rank = int((svd_vals > 0.01 * svd_vals[0]).sum().item())
 
@@ -244,38 +250,44 @@ def run_qk_scores(
         raise ValueError("QK analysis requires detected layer structure and head count.")
 
     num_heads = arch.num_attention_heads
-    layer_name = arch.layer_names[layer]
-    layer_mod = _get_module(model._model, layer_name)
+    li = arch.layer_infos[layer] if layer < len(arch.layer_infos) else None
 
-    attn_child = _find_attn_submodule(layer_mod)
-    if attn_child is None:
+    if li is None or li.attn_path is None:
         raise ValueError(f"No attention submodule found in layer {layer}.")
 
-    attn_mod = attn_child[1]
-
-    w_q = _find_proj_weight(attn_mod, ("q_proj", "query", "c_attn"), "q")
-    w_k = _find_proj_weight(attn_mod, ("k_proj", "key", "c_attn"), "k")
+    w_q = extract_proj_weight(
+        model._model, li, "q", num_heads, arch.num_key_value_heads,
+    )
+    w_k = extract_proj_weight(
+        model._model, li, "k", num_heads, arch.num_key_value_heads,
+    )
 
     if w_q is None or w_k is None:
         raise ValueError(f"Could not find Q/K projection weights in layer {layer}.")
 
-    w_q = w_q.float()  # (H*D_h, d_model) from _find_proj_weight
+    w_q = w_q.float()  # (H*D_h, d_model)
     w_k = w_k.float()
 
+    # GQA: K may have fewer head slices than Q
+    num_kv_heads = arch.num_key_value_heads or num_heads
     head_dim = w_q.shape[0] // num_heads
 
     heads: list[dict[str, Any]] = []
     for h in range(num_heads):
-        start = h * head_dim
-        end = start + head_dim
+        q_start = h * head_dim
+        q_end = q_start + head_dim
 
-        w_q_h = w_q[start:end, :]  # (head_dim, d_model)
-        w_k_h = w_k[start:end, :]  # (head_dim, d_model)
+        kv_idx = h * num_kv_heads // num_heads
+        k_start = kv_idx * head_dim
+        k_end = k_start + head_dim
+
+        w_q_h = w_q[q_start:q_end, :]  # (head_dim, d_model)
+        w_k_h = w_k[k_start:k_end, :]  # (head_dim, d_model)
 
         # W_QK = W_Q_h^T @ W_K_h : (d_model, d_model)
         w_qk = w_q_h.T @ w_k_h
 
-        svd_vals = torch.linalg.svdvals(w_qk)
+        svd_vals = torch.linalg.svdvals(w_qk.cpu())
         fro_norm = w_qk.norm().item()
         approx_rank = int((svd_vals > 0.01 * svd_vals[0]).sum().item())
 
@@ -328,16 +340,17 @@ def run_composition(
         raise ValueError("Composition analysis requires layer structure and head count.")
 
     num_heads = arch.num_attention_heads
+    num_kv_heads = arch.num_key_value_heads or num_heads
 
     # Source layer: build W_OV = W_O @ W_V for each head
-    src_layer_name = arch.layer_names[src_layer]
-    src_mod = _get_module(model._model, src_layer_name)
-    src_attn = _find_attn_submodule(src_mod)
-    if src_attn is None:
+    src_li = arch.layer_infos[src_layer] if src_layer < len(arch.layer_infos) else None
+    if src_li is None or src_li.attn_path is None:
         raise ValueError(f"No attention in source layer {src_layer}.")
+    if src_li.o_proj_path is None:
+        raise ValueError(f"No output projection in source layer {src_layer}.")
 
-    _, _, src_proj = _find_output_proj(model._model, src_layer_name)
-    if src_proj is None or not hasattr(src_proj, "weight"):
+    src_proj = _get_mod_by_path(model._model, src_li.o_proj_path)
+    if not hasattr(src_proj, "weight"):
         raise ValueError(f"No output projection in source layer {src_layer}.")
 
     raw_w_o_src = src_proj.weight.float()
@@ -346,45 +359,58 @@ def run_composition(
     d_model = w_o_src.shape[0]
     head_dim = w_o_src.shape[1] // num_heads
 
-    w_v_src = _find_proj_weight(src_attn[1], ("v_proj", "value", "c_attn"), "v")
+    w_v_src = extract_proj_weight(
+        model._model, src_li, "v", num_heads, num_kv_heads,
+    )
     if w_v_src is None:
         raise ValueError(f"Could not find V projection in source layer {src_layer}.")
-    w_v_src = w_v_src.float()  # (H*D_h, d_model)
+    w_v_src = w_v_src.float()
 
     # Destination layer: get the composition target projection
-    dst_layer_name = arch.layer_names[dst_layer]
-    dst_mod = _get_module(model._model, dst_layer_name)
-    dst_attn = _find_attn_submodule(dst_mod)
-    if dst_attn is None:
+    dst_li = arch.layer_infos[dst_layer] if dst_layer < len(arch.layer_infos) else None
+    if dst_li is None or dst_li.attn_path is None:
         raise ValueError(f"No attention in destination layer {dst_layer}.")
 
-    proj_names = {"q": ("q_proj", "query"), "k": ("k_proj", "key"), "v": ("v_proj", "value")}
-    if comp_type not in proj_names:
+    if comp_type not in ("q", "k", "v"):
         raise ValueError(f"comp_type must be 'q', 'k', or 'v', got {comp_type!r}")
 
-    w_dst = _find_proj_weight(dst_attn[1], (*proj_names[comp_type], "c_attn"), comp_type)
+    w_dst = extract_proj_weight(
+        model._model, dst_li, comp_type, num_heads, num_kv_heads,
+    )
     if w_dst is None:
         raise ValueError(f"Could not find {comp_type.upper()} projection in destination layer {dst_layer}.")
 
     w_dst = w_dst.float()
 
-    # score(i,j) = || W_dst_i @ W_OV_j ||_F / (|| W_dst_i ||_F * || W_OV_j ||_F)
-    scores = torch.zeros(num_heads, num_heads)
+    # Determine head counts for the destination projection (K/V may use kv_heads)
+    dst_num_heads = num_heads
+    if comp_type in ("k", "v"):
+        dst_num_heads = num_kv_heads
 
-    for i in range(num_heads):
-        dst_start = i * head_dim
-        dst_end = dst_start + head_dim
+    dst_head_dim = w_dst.shape[0] // dst_num_heads if dst_num_heads > 0 else head_dim
+
+    # score(i,j) = || W_dst_i @ W_OV_j ||_F / (|| W_dst_i ||_F * || W_OV_j ||_F)
+    scores = torch.zeros(dst_num_heads, num_heads)
+
+    for i in range(dst_num_heads):
+        dst_start = i * dst_head_dim
+        dst_end = dst_start + dst_head_dim
         w_dst_h = w_dst[dst_start:dst_end, :]  # (head_dim, d_model)
         dst_norm = w_dst_h.norm()
 
         for j in range(num_heads):
-            src_start = j * head_dim
-            src_end = src_start + head_dim
-            w_o_h = w_o_src[:, src_start:src_end]   # (d_model, head_dim)
-            w_v_h = w_v_src[src_start:src_end, :]    # (head_dim, d_model)
-            w_ov_h = w_o_h @ w_v_h                   # (d_model, d_model)
+            o_start = j * head_dim
+            o_end = o_start + head_dim
+            w_o_h = w_o_src[:, o_start:o_end]   # (d_model, head_dim)
 
-            composition = w_dst_h @ w_ov_h  # (head_dim, d_model)
+            # V uses KV head grouping
+            kv_idx = j * num_kv_heads // num_heads
+            v_start = kv_idx * head_dim
+            v_end = v_start + head_dim
+            w_v_h = w_v_src[v_start:v_end, :]    # (head_dim, d_model)
+            w_ov_h = w_o_h @ w_v_h               # (d_model, d_model)
+
+            composition = w_dst_h @ w_ov_h  # (dst_head_dim, d_model)
             ov_norm = w_ov_h.norm()
 
             if dst_norm > 0 and ov_norm > 0:
@@ -400,62 +426,6 @@ def run_composition(
 
     _render_composition(result)
     return result
-
-
-# ------------------------------------------------------------------
-# Weight extraction helpers
-# ------------------------------------------------------------------
-
-
-def _find_proj_weight(
-    attn_mod: torch.nn.Module,
-    names: tuple[str, ...],
-    proj_type: str,
-) -> torch.Tensor | None:
-    """Find the weight matrix for a Q/K/V projection.
-
-    Returns a weight tensor of shape ``(proj_dim, d_model)`` — i.e. the
-    projection maps *from* residual-stream space *to* head space.
-
-    Handles both ``nn.Linear`` (weight shape ``(out, in)``) and GPT-2's
-    ``Conv1D`` (weight shape ``(in, out)``).
-    """
-    for child_name, child_mod in attn_mod.named_modules():
-        if not child_name:
-            continue
-        base = child_name.split(".")[-1]
-
-        if base in ("c_attn", "qkv") and hasattr(child_mod, "weight"):
-            w = child_mod.weight
-            is_conv1d = type(child_mod).__name__ == "Conv1D"
-
-            if is_conv1d:
-                # Conv1D weight: (d_model, 3*d_model) — split along dim=1
-                third = w.shape[1] // 3
-                if proj_type == "q":
-                    return w[:, :third].T  # -> (proj_dim, d_model)
-                elif proj_type == "k":
-                    return w[:, third:2*third].T
-                elif proj_type == "v":
-                    return w[:, 2*third:].T
-            else:
-                # nn.Linear weight: (3*d_model, d_model) — split along dim=0
-                third = w.shape[0] // 3
-                if proj_type == "q":
-                    return w[:third, :]
-                elif proj_type == "k":
-                    return w[third:2*third, :]
-                elif proj_type == "v":
-                    return w[2*third:, :]
-
-        if base in names and hasattr(child_mod, "weight"):
-            w = child_mod.weight
-            is_conv1d = type(child_mod).__name__ == "Conv1D"
-            if is_conv1d:
-                return w.T  # -> (out_features, in_features)
-            return w
-
-    return None
 
 
 # ------------------------------------------------------------------

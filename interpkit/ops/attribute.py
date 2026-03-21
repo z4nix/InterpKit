@@ -66,6 +66,13 @@ def _attribute_text(
     encoded = model._tokenizer(text, return_tensors="pt")
     input_ids = encoded["input_ids"].to(model._device)
 
+    config = getattr(model._model, "config", None)
+    if getattr(config, "is_encoder_decoder", False) and "decoder_input_ids" not in encoded:
+        decoder_start = getattr(config, "decoder_start_token_id", 0) or 0
+        encoded["decoder_input_ids"] = torch.tensor(
+            [[decoder_start]], dtype=torch.long,
+        )
+
     embed_layer = _find_embedding(model._model)
     if embed_layer is None:
         raise RuntimeError("Could not find embedding layer for gradient attribution.")
@@ -214,8 +221,9 @@ def _attribute_image(model: "Model", image_path: str, *, target: int | None, sav
         raise RuntimeError("Gradient computation failed — no gradients on pixel values.")
 
     grad = pixel_values.grad[0].detach()
-    out_path = save or "attribution_heatmap.png"
-    render_attribution_heatmap(grad, output_path=out_path)
+
+    if save is not None:
+        render_attribution_heatmap(grad, output_path=save)
 
     return {"grad": grad, "target": target}
 

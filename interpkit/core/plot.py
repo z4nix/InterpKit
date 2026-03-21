@@ -188,11 +188,12 @@ def plot_trace(
         ax.set_yticklabels(labels, fontsize=8)
         ax.set_xlabel("Patching Effect", fontsize=10)
         ax.set_title(f"Causal Trace{f': {model_name}' if model_name else ''}", fontsize=12, fontweight="bold")
-        ax.set_xlim(0, max(effects) * 1.15 if effects else 1)
+        max_eff = max(effects) if effects else 1
+        ax.set_xlim(0, max(max_eff * 1.15, 0.001))
         ax.grid(axis="x", alpha=0.2)
 
         for bar, val in zip(bars, effects):
-            ax.text(bar.get_width() + max(effects) * 0.02, bar.get_y() + bar.get_height() / 2,
+            ax.text(bar.get_width() + max(max_eff, 0.001) * 0.02, bar.get_y() + bar.get_height() / 2,
                     f"{val:.3f}", va="center", fontsize=7, color=_PALETTE["muted"])
 
         fig.tight_layout()
@@ -211,7 +212,7 @@ def plot_position_trace(
     if not isinstance(effects, torch.Tensor):
         effects = torch.tensor(effects)
 
-    data = effects.numpy()
+    data = effects.detach().cpu().float().numpy()
     num_layers, seq_len = data.shape
 
     cmap = mcolors.LinearSegmentedColormap.from_list(
@@ -427,11 +428,12 @@ def plot_diff(
         ax.set_yticklabels(labels, fontsize=8)
         ax.set_xlabel("Cosine Distance", fontsize=10)
         ax.set_title(f"Model Diff: {model_a_name} vs {model_b_name}", fontsize=12, fontweight="bold")
-        ax.set_xlim(0, max(distances) * 1.15 if distances else 1)
+        max_dist = max(distances) if distances else 1
+        ax.set_xlim(0, max(max_dist * 1.15, 0.001))
         ax.grid(axis="x", alpha=0.2)
 
         for bar, val in zip(bars, distances):
-            ax.text(bar.get_width() + max(distances) * 0.02, bar.get_y() + bar.get_height() / 2,
+            ax.text(bar.get_width() + max(max_dist, 0.001) * 0.02, bar.get_y() + bar.get_height() / 2,
                     f"{val:.4f}", va="center", fontsize=7, color=_PALETTE["muted"])
 
         try:
