@@ -48,11 +48,12 @@ def run_activations(
             mod = _get_module(model._model, name)
             hooks.append(mod.register_forward_hook(_make_hook(name)))
 
-        with torch.no_grad():
-            model._forward(model_input)
-
-        for h in hooks:
-            h.remove()
+        try:
+            with torch.no_grad():
+                model._forward(model_input)
+        finally:
+            for h in hooks:
+                h.remove()
 
     if print_stats:
         from interpkit.core.render import render_activations

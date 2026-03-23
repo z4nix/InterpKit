@@ -90,7 +90,12 @@ def run_dla(
             po_mod = _get_module(model._model, arch.project_out_path)
             project_out_weight = po_mod.weight.float()  # (embed_dim, hidden_size)
         except AttributeError:
-            pass
+            import warnings
+            warnings.warn(
+                f"project_out_path '{arch.project_out_path}' is set but its weight "
+                f"could not be loaded. DLA results may have incorrect dimensionality.",
+                stacklevel=2,
+            )
 
     # Determine target token id
     if token is None:
@@ -105,6 +110,14 @@ def run_dla(
         ids = model._tokenizer.encode(token, add_special_tokens=False)
         if not ids:
             raise ValueError(f"Could not encode token: {token!r}")
+        if len(ids) > 1:
+            import warnings
+            decoded_first = model._tokenizer.decode([ids[0]])
+            warnings.warn(
+                f"Token {token!r} encodes to {len(ids)} subwords; "
+                f"using only the first subword ({decoded_first!r}, id={ids[0]}).",
+                stacklevel=2,
+            )
         target_id = ids[0]
     else:
         target_id = token

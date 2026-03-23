@@ -81,6 +81,7 @@ def run_batch(
     output: dict[str, Any] = {
         "results": results,
         "count": len(results),
+        "total": len(dataset),
         "errors": errors,
     }
 
@@ -135,7 +136,10 @@ def _aggregate(results: list[Any], operation: str) -> dict[str, Any]:
 
     if operation in ("trace",):
         # Module-level trace: aggregate effect scores per module
-        if isinstance(results[0], list):
+        # Position-mode trace returns dicts — skip aggregation for those
+        if isinstance(results[0], dict) and "effects" in results[0]:
+            summary["note"] = "Position-mode trace results; per-module aggregation not applicable."
+        elif isinstance(results[0], list):
             module_effects: dict[str, list[float]] = {}
             for result in results:
                 for entry in result:

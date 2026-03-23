@@ -66,7 +66,9 @@ def run_lens(
     text_input = model._prepare(text)
 
     unembed_mod = _get_module(model._model, arch.unembedding_name)
-    unembed_weight = unembed_mod.weight  # (vocab_size, embed_dim)
+    unembed_weight = unembed_mod.weight  # (vocab_size, embed_dim) or (embed_dim, vocab_size) for Conv1D
+    if type(unembed_mod).__name__ == "Conv1D":
+        unembed_weight = unembed_weight.T  # normalize to (vocab_size, embed_dim)
     unembed_bias = getattr(unembed_mod, "bias", None)
 
     # Handle models where embed_dim != hidden_size (e.g. OPT-350m)
@@ -96,11 +98,12 @@ def run_lens(
         except AttributeError:
             continue
 
-    with torch.no_grad():
-        model._forward(text_input)
-
-    for h in hooks:
-        h.remove()
+    try:
+        with torch.no_grad():
+            model._forward(text_input)
+    finally:
+        for h in hooks:
+            h.remove()
 
     if not layer_outputs:
         console.print("\n  [yellow]lens:[/yellow] no layer outputs captured.\n")

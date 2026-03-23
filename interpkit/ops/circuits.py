@@ -221,7 +221,7 @@ def run_ov_scores(
 
         svd_vals = torch.linalg.svdvals(w_ov.cpu())
         fro_norm = w_ov.norm().item()
-        approx_rank = int((svd_vals > 0.01 * svd_vals[0]).sum().item())
+        approx_rank = int((svd_vals > 0.01 * svd_vals[0]).sum().item()) if svd_vals[0] > 0 else 0
 
         heads.append({
             "head": h,
@@ -289,7 +289,7 @@ def run_qk_scores(
 
         svd_vals = torch.linalg.svdvals(w_qk.cpu())
         fro_norm = w_qk.norm().item()
-        approx_rank = int((svd_vals > 0.01 * svd_vals[0]).sum().item())
+        approx_rank = int((svd_vals > 0.01 * svd_vals[0]).sum().item()) if svd_vals[0] > 0 else 0
 
         heads.append({
             "head": h,

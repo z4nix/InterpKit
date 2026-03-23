@@ -83,9 +83,11 @@ def run_head_activations(
 
     model_input = model._prepare(input_data)
     handle = proj_mod.register_forward_hook(_capture_input_hook)
-    with torch.no_grad():
-        model._forward(model_input)
-    handle.remove()
+    try:
+        with torch.no_grad():
+            model._forward(model_input)
+    finally:
+        handle.remove()
 
     if not captured_input:
         raise RuntimeError(
@@ -97,6 +99,12 @@ def run_head_activations(
     if concat_heads.dim() == 2:
         concat_heads = concat_heads.unsqueeze(0)
 
+    if concat_heads.shape[-1] % num_heads != 0:
+        raise ValueError(
+            f"Pre-projection activation dim ({concat_heads.shape[-1]}) is not divisible "
+            f"by num_attention_heads ({num_heads}). The module may use grouped-query "
+            f"attention or a different head layout."
+        )
     head_dim = concat_heads.shape[-1] // num_heads
     batch, seq, _ = concat_heads.shape
 

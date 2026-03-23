@@ -138,7 +138,7 @@ def run_attention(
         def _make_qk_hook(name: str, attn_name: str):
             def hook_fn(_mod: torch.nn.Module, _inp: Any, output: Any) -> None:
                 t = output if isinstance(output, torch.Tensor) else (
-                    output[0] if isinstance(output, (tuple, list)) else None
+                    output[0] if isinstance(output, (tuple, list)) and len(output) > 0 and isinstance(output[0], torch.Tensor) else None
                 )
                 if t is not None:
                     qk_cache.setdefault(attn_name, {})[name] = t.detach()
@@ -324,6 +324,11 @@ def _qk_to_attention(
 
     # GQA / MQA: expand K heads to match Q heads
     if num_kv_heads < num_q_heads:
+        if num_q_heads % num_kv_heads != 0:
+            raise ValueError(
+                f"num_q_heads ({num_q_heads}) must be divisible by "
+                f"num_kv_heads ({num_kv_heads}) for GQA/MQA repeat."
+            )
         repeats = num_q_heads // num_kv_heads
         k = k.repeat_interleave(repeats, dim=0)  # (q_heads, seq, head_dim)
 
@@ -343,11 +348,11 @@ def _get_top_pairs(
     """Find top-k (source_pos, target_pos, score) pairs in an attention matrix."""
     flat = attn.view(-1)
     topk_vals, topk_idxs = flat.topk(min(k, flat.numel()))
-    seq_len = attn.shape[-1]
+    n_cols = attn.shape[-1]
     pairs = []
     for val, idx in zip(topk_vals.tolist(), topk_idxs.tolist()):
-        src = idx // seq_len
-        tgt = idx % seq_len
+        src = idx // n_cols
+        tgt = idx % n_cols
         pairs.append((src, tgt, val))
     return pairs
 

@@ -25,7 +25,7 @@ def _make_ablation_hook(method: str = "mean", *, resample_act: torch.Tensor | No
     """
     def hook_fn(_mod, _inp, output):
         t = output if isinstance(output, torch.Tensor) else (
-            output[0] if isinstance(output, (tuple, list)) and isinstance(output[0], torch.Tensor) else None
+            output[0] if isinstance(output, (tuple, list)) and len(output) > 0 and isinstance(output[0], torch.Tensor) else None
         )
         if t is None:
             return output
@@ -110,6 +110,8 @@ def run_find_circuit(
             f"must have the same number of entries."
         )
     n_pairs = len(cleans)
+    if n_pairs == 0:
+        raise ValueError("At least one clean/corrupted pair is required.")
 
     # Prepare all pairs and cache baseline logits
     pairs: list[tuple[Any, Any, torch.Tensor, torch.Tensor]] = []
@@ -156,7 +158,11 @@ def run_find_circuit(
     if not components:
         raise ValueError("No attention or MLP components found for circuit discovery.")
 
-    ablation_method = method if method in ("zero", "mean", "resample") else "mean"
+    if method not in ("zero", "mean", "resample"):
+        raise ValueError(
+            f"method must be one of 'zero', 'mean', 'resample'; got {method!r}"
+        )
+    ablation_method = method
 
     # For resample ablation, cache each component's corrupted-input activations
     # per pair so we can swap them in during ablation.
@@ -178,7 +184,7 @@ def run_find_circuit(
                     def _cache(k: str):
                         def fn(_mod, _inp, output):
                             t = output if isinstance(output, torch.Tensor) else (
-                                output[0] if isinstance(output, (tuple, list)) and isinstance(output[0], torch.Tensor) else None
+                                output[0] if isinstance(output, (tuple, list)) and len(output) > 0 and isinstance(output[0], torch.Tensor) else None
                             )
                             if t is not None:
                                 corrupted_acts[k] = t.detach().clone()
@@ -212,9 +218,11 @@ def run_find_circuit(
                 handle = comp["module"].register_forward_hook(
                     _make_ablation_hook(ablation_method, resample_act=resample_act)
                 )
-                with torch.no_grad():
-                    ablated_logits = model._forward(ci)
-                handle.remove()
+                try:
+                    with torch.no_grad():
+                        ablated_logits = model._forward(ci)
+                finally:
+                    handle.remove()
 
                 effect = _compute_effect(cl, rl, ablated_logits, metric=metric)
                 effect_sum += 1.0 - effect
@@ -261,11 +269,12 @@ def run_find_circuit(
                         _make_ablation_hook(ablation_method, resample_act=resample_act)
                     ))
 
-                with torch.no_grad():
-                    circuit_only_logits = model._forward(ci)
-
-                for h in hooks:
-                    h.remove()
+                try:
+                    with torch.no_grad():
+                        circuit_only_logits = model._forward(ci)
+                finally:
+                    for h in hooks:
+                        h.remove()
 
                 faith_sum += _compute_effect(cl, rl, circuit_only_logits, metric=metric)
                 if _verify_ctx is not None and _verify_task is not None:

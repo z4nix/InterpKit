@@ -95,6 +95,8 @@ class Model:
         if isinstance(out, torch.Tensor):
             return out
         if isinstance(out, (tuple, list)):
+            if len(out) == 0:
+                raise TypeError("Model returned an empty tuple/list — expected tensor output.")
             return out[0]
         raise TypeError(f"Unexpected model output type: {type(out).__name__}")
 
@@ -779,7 +781,11 @@ def load(
     torch_dtype: torch.dtype | str | None = None
     if dtype is not None:
         if isinstance(dtype, str):
-            torch_dtype = _dtype_map.get(dtype, dtype)
+            if dtype not in _dtype_map:
+                raise ValueError(
+                    f"Unknown dtype {dtype!r}. Allowed values: {', '.join(sorted(_dtype_map.keys()))}"
+                )
+            torch_dtype = _dtype_map[dtype]
         else:
             torch_dtype = dtype
 
@@ -1003,11 +1009,11 @@ def _hash_input(model_input: dict[str, torch.Tensor] | torch.Tensor) -> int:
             v = model_input[k]
             h.update(k.encode())
             if isinstance(v, torch.Tensor):
-                h.update(v.detach().cpu().float().contiguous().numpy().tobytes())
+                h.update(v.detach().cpu().contiguous().numpy().tobytes())
             else:
                 h.update(repr(v).encode())
     else:
-        h.update(model_input.detach().cpu().float().contiguous().numpy().tobytes())
+        h.update(model_input.detach().cpu().contiguous().numpy().tobytes())
     return int.from_bytes(h.digest()[:8], "little")
 
 

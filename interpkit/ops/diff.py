@@ -70,13 +70,19 @@ def run_diff(
         a = acts_a[name].float().cpu().view(-1)
         b = acts_b[name].float().cpu().view(-1)
 
+        if a.numel() == 0 or b.numel() == 0:
+            continue
+
         if a.shape != b.shape:
             min_size = min(a.numel(), b.numel())
             a = a[:min_size]
             b = b[:min_size]
 
-        cosine_sim = torch.nn.functional.cosine_similarity(a.unsqueeze(0), b.unsqueeze(0), dim=-1)
-        distance = (1.0 - cosine_sim.item())
+        if a.norm() == 0 and b.norm() == 0:
+            distance = 0.0
+        else:
+            cosine_sim = torch.nn.functional.cosine_similarity(a.unsqueeze(0), b.unsqueeze(0), dim=-1)
+            distance = (1.0 - cosine_sim.item())
 
         results.append({
             "module": name,

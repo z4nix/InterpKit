@@ -45,23 +45,26 @@ def run_report(
     console.print("  [dim]Running prediction...[/dim]")
     import torch
 
-    with torch.no_grad():
-        model_input = model._prepare(input_data)
-        logits = model._forward(model_input)
-
-    if logits.dim() == 3:
-        last_logits = logits[0, -1, :]
-    elif logits.dim() == 2:
-        last_logits = logits[0]
-    else:
-        last_logits = logits.view(-1)
-
-    probs = torch.softmax(last_logits, dim=-1)
-    top5_vals, top5_ids = probs.topk(5)
     predictions = []
-    for tid, p in zip(top5_ids.tolist(), top5_vals.tolist()):
-        tok_str = model._tokenizer.decode([tid]) if model._tokenizer else str(tid)
-        predictions.append({"token": tok_str, "token_id": tid, "probability": round(p, 4)})
+    try:
+        with torch.no_grad():
+            model_input = model._prepare(input_data)
+            logits = model._forward(model_input)
+
+        if logits.dim() == 3:
+            last_logits = logits[0, -1, :]
+        elif logits.dim() == 2:
+            last_logits = logits[0]
+        else:
+            last_logits = logits.view(-1)
+
+        probs = torch.softmax(last_logits.float(), dim=-1)
+        top5_vals, top5_ids = probs.topk(5)
+        for tid, p in zip(top5_ids.tolist(), top5_vals.tolist()):
+            tok_str = model._tokenizer.decode([tid]) if model._tokenizer else str(tid)
+            predictions.append({"token": tok_str, "token_id": tid, "probability": round(p, 4)})
+    except Exception:
+        pass
     sections["prediction"] = predictions
 
     # 2. DLA
@@ -143,7 +146,7 @@ def run_report(
         dla_section = '<div id="dla" class="panel"><h2>DLA</h2><p>Not available for this model.</p></div>'
 
     # Lens section
-    if sections["lens"] is not None:
+    if sections["lens"]:
         input_tokens = None
         if model._tokenizer and isinstance(input_data, str):
             enc = model._tokenizer(input_data, return_tensors="pt")

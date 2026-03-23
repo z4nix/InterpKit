@@ -200,6 +200,11 @@ def run_contrastive_features(
     """
     from interpkit.ops.activations import run_activations
 
+    if not positive_inputs:
+        raise ValueError("At least one positive input is required for contrastive features.")
+    if not negative_inputs:
+        raise ValueError("At least one negative input is required for contrastive features.")
+
     def _group_features(inputs: list[Any], progress: Progress, task) -> torch.Tensor:
         feat_sum: torch.Tensor | None = None
         for inp in inputs:
@@ -348,6 +353,11 @@ def _download_weights(hf_id: str) -> dict[str, torch.Tensor]:
         return torch.load(path, map_location="cpu", weights_only=True)
     except (EntryNotFoundError, FileNotFoundError):
         pass
+    except RepositoryNotFoundError:
+        raise FileNotFoundError(
+            f"HuggingFace repository {hf_id!r} not found. "
+            f"Check the repo ID and your network/auth settings."
+        )
 
     raise FileNotFoundError(
         f"Could not find sae_weights.safetensors or sae_weights.pt in {hf_id!r}. "

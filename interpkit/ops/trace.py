@@ -267,6 +267,11 @@ def _run_position_trace(
     corrupted_logits = model._forward(corrupted_input)
 
     # Determine seq_len from cached activations
+    if not clean_cache:
+        raise ValueError(
+            "No layer activations were captured during the clean forward pass. "
+            "Check that layer_names match actual modules in the model."
+        )
     sample_cached = next(iter(clean_cache.values()))
     if sample_cached.dim() == 3:
         seq_len = sample_cached.shape[1]

@@ -57,9 +57,11 @@ def run_ablate(
                 resample_act = t.detach().clone()
 
         h = target_mod.register_forward_hook(_cache_hook)
-        with torch.no_grad():
-            model._forward(ref_input)
-        h.remove()
+        try:
+            with torch.no_grad():
+                model._forward(ref_input)
+        finally:
+            h.remove()
 
     # 3. Ablated forward
     def _ablate_hook(_mod: torch.nn.Module, _inp: Any, output: Any) -> Any:
@@ -86,9 +88,11 @@ def run_ablate(
         return (replacement,) + tuple(output[1:])
 
     handle = target_mod.register_forward_hook(_ablate_hook)
-    with torch.no_grad():
-        ablated_logits = model._forward(model_input)
-    handle.remove()
+    try:
+        with torch.no_grad():
+            ablated_logits = model._forward(model_input)
+    finally:
+        handle.remove()
 
     effect = _compute_ablation_effect(clean_logits, ablated_logits)
 

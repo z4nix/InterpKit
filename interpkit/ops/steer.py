@@ -21,11 +21,17 @@ def _activation_mean(model: "Model", text: Any, *, at: str) -> torch.Tensor:
     from interpkit.ops.activations import run_activations
 
     act = run_activations(model, text, at=at, print_stats=False)
-    if act.dim() >= 3:
+    if act.dim() == 3:
         return act[0].mean(dim=0)
     elif act.dim() == 2:
         return act.mean(dim=0)
-    return act
+    elif act.dim() == 1:
+        return act
+    raise ValueError(
+        f"Steering requires activations with 1–3 dimensions (got {act.dim()}D "
+        f"with shape {tuple(act.shape)}). Use a module that outputs (batch, seq, hidden) "
+        f"shaped activations."
+    )
 
 
 def run_steer_vector(
@@ -44,6 +50,11 @@ def run_steer_vector(
     """
     positives = positive if isinstance(positive, list) else [positive]
     negatives = negative if isinstance(negative, list) else [negative]
+
+    if not positives:
+        raise ValueError("At least one positive example is required.")
+    if not negatives:
+        raise ValueError("At least one negative example is required.")
 
     total = len(positives) + len(negatives)
     use_progress = total > 2
@@ -97,6 +108,14 @@ def run_steer(
     target_mod = _get_module(model._model, at)
 
     def _steer_hook(_mod: torch.nn.Module, _inp: Any, output: Any) -> Any:
+        t = output if isinstance(output, torch.Tensor) else (
+            output[0] if isinstance(output, (tuple, list)) and len(output) > 0 else None
+        )
+        if t is not None and t.shape[-1] != vector.shape[-1]:
+            raise ValueError(
+                f"Steering vector dimension ({vector.shape[-1]}) does not match "
+                f"module output dimension ({t.shape[-1]}) at '{at}'."
+            )
         if isinstance(output, torch.Tensor):
             return output + scale * vector.to(output.device)
         elif isinstance(output, (tuple, list)):
@@ -105,8 +124,10 @@ def run_steer(
         return output
 
     handle = target_mod.register_forward_hook(_steer_hook)
-    steered_logits = model._forward(model_input)
-    handle.remove()
+    try:
+        steered_logits = model._forward(model_input)
+    finally:
+        handle.remove()
 
     # Extract top tokens
     original_tokens = _top_tokens(model, original_logits)

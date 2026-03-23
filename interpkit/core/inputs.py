@@ -37,7 +37,10 @@ def prepare_input(
 
         # .pt tensor file?
         if raw.endswith(".pt"):
-            return torch.load(raw, map_location=device, weights_only=True)
+            try:
+                return torch.load(raw, map_location=device, weights_only=True)
+            except TypeError:
+                return torch.load(raw, map_location=device)
 
         # Text
         if tokenizer is None:
@@ -85,7 +88,7 @@ def prepare_pair(
 
 def read_examples_file(path: str) -> list[str]:
     """Read a text file with one example per line, skipping blank lines."""
-    lines = Path(path).read_text().strip().splitlines()
+    lines = Path(path).read_text(encoding="utf-8").strip().splitlines()
     return [line.strip() for line in lines if line.strip()]
 
 

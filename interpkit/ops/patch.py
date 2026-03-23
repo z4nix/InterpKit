@@ -101,6 +101,12 @@ def run_patch(
         model._forward(corrupted_input)
         h.remove()
 
+        if not clean_pre or not corrupted_pre:
+            raise RuntimeError(
+                f"Head-level patching failed: could not capture pre-projection "
+                f"activations for module '{at}'. The output projection may not "
+                f"match the expected structure."
+            )
         if clean_pre and corrupted_pre:
             cp = clean_pre[0].float()
             crp = corrupted_pre[0].float()
@@ -127,8 +133,6 @@ def run_patch(
             handle = proj_mod.register_forward_pre_hook(_pre_hook)
             patched_logits = model._forward(corrupted_input)
             handle.remove()
-        else:
-            patched_logits = corrupted_logits
 
     elif positions is not None:
         clean_cached = cached_activation[0]

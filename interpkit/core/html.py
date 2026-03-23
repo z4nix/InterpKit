@@ -143,7 +143,7 @@ def html_attention(
     for entry in attention_data:
         layers.setdefault(entry["layer"], []).append(entry)
 
-    tok_labels = tokens or [str(i) for i in range(max(len(entry.get("weights", [])) for entry in attention_data))]
+    tok_labels = tokens or [str(i) for i in range(max((len(entry.get("weights", [])) for entry in attention_data), default=0))]
     tok_json = json.dumps([html.escape(t) for t in tok_labels])
     data_json = json.dumps({
         str(layer): [
@@ -234,7 +234,8 @@ def html_trace(results: list[dict[str, Any]]) -> str:
 
     roles = sorted(set(r.get("role", "") for r in results if r.get("role")))
     role_buttons = "".join(
-        f'<button class="filter-btn" onclick="toggleFilter(\'{role}\')">{role}</button>'
+        f'<button class="filter-btn" onclick="toggleFilter(\'{html.escape(role, quote=True)}\')">'
+        f'{html.escape(role)}</button>'
         for role in roles
     )
 
@@ -379,7 +380,6 @@ def html_lens(predictions: list[dict[str, Any]], input_tokens: list[str] | None 
 <div class="controls panel">
     <label>Color by: <select id="colorBy" onchange="renderLens()">
         <option value="prob">Probability</option>
-        <option value="entropy">Entropy</option>
     </select></label>
 </div>
 <div id="lensContainer" class="panel" style="overflow-x:auto"></div>
@@ -545,11 +545,11 @@ const PT_TOKENS = {tokens_json};
     const container = document.getElementById('ptContainer');
     const nLayers = PT_EFFECTS.length;
     if (!nLayers) {{ container.innerHTML = '<p>No data</p>'; return; }}
-    const nPos = PT_EFFECTS[0].length;
+    const nPos = Math.max(...PT_EFFECTS.map(r => r.length), 0);
 
     let maxVal = 0;
     for (let i = 0; i < nLayers; i++)
-        for (let j = 0; j < nPos; j++)
+        for (let j = 0; j < (PT_EFFECTS[i] || []).length; j++)
             if (PT_EFFECTS[i][j] > maxVal) maxVal = PT_EFFECTS[i][j];
     if (maxVal < 0.001) maxVal = 1;
 
@@ -563,7 +563,7 @@ const PT_TOKENS = {tokens_json};
         const lbl = PT_LAYERS[i] || ('L' + i);
         h += '<tr><td style="font-size:10px;font-weight:600;white-space:nowrap">' + lbl + '</td>';
         for (let j = 0; j < nPos; j++) {{
-            const v = PT_EFFECTS[i][j];
+            const v = (PT_EFFECTS[i] && PT_EFFECTS[i][j] != null) ? PT_EFFECTS[i][j] : 0;
             const intensity = v / maxVal;
             const r = Math.round(233 * intensity + 26 * (1-intensity));
             const g = Math.round(69 * intensity + 33 * (1-intensity));
@@ -639,7 +639,7 @@ renderPreds(STEERED, 'steerContainer');
 
 def html_diff(results: dict[str, Any], model_a: str, model_b: str) -> str:
     """Per-module distance bars comparing two models' activations."""
-    distances = results.get("distances", results.get("module_distances", []))
+    distances = results.get("distances", results.get("module_distances", results.get("results", [])))
     if not distances:
         return _wrap_page("Model Diff", "<h1>Diff</h1><p>No data.</p>")
 

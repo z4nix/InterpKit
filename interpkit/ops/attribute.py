@@ -105,6 +105,8 @@ def _attribute_text(
                 interpolated = alpha * base_embeddings
                 interpolated = interpolated.requires_grad_(True)
 
+                model._model.zero_grad(set_to_none=True)
+
                 def _patched_forward_ig(*args: Any, **kwargs: Any) -> torch.Tensor:
                     return interpolated
 

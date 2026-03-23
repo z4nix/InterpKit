@@ -283,7 +283,11 @@ def plot_lens(
         layers = [p["layer_name"] for p in predictions]
 
         if has_multi_pos:
-            num_pos = len(predictions[0]["positions"])
+            num_pos = max(
+                (max((pp["pos"] for pp in p["positions"]), default=-1) + 1)
+                for p in predictions if p.get("positions")
+            )
+            num_pos = max(num_pos, 1)
             data = np.zeros((len(layers), num_pos))
             annotations = [[" "] * num_pos for _ in layers]
 
