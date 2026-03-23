@@ -143,9 +143,10 @@ class Model:
         return self
 
     def clear_cache(self) -> None:
-        """Free cached activation tensors."""
+        """Free cached activation tensors and release device memory."""
         self._cache.clear()
         self._cache_input_hash = None
+        _empty_device_cache(self._device)
 
     def _get_cached(
         self,
@@ -219,12 +220,16 @@ class Model:
 
     def steer_vector(
         self,
-        positive: str | torch.Tensor | Any,
-        negative: str | torch.Tensor | Any,
+        positive: str | torch.Tensor | list | Any,
+        negative: str | torch.Tensor | list | Any,
         *,
         at: str,
     ) -> torch.Tensor:
-        """Extract a steering vector: activation(positive) - activation(negative)."""
+        """Extract a steering vector: mean(act(positives)) - mean(act(negatives)).
+
+        *positive* and *negative* may each be a single input or a list of
+        inputs for more robust direction estimation.
+        """
         from interpkit.ops.steer import run_steer_vector
 
         return run_steer_vector(self, positive, negative, at=at)
@@ -423,6 +428,32 @@ class Model:
             raise TypeError(f"Expected SAE or HF repo ID string, got {type(sae).__name__}")
 
         return run_features(self, input_data, at=at, sae=sae, top_k=top_k, attribute=attribute)
+
+    def contrastive_features(
+        self,
+        positive_inputs: list[Any],
+        negative_inputs: list[Any],
+        *,
+        at: str,
+        sae: str | Any,
+        top_k: int = 20,
+    ) -> dict[str, Any]:
+        """Compare SAE feature activations between positive and negative groups.
+
+        Returns features ranked by absolute differential activation,
+        surfacing features that distinguish the two concepts.
+        """
+        from interpkit.ops.sae import SAE as SAEClass
+        from interpkit.ops.sae import load_sae, run_contrastive_features
+
+        if isinstance(sae, str):
+            sae = load_sae(sae, device=self._device)
+        elif not isinstance(sae, SAEClass):
+            raise TypeError(f"Expected SAE or HF repo ID string, got {type(sae).__name__}")
+
+        return run_contrastive_features(
+            self, positive_inputs, negative_inputs, at=at, sae=sae, top_k=top_k,
+        )
 
     def attribute(
         self,
@@ -624,8 +655,8 @@ class Model:
 
     def find_circuit(
         self,
-        clean: str | torch.Tensor | Any,
-        corrupted: str | torch.Tensor | Any,
+        clean: str | torch.Tensor | list | Any,
+        corrupted: str | torch.Tensor | list | Any,
         *,
         threshold: float = 0.01,
         method: str = "mean",
@@ -636,6 +667,9 @@ class Model:
         Identifies which attention heads and MLPs are necessary by
         individually ablating each component and keeping those whose
         ablation changes the output by more than *threshold*.
+
+        *clean* and *corrupted* may each be a single input or parallel
+        lists for multi-pair circuit discovery (effects are averaged).
 
         Parameters
         ----------
@@ -674,6 +708,29 @@ class Model:
 
 
 # ======================================================================
+# Device helpers
+# ======================================================================
+
+
+def _resolve_device() -> str:
+    """Auto-detect the best available device: cuda > mps > cpu."""
+    if torch.cuda.is_available():
+        return "cuda"
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def _empty_device_cache(device: torch.device | str) -> None:
+    """Release cached memory for the given device backend."""
+    dev = str(device)
+    if dev.startswith("cuda") and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    elif dev == "mps" and hasattr(torch, "mps"):
+        torch.mps.empty_cache()
+
+
+# ======================================================================
 # Top-level loader
 # ======================================================================
 
@@ -699,7 +756,7 @@ def load(
     image_processor:
         An explicit image processor. Auto-loaded for HF vision models if not provided.
     device:
-        Device to run on. Defaults to CUDA if available, else CPU.
+        Device to run on. Auto-detected (cuda > mps > cpu) if omitted.
         Ignored when *device_map* is set (HF handles placement).
     dtype:
         Model dtype: ``"float16"``, ``"bfloat16"``, ``"float32"``,
@@ -727,7 +784,18 @@ def load(
             torch_dtype = dtype
 
     if device is None and device_map is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = _resolve_device()
+
+    # MPS does not fully support bfloat16 in many PyTorch versions;
+    # silently downgrade to float16 to avoid hard-to-debug errors.
+    if str(device) == "mps" and torch_dtype is torch.bfloat16:
+        import warnings
+
+        warnings.warn(
+            "bfloat16 is not fully supported on MPS; falling back to float16.",
+            stacklevel=2,
+        )
+        torch_dtype = torch.float16
 
     is_tl = False
 

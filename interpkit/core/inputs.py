@@ -83,6 +83,12 @@ def prepare_pair(
     return a, b
 
 
+def read_examples_file(path: str) -> list[str]:
+    """Read a text file with one example per line, skipping blank lines."""
+    lines = Path(path).read_text().strip().splitlines()
+    return [line.strip() for line in lines if line.strip()]
+
+
 def _looks_like_image_path(s: str) -> bool:
     _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
     ext = os.path.splitext(s)[1].lower()

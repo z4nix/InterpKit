@@ -13,26 +13,13 @@ import torch.nn as nn
 
 
 # ---------------------------------------------------------------------------
-# Heuristic patterns for semantic module role detection
+# Known module names & structural role assignment
 # ---------------------------------------------------------------------------
 
-_ATTENTION_PATTERNS = re.compile(
-    r"(^|\.)(self_attn|self_attention|attn|attention|mha|multi_head_attention)(\.|\b)",
-    re.IGNORECASE,
-)
-_MLP_PATTERNS = re.compile(
-    r"(^|\.)(mlp|ffn|feed_forward|fc_?\d*)(\.|\b)", re.IGNORECASE
-)
-_HEAD_PATTERNS = re.compile(
-    r"(^|\.)(lm_head|head|classifier|output_projection|qa_outputs)(\.|\b)", re.IGNORECASE
-)
-_NORM_PATTERNS = re.compile(
-    r"(^|\.)(layer_?norm|rms_?norm|norm|ln_f|ln_\d)(\.|\b)", re.IGNORECASE
-)
-_EMBED_PATTERNS = re.compile(
-    r"(^|\.)(embed|wte|wpe|embedding|token_embedding|position_embedding)(\.|\b)",
-    re.IGNORECASE,
-)
+_HEAD_BASE_NAMES = frozenset({
+    "lm_head", "head", "classifier", "output_projection",
+    "qa_outputs", "embed_out",
+})
 
 _FUSED_QKV_NAMES = frozenset({"c_attn", "qkv", "query_key_value"})
 _Q_PROJ_NAMES = frozenset({"q_proj", "query", "q_lin"})
@@ -95,29 +82,82 @@ class ModelArchInfo:
         return self.has_lm_head and self.unembedding_name is not None
 
 
-def _classify_role(name: str, type_name: str = "") -> str | None:
-    if _HEAD_PATTERNS.search(name):
-        return "head"
-    if _ATTENTION_PATTERNS.search(name):
-        return "attention"
-    if _MLP_PATTERNS.search(name):
-        return "mlp"
-    if _NORM_PATTERNS.search(name):
-        return "norm"
-    if _EMBED_PATTERNS.search(name):
-        return "embed"
+def _is_norm_module(mod: nn.Module) -> bool:
+    """Check if a module is a normalization layer by its actual type."""
+    if isinstance(mod, (nn.LayerNorm, nn.GroupNorm,
+                        nn.BatchNorm1d, nn.BatchNorm2d,
+                        nn.InstanceNorm1d, nn.InstanceNorm2d)):
+        return True
+    return "norm" in type(mod).__name__.lower()
 
-    # Fallback: check the module class name for models that use non-standard
-    # path names but descriptive class names (e.g. BloomAttention,
-    # RecurrentGemmaSdpaAttention).
-    if type_name:
-        tn = type_name.lower()
+
+def _assign_roles(
+    modules: list[ModuleInfo],
+    model: nn.Module,
+    layer_infos: list[LayerInfo],
+    layer_names: list[str],
+    unembed_name: str | None,
+) -> None:
+    """Assign semantic roles using resolved model structure and isinstance checks.
+
+    Priority:
+    1. Discovered unembedding → ``"head"``
+    2. Structural containment under resolved attn_path → ``"attention"``
+    3. Structural containment under resolved mlp_path → ``"mlp"``
+    4. ``isinstance`` — ``nn.Embedding`` → ``"embed"``
+    5. ``isinstance`` — norm modules → ``"norm"``
+    6. Output heads outside the layer stack (base-name set lookup) → ``"head"``
+    7. Fallback: class name contains "attention"/"mlp" → for architectures
+       where structural resolution didn't find attn/mlp paths.
+    """
+    mod_map = dict(model.named_modules())
+
+    attn_prefixes = [li.attn_path for li in layer_infos if li.attn_path]
+    mlp_prefixes = [li.mlp_path for li in layer_infos if li.mlp_path]
+
+    for mi in modules:
+        mod = mod_map.get(mi.name)
+
+        if unembed_name and mi.name == unembed_name:
+            mi.role = "head"
+            continue
+
+        if any(mi.name == p or mi.name.startswith(p + ".") for p in attn_prefixes):
+            mi.role = "attention"
+            continue
+
+        if any(mi.name == p or mi.name.startswith(p + ".") for p in mlp_prefixes):
+            mi.role = "mlp"
+            continue
+
+        if mod is None:
+            continue
+
+        if isinstance(mod, nn.Embedding):
+            mi.role = "embed"
+            continue
+
+        if _is_norm_module(mod):
+            mi.role = "norm"
+            continue
+
+        base = mi.name.rsplit(".", 1)[-1].lower()
+        if (base in _HEAD_BASE_NAMES
+                and hasattr(mod, "weight")
+                and not any(mi.name.startswith(lp + ".") for lp in layer_names)):
+            mi.role = "head"
+            continue
+
+    # Fallback: class-name check for architectures where layer_infos
+    # couldn't resolve attn/mlp paths (non-standard module tree).
+    for mi in modules:
+        if mi.role is not None:
+            continue
+        tn = mi.type_name.lower()
         if "attention" in tn or "selfattn" in tn:
-            return "attention"
-        if "mlp" in tn or "feedforward" in tn:
-            return "mlp"
-
-    return None
+            mi.role = "attention"
+        elif "mlp" in tn or "feedforward" in tn:
+            mi.role = "mlp"
 
 
 def _count_params(module: nn.Module) -> int:
@@ -185,7 +225,8 @@ def _find_unembedding(model: nn.Module) -> str | None:
     vocab_size = getattr(getattr(model, "config", None), "vocab_size", None)
     if vocab_size is not None:
         for name, module in model.named_modules():
-            if _HEAD_PATTERNS.search(name) and hasattr(module, "weight"):
+            base = name.rsplit(".", 1)[-1].lower()
+            if base in _HEAD_BASE_NAMES and hasattr(module, "weight"):
                 out_features = getattr(module, "out_features", None)
                 if out_features == vocab_size:
                     return name
@@ -455,7 +496,6 @@ def discover(
             name=name,
             type_name=mod_type_name,
             param_count=_count_params(mod),
-            role=_classify_role(name, mod_type_name),
         )
         module_infos.append(info)
 
@@ -505,6 +545,9 @@ def discover(
     layer_infos = [
         _resolve_layer_info(model, ln, idx) for idx, ln in enumerate(layer_names)
     ]
+
+    # Assign semantic roles using resolved structure
+    _assign_roles(module_infos, model, layer_infos, layer_names, unembed_name)
 
     # Detect project_out for models with embed_dim != hidden_size
     project_out_path = _detect_project_out(model)

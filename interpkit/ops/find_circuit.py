@@ -53,8 +53,8 @@ def _make_ablation_hook(method: str = "mean", *, resample_act: torch.Tensor | No
 
 def run_find_circuit(
     model: "Model",
-    clean: Any,
-    corrupted: Any,
+    clean: Any | list[Any],
+    corrupted: Any | list[Any],
     *,
     threshold: float = 0.01,
     method: str = "mean",
@@ -64,6 +64,10 @@ def run_find_circuit(
 
     Identifies which attention heads and MLPs are necessary for the model's
     output on the *clean* input to differ from the *corrupted* input.
+
+    *clean* and *corrupted* may each be a single input or parallel lists.
+    When lists are provided, ablation effects are averaged across all pairs
+    to produce a more robust circuit.
 
     Algorithm:
       1. Ablate each component individually and measure effect.
@@ -97,11 +101,35 @@ def run_find_circuit(
     if not arch.layer_names:
         raise ValueError("Circuit discovery requires detected layer structure.")
 
-    clean_input, corrupted_input = model._prepare_pair(clean, corrupted)
+    # Normalise to lists of pairs
+    cleans = clean if isinstance(clean, list) else [clean]
+    corrupteds = corrupted if isinstance(corrupted, list) else [corrupted]
+    if len(cleans) != len(corrupteds):
+        raise ValueError(
+            f"clean ({len(cleans)} examples) and corrupted ({len(corrupteds)} examples) "
+            f"must have the same number of entries."
+        )
+    n_pairs = len(cleans)
 
-    with torch.no_grad():
-        clean_logits = model._forward(clean_input)
-        corrupted_logits = model._forward(corrupted_input)
+    # Prepare all pairs and cache baseline logits
+    pairs: list[tuple[Any, Any, torch.Tensor, torch.Tensor]] = []
+    if n_pairs > 1:
+        with Progress(console=console, transient=True) as progress:
+            task = progress.add_task("Preparing baselines", total=n_pairs)
+            for c, r in zip(cleans, corrupteds):
+                ci, ri = model._prepare_pair(c, r)
+                with torch.no_grad():
+                    cl = model._forward(ci)
+                    rl = model._forward(ri)
+                pairs.append((ci, ri, cl, rl))
+                progress.advance(task)
+    else:
+        for c, r in zip(cleans, corrupteds):
+            ci, ri = model._prepare_pair(c, r)
+            with torch.no_grad():
+                cl = model._forward(ci)
+                rl = model._forward(ri)
+            pairs.append((ci, ri, cl, rl))
 
     # Enumerate all attention and MLP components
     components: list[dict[str, Any]] = []
@@ -130,28 +158,44 @@ def run_find_circuit(
 
     ablation_method = method if method in ("zero", "mean", "resample") else "mean"
 
-    # For resample ablation, cache each component's corrupted-input activation
-    corrupted_acts: dict[str, torch.Tensor] = {}
+    # For resample ablation, cache each component's corrupted-input activations
+    # per pair so we can swap them in during ablation.
+    all_corrupted_acts: list[dict[str, torch.Tensor]] = []
     if ablation_method == "resample":
-        cache_hooks: list[torch.utils.hooks.RemovableHook] = []
-        for comp in components:
-            key = comp["module_name"]
+        _resample_progress = n_pairs > 1
+        _resample_ctx = Progress(console=console, transient=True) if _resample_progress else None
+        _resample_task = None
+        if _resample_ctx is not None:
+            _resample_ctx.start()
+            _resample_task = _resample_ctx.add_task("Caching corrupted activations", total=n_pairs)
+        try:
+            for _ci, ri, _cl, _rl in pairs:
+                corrupted_acts: dict[str, torch.Tensor] = {}
+                cache_hooks: list = []
+                for comp in components:
+                    key = comp["module_name"]
 
-            def _cache(k: str):
-                def fn(_mod, _inp, output):
-                    t = output if isinstance(output, torch.Tensor) else (
-                        output[0] if isinstance(output, (tuple, list)) and isinstance(output[0], torch.Tensor) else None
-                    )
-                    if t is not None:
-                        corrupted_acts[k] = t.detach().clone()
-                return fn
+                    def _cache(k: str):
+                        def fn(_mod, _inp, output):
+                            t = output if isinstance(output, torch.Tensor) else (
+                                output[0] if isinstance(output, (tuple, list)) and isinstance(output[0], torch.Tensor) else None
+                            )
+                            if t is not None:
+                                corrupted_acts[k] = t.detach().clone()
+                        return fn
 
-            cache_hooks.append(comp["module"].register_forward_hook(_cache(key)))
+                    cache_hooks.append(comp["module"].register_forward_hook(_cache(key)))
 
-        with torch.no_grad():
-            model._forward(corrupted_input)
-        for h in cache_hooks:
-            h.remove()
+                with torch.no_grad():
+                    model._forward(ri)
+                for h in cache_hooks:
+                    h.remove()
+                all_corrupted_acts.append(corrupted_acts)
+                if _resample_ctx is not None and _resample_task is not None:
+                    _resample_ctx.advance(_resample_task)
+        finally:
+            if _resample_ctx is not None:
+                _resample_ctx.stop()
 
     # Phase 1: individual ablation — measure each component's importance
     component_effects: list[dict[str, Any]] = []
@@ -159,16 +203,23 @@ def run_find_circuit(
     with Progress(console=console, transient=True) as progress:
         task = progress.add_task("Evaluating components", total=len(components))
         for comp in components:
-            resample_act = corrupted_acts.get(comp["module_name"]) if ablation_method == "resample" else None
-            handle = comp["module"].register_forward_hook(
-                _make_ablation_hook(ablation_method, resample_act=resample_act)
-            )
-            with torch.no_grad():
-                ablated_logits = model._forward(clean_input)
-            handle.remove()
+            effect_sum = 0.0
+            for pi, (ci, _ri, cl, rl) in enumerate(pairs):
+                resample_act = (
+                    all_corrupted_acts[pi].get(comp["module_name"])
+                    if ablation_method == "resample" else None
+                )
+                handle = comp["module"].register_forward_hook(
+                    _make_ablation_hook(ablation_method, resample_act=resample_act)
+                )
+                with torch.no_grad():
+                    ablated_logits = model._forward(ci)
+                handle.remove()
 
-            effect = _compute_effect(clean_logits, corrupted_logits, ablated_logits, metric=metric)
-            ablation_effect = 1.0 - effect
+                effect = _compute_effect(cl, rl, ablated_logits, metric=metric)
+                effect_sum += 1.0 - effect
+
+            ablation_effect = effect_sum / n_pairs
 
             component_effects.append({
                 "component": comp["component"],
@@ -191,22 +242,39 @@ def run_find_circuit(
     verification = {"circuit_effect": 0.0, "faithfulness": 0.0}
 
     if excluded:
-        hooks = []
-        for comp in excluded:
-            resample_act = corrupted_acts.get(comp["module_name"]) if ablation_method == "resample" else None
-            hooks.append(comp["module"].register_forward_hook(
-                _make_ablation_hook(ablation_method, resample_act=resample_act)
-            ))
+        faith_sum = 0.0
+        _verify_progress = n_pairs > 1
+        _verify_ctx = Progress(console=console, transient=True) if _verify_progress else None
+        _verify_task = None
+        if _verify_ctx is not None:
+            _verify_ctx.start()
+            _verify_task = _verify_ctx.add_task("Verifying circuit", total=n_pairs)
+        try:
+            for pi, (ci, _ri, cl, rl) in enumerate(pairs):
+                hooks = []
+                for comp in excluded:
+                    resample_act = (
+                        all_corrupted_acts[pi].get(comp["module_name"])
+                        if ablation_method == "resample" else None
+                    )
+                    hooks.append(comp["module"].register_forward_hook(
+                        _make_ablation_hook(ablation_method, resample_act=resample_act)
+                    ))
 
-        with torch.no_grad():
-            circuit_only_logits = model._forward(clean_input)
+                with torch.no_grad():
+                    circuit_only_logits = model._forward(ci)
 
-        for h in hooks:
-            h.remove()
+                for h in hooks:
+                    h.remove()
 
-        faithfulness = _compute_effect(
-            clean_logits, corrupted_logits, circuit_only_logits, metric=metric
-        )
+                faith_sum += _compute_effect(cl, rl, circuit_only_logits, metric=metric)
+                if _verify_ctx is not None and _verify_task is not None:
+                    _verify_ctx.advance(_verify_task)
+        finally:
+            if _verify_ctx is not None:
+                _verify_ctx.stop()
+
+        faithfulness = faith_sum / n_pairs
         verification["faithfulness"] = faithfulness
         verification["circuit_effect"] = 1.0 - faithfulness
     else:
@@ -229,6 +297,7 @@ def run_find_circuit(
         "verification": verification,
         "threshold": threshold,
         "total_components": len(component_effects),
+        "num_pairs": n_pairs,
     }
 
     _render_circuit(result)
@@ -244,11 +313,14 @@ def _render_circuit(result: dict[str, Any]) -> None:
     excluded = result["excluded"]
     verification = result["verification"]
 
+    n_pairs = result.get("num_pairs", 1)
+    pairs_label = f"  |  Pairs: {n_pairs}" if n_pairs > 1 else ""
+
     console.print(f"\n[bold]Circuit Discovery[/bold]")
     console.print(
         f"  Threshold: {result['threshold']}  |  "
         f"Circuit: {len(circuit)}/{result['total_components']} components  |  "
-        f"Faithfulness: {verification['faithfulness']:.1%}\n"
+        f"Faithfulness: {verification['faithfulness']:.1%}{pairs_label}\n"
     )
 
     if circuit:

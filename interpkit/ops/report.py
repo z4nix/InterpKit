@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from rich.console import Console
+
 if TYPE_CHECKING:
     from interpkit.core.model import Model
+
+console = Console()
 
 
 def run_report(
@@ -38,6 +42,7 @@ def run_report(
     sections: dict[str, Any] = {}
 
     # 1. Prediction
+    console.print("  [dim]Running prediction...[/dim]")
     import torch
 
     with torch.no_grad():
@@ -60,6 +65,7 @@ def run_report(
     sections["prediction"] = predictions
 
     # 2. DLA
+    console.print("  [dim]Running DLA...[/dim]")
     try:
         dla_result = model.dla(input_data)
         sections["dla"] = dla_result
@@ -67,6 +73,7 @@ def run_report(
         sections["dla"] = None
 
     # 3. Logit Lens
+    console.print("  [dim]Running logit lens...[/dim]")
     try:
         lens_result = model.lens(input_data)
         sections["lens"] = lens_result
@@ -74,6 +81,7 @@ def run_report(
         sections["lens"] = None
 
     # 4. Attention
+    console.print("  [dim]Running attention analysis...[/dim]")
     try:
         attn_result = model.attention(input_data)
         sections["attention"] = attn_result
@@ -81,6 +89,7 @@ def run_report(
         sections["attention"] = None
 
     # 5. Attribution
+    console.print("  [dim]Running attribution...[/dim]")
     try:
         attr_result = model.attribute(input_data, method="integrated_gradients")
         sections["attribution"] = attr_result

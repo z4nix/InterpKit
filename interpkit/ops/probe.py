@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 from rich.console import Console
+from rich.progress import Progress
 
 if TYPE_CHECKING:
     from interpkit.core.model import Model
@@ -33,16 +34,18 @@ def run_probe(
 
     # Extract activations for all texts
     features = []
-    for text in texts:
-        act = run_activations(model, text, at=at, print_stats=False)
-        # Take last-token hidden state for sequence models
-        if act.dim() == 3:
-            vec = act[0, -1, :]  # (hidden,)
-        elif act.dim() == 2:
-            vec = act[-1, :]
-        else:
-            vec = act.view(-1)
-        features.append(vec.cpu().float().numpy())
+    with Progress(console=console, transient=True) as progress:
+        task = progress.add_task("Extracting activations", total=len(texts))
+        for text in texts:
+            act = run_activations(model, text, at=at, print_stats=False)
+            if act.dim() == 3:
+                vec = act[0, -1, :]  # (hidden,)
+            elif act.dim() == 2:
+                vec = act[-1, :]
+            else:
+                vec = act.view(-1)
+            features.append(vec.cpu().float().numpy())
+            progress.advance(task)
 
     import numpy as np
 
@@ -140,13 +143,17 @@ def _probe_torch(X: Any, y: Any) -> dict[str, Any]:
     optimizer = torch.optim.Adam(linear.parameters(), lr=0.01)
     criterion = torch.nn.CrossEntropyLoss()
 
+    n_epochs = 500
     linear.train()
-    for _ in range(500):
-        optimizer.zero_grad()
-        logits = linear(X_t)
-        loss = criterion(logits, y_t)
-        loss.backward()
-        optimizer.step()
+    with Progress(console=console, transient=True) as progress:
+        task = progress.add_task("Training probe", total=n_epochs)
+        for _ in range(n_epochs):
+            optimizer.zero_grad()
+            logits = linear(X_t)
+            loss = criterion(logits, y_t)
+            loss.backward()
+            optimizer.step()
+            progress.advance(task)
 
     linear.eval()
     with torch.no_grad():

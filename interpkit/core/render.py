@@ -509,6 +509,55 @@ def render_features(result: dict[str, Any]) -> None:
     console.print()
 
 
+def render_contrastive_features(result: dict[str, Any]) -> None:
+    """Print contrastive SAE feature analysis results."""
+    console.print(f"\n[bold]Contrastive SAE Features at: {result['module']}[/bold]")
+    console.print(
+        f"  Positive examples: {result['num_positive']}  |  "
+        f"Negative examples: {result['num_negative']}  |  "
+        f"Total features: {result['total_features']}"
+    )
+
+    top = result.get("top_differential_features", [])
+    if not top:
+        console.print("  No differential features found.")
+        console.print()
+        return
+
+    max_diff = max(abs(f["diff"]) for f in top) if top else 1.0
+
+    table = Table(show_header=True, header_style="bold", show_lines=False)
+    table.add_column("Rank", justify="right", style="dim")
+    table.add_column("Feature", style="cyan", justify="right")
+    table.add_column("Pos Mean", justify="right")
+    table.add_column("Neg Mean", justify="right")
+    table.add_column("Diff", justify="right", style="bold")
+    table.add_column("", no_wrap=True, min_width=20)
+
+    bar_width = 20
+    for rank, feat in enumerate(top, 1):
+        diff = feat["diff"]
+        fill = int(bar_width * abs(diff) / max_diff) if max_diff > 0 else 0
+        bar_char = "█" * fill
+        if diff > 0:
+            bar = f"[green]+{bar_char}[/green]"
+            sign = "+"
+        else:
+            bar = f"[red]-{bar_char}[/red]"
+            sign = ""
+        table.add_row(
+            str(rank),
+            str(feat["feature_idx"]),
+            f"{feat['positive_mean']:.4f}",
+            f"{feat['negative_mean']:.4f}",
+            f"{sign}{diff:.4f}",
+            bar,
+        )
+
+    console.print(table)
+    console.print()
+
+
 # ------------------------------------------------------------------
 # Direct Logit Attribution rendering
 # ------------------------------------------------------------------

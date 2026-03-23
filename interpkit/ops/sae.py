@@ -8,11 +8,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import torch
+from rich.console import Console
+from rich.progress import Progress
 
 from interpkit.ops.patch import _get_module
 
 if TYPE_CHECKING:
     from interpkit.core.model import Model
+
+console = Console()
 
 
 @dataclass
@@ -174,6 +178,78 @@ def run_features(
         from interpkit.core.render import render_features
 
         render_features(result)
+
+    return result
+
+
+def run_contrastive_features(
+    model: "Model",
+    positive_inputs: list[Any],
+    negative_inputs: list[Any],
+    *,
+    at: str,
+    sae: SAE,
+    top_k: int = 20,
+    print_results: bool = True,
+) -> dict[str, Any]:
+    """Compare SAE feature activations between two groups of inputs.
+
+    Returns features ranked by absolute differential activation
+    (positive mean - negative mean), surfacing features that distinguish
+    the two concepts.
+    """
+    from interpkit.ops.activations import run_activations
+
+    def _group_features(inputs: list[Any], progress: Progress, task) -> torch.Tensor:
+        feat_sum: torch.Tensor | None = None
+        for inp in inputs:
+            act = run_activations(model, inp, at=at, print_stats=False)
+            if not isinstance(act, torch.Tensor):
+                raise TypeError(f"Expected tensor, got {type(act).__name__}")
+            flat = act.view(-1, act.shape[-1]).float() if act.dim() > 1 else act.unsqueeze(0).float()
+            if flat.shape[-1] != sae.d_in:
+                raise ValueError(
+                    f"Activation dim ({flat.shape[-1]}) != SAE input dim ({sae.d_in}). "
+                    f"Make sure the SAE was trained on the same layer."
+                )
+            feats, _ = sae.forward(flat)
+            mean_feats = feats.mean(dim=0)
+            feat_sum = mean_feats if feat_sum is None else feat_sum + mean_feats
+            progress.advance(task)
+        return feat_sum / len(inputs)  # type: ignore[operator]
+
+    total = len(positive_inputs) + len(negative_inputs)
+    with Progress(console=console, transient=True) as progress:
+        task = progress.add_task("Processing examples", total=total)
+        pos_mean = _group_features(positive_inputs, progress, task)
+        neg_mean = _group_features(negative_inputs, progress, task)
+    diff = pos_mean - neg_mean
+
+    abs_diff = diff.abs()
+    k = min(top_k, sae.d_sae)
+    topk_vals, topk_idxs = abs_diff.topk(k)
+
+    top_features = []
+    for idx, _abs_val in zip(topk_idxs.tolist(), topk_vals.tolist()):
+        top_features.append({
+            "feature_idx": idx,
+            "positive_mean": pos_mean[idx].item(),
+            "negative_mean": neg_mean[idx].item(),
+            "diff": diff[idx].item(),
+        })
+
+    result: dict[str, Any] = {
+        "module": at,
+        "top_differential_features": top_features,
+        "num_positive": len(positive_inputs),
+        "num_negative": len(negative_inputs),
+        "total_features": sae.d_sae,
+    }
+
+    if print_results:
+        from interpkit.core.render import render_contrastive_features
+
+        render_contrastive_features(result)
 
     return result
 

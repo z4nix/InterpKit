@@ -77,6 +77,7 @@ def run_scan(
     # ------------------------------------------------------------------
     # 2. Direct Logit Attribution
     # ------------------------------------------------------------------
+    console.print("  [dim]Running DLA...[/dim]")
     if is_lm and has_tokenizer and arch.num_attention_heads:
         try:
             from interpkit.ops.dla import run_dla
@@ -117,6 +118,7 @@ def run_scan(
     # ------------------------------------------------------------------
     # 3. Logit lens
     # ------------------------------------------------------------------
+    console.print("  [dim]Running logit lens...[/dim]")
     if is_lm and has_tokenizer:
         try:
             from interpkit.ops.lens import run_lens
@@ -149,6 +151,7 @@ def run_scan(
     # ------------------------------------------------------------------
     # 4. Attention patterns
     # ------------------------------------------------------------------
+    console.print("  [dim]Running attention analysis...[/dim]")
     attn_modules = [m for m in arch.modules if m.role == "attention"]
     if attn_modules and is_text:
         try:
@@ -193,6 +196,7 @@ def run_scan(
     # ------------------------------------------------------------------
     # 5. Attribution
     # ------------------------------------------------------------------
+    console.print("  [dim]Running attribution...[/dim]")
     if is_text and has_tokenizer:
         try:
             from interpkit.ops.attribute import run_attribute

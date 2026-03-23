@@ -5,40 +5,73 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import torch
+from rich.console import Console
+from rich.progress import Progress
 
 from interpkit.ops.patch import _get_module
 
 if TYPE_CHECKING:
     from interpkit.core.model import Model
 
+console = Console()
+
+
+def _activation_mean(model: "Model", text: Any, *, at: str) -> torch.Tensor:
+    """Return the mean activation vector for a single input at *at*."""
+    from interpkit.ops.activations import run_activations
+
+    act = run_activations(model, text, at=at, print_stats=False)
+    if act.dim() >= 3:
+        return act[0].mean(dim=0)
+    elif act.dim() == 2:
+        return act.mean(dim=0)
+    return act
+
 
 def run_steer_vector(
     model: "Model",
-    positive: Any,
-    negative: Any,
+    positive: Any | list[Any],
+    negative: Any | list[Any],
     *,
     at: str,
 ) -> torch.Tensor:
-    """Extract a steering vector: activation(positive) - activation(negative) at module *at*.
+    """Extract a steering vector: mean(act(positives)) - mean(act(negatives)) at module *at*.
 
-    Both inputs are padded to the same length. The vector is the mean
-    difference across the sequence dimension.
+    *positive* and *negative* may each be a single input or a list of
+    inputs.  When lists are provided the activations are averaged across
+    all examples before computing the difference, producing a more robust
+    direction (Contrastive Activation Addition).
     """
-    from interpkit.ops.activations import run_activations
+    positives = positive if isinstance(positive, list) else [positive]
+    negatives = negative if isinstance(negative, list) else [negative]
 
-    pos_act = run_activations(model, positive, at=at, print_stats=False)
-    neg_act = run_activations(model, negative, at=at, print_stats=False)
+    total = len(positives) + len(negatives)
+    use_progress = total > 2
 
-    # Mean across sequence dim if present
-    if pos_act.dim() >= 3:
-        pos_mean = pos_act[0].mean(dim=0)  # (hidden,)
-        neg_mean = neg_act[0].mean(dim=0)
-    elif pos_act.dim() == 2:
-        pos_mean = pos_act.mean(dim=0)
-        neg_mean = neg_act.mean(dim=0)
+    pos_sum: torch.Tensor | None = None
+    neg_sum: torch.Tensor | None = None
+
+    if use_progress:
+        with Progress(console=console, transient=True) as progress:
+            task = progress.add_task("Computing steering vector", total=total)
+            for p in positives:
+                mv = _activation_mean(model, p, at=at)
+                pos_sum = mv if pos_sum is None else pos_sum + mv
+                progress.advance(task)
+            for n in negatives:
+                mv = _activation_mean(model, n, at=at)
+                neg_sum = mv if neg_sum is None else neg_sum + mv
+                progress.advance(task)
     else:
-        pos_mean = pos_act
-        neg_mean = neg_act
+        for p in positives:
+            mv = _activation_mean(model, p, at=at)
+            pos_sum = mv if pos_sum is None else pos_sum + mv
+        for n in negatives:
+            mv = _activation_mean(model, n, at=at)
+            neg_sum = mv if neg_sum is None else neg_sum + mv
+
+    pos_mean = pos_sum / len(positives)  # type: ignore[operator]
+    neg_mean = neg_sum / len(negatives)  # type: ignore[operator]
 
     return pos_mean - neg_mean
 

@@ -5,9 +5,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import torch
+from rich.console import Console
+from rich.progress import Progress
 
 if TYPE_CHECKING:
     from interpkit.core.model import Model
+
+console = Console()
 
 
 def run_attribute(
@@ -94,30 +98,33 @@ def _attribute_text(
         # Sundararajan et al. 2017: integrate gradients along path from
         # zero baseline to actual embeddings
         accumulated_grads = torch.zeros_like(base_embeddings)
-        for step in range(n_steps):
-            alpha = (step + 0.5) / n_steps
-            interpolated = alpha * base_embeddings
-            interpolated = interpolated.requires_grad_(True)
+        with Progress(console=console, transient=True) as progress:
+            task = progress.add_task("Integrated gradients", total=n_steps)
+            for step in range(n_steps):
+                alpha = (step + 0.5) / n_steps
+                interpolated = alpha * base_embeddings
+                interpolated = interpolated.requires_grad_(True)
 
-            def _patched_forward_ig(*args: Any, **kwargs: Any) -> torch.Tensor:
-                return interpolated
+                def _patched_forward_ig(*args: Any, **kwargs: Any) -> torch.Tensor:
+                    return interpolated
 
-            embed_layer.forward = _patched_forward_ig  # type: ignore[assignment]
-            try:
-                model_input = {k: v.to(model._device) for k, v in encoded.items()}
-                logits = model._forward_with_grad(model_input)
-                if logits.dim() == 3:
-                    logits_last = logits[0, -1, :]
-                else:
-                    logits_last = logits[0]
+                embed_layer.forward = _patched_forward_ig  # type: ignore[assignment]
+                try:
+                    model_input = {k: v.to(model._device) for k, v in encoded.items()}
+                    logits = model._forward_with_grad(model_input)
+                    if logits.dim() == 3:
+                        logits_last = logits[0, -1, :]
+                    else:
+                        logits_last = logits[0]
 
-                score = logits_last[target]
-                score.backward()
-            finally:
-                embed_layer.forward = original_forward  # type: ignore[assignment]
+                    score = logits_last[target]
+                    score.backward()
+                finally:
+                    embed_layer.forward = original_forward  # type: ignore[assignment]
 
-            if interpolated.grad is not None:
-                accumulated_grads += interpolated.grad.detach()
+                if interpolated.grad is not None:
+                    accumulated_grads += interpolated.grad.detach()
+                progress.advance(task)
 
         ig = (base_embeddings / n_steps) * accumulated_grads
         token_scores = ig[0].norm(dim=-1).tolist()
