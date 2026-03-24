@@ -113,7 +113,7 @@ def _attribute_text(
                 embed_layer.forward = _patched_forward_ig  # type: ignore[assignment]
                 try:
                     model_input = {k: v.to(model._device) for k, v in encoded.items()}
-                    logits = model._forward_with_grad(model_input)
+                    logits = model._forward_with_grad(model_input).float()
                     if logits.dim() == 3:
                         logits_last = logits[0, -1, :]
                     else:
@@ -140,7 +140,7 @@ def _attribute_text(
         embed_layer.forward = _patched_forward_gxi  # type: ignore[assignment]
         try:
             model_input = {k: v.to(model._device) for k, v in encoded.items()}
-            logits = model._forward_with_grad(model_input)
+            logits = model._forward_with_grad(model_input).float()
             if logits.dim() == 3:
                 logits_last = logits[0, -1, :]
             else:
@@ -164,7 +164,7 @@ def _attribute_text(
         embed_layer.forward = _patched_forward_grad  # type: ignore[assignment]
         try:
             model_input = {k: v.to(model._device) for k, v in encoded.items()}
-            logits = model._forward_with_grad(model_input)
+            logits = model._forward_with_grad(model_input).float()
             if logits.dim() == 3:
                 logits_last = logits[0, -1, :]
             else:
