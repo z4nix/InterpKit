@@ -96,7 +96,7 @@ def test_attribute_save_image_electra(electra_model):
 def test_attribute_html_valid_opt(opt_model):
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "attr.html")
-        opt_model.attribute(TEXT, html=path)
+        opt_model.attribute(TEXT, n_steps=10, html=path)
         _assert_valid_html(path)
 
 
