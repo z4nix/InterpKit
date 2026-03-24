@@ -5,7 +5,6 @@ Uses synthetic nn.Module trees — no HuggingFace downloads, fast execution.
 
 from __future__ import annotations
 
-import re
 from types import SimpleNamespace
 
 import pytest
@@ -16,18 +15,12 @@ from interpkit.core.discovery import (
     ModelArchInfo,
     ModuleInfo,
     LayerInfo,
-    _classify_role,
     _detect_layers,
     _find_unembedding,
     _parse_hf_config,
     _resolve_layer_info,
     _split_fused_weight,
     extract_proj_weight,
-    _ATTENTION_PATTERNS,
-    _MLP_PATTERNS,
-    _HEAD_PATTERNS,
-    _NORM_PATTERNS,
-    _EMBED_PATTERNS,
     _LM_HEAD_PATTERNS,
 )
 
@@ -147,47 +140,6 @@ class _SimpleModel(nn.Module):
             vocab_size=vocab,
         )
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  _classify_role tests
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-class TestClassifyRole:
-
-    def test_attention_path(self):
-        assert _classify_role("model.layers.0.self_attn") == "attention"
-
-    def test_mlp_path(self):
-        assert _classify_role("model.layers.0.mlp") == "mlp"
-
-    def test_head_path(self):
-        assert _classify_role("lm_head") == "head"
-
-    def test_norm_path(self):
-        assert _classify_role("model.layers.0.layer_norm") == "norm"
-
-    def test_embed_path(self):
-        assert _classify_role("model.embed") == "embed"
-        assert _classify_role("model.wte") == "embed"
-        assert _classify_role("model.token_embedding") == "embed"
-
-    def test_unrecognized_returns_none(self):
-        assert _classify_role("model.layers.0.some_custom_module") is None
-
-    def test_type_name_fallback_attention(self):
-        assert _classify_role("model.block.0.x", type_name="BartAttention") == "attention"
-
-    def test_type_name_fallback_mlp(self):
-        assert _classify_role("model.block.0.y", type_name="FeedForward") == "mlp"
-
-    def test_path_priority_over_type_name(self):
-        result = _classify_role("lm_head", type_name="SomeAttention")
-        assert result == "head"
-
-    def test_case_insensitivity(self):
-        assert _classify_role("model.SELF_ATTN") == "attention"
-        assert _classify_role("model.MLP.dense") == "mlp"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -516,27 +468,11 @@ class TestExtractProjWeight:
 
 class TestRegexPatterns:
 
-    def test_attention_patterns(self):
-        for name in ("self_attn", "model.self_attention.q", "attn", "attention", "mha"):
-            assert _ATTENTION_PATTERNS.search(name), f"Should match: {name}"
-        assert not _ATTENTION_PATTERNS.search("batch_norm")
-        assert not _ATTENTION_PATTERNS.search("mlp")
-
-    def test_mlp_patterns(self):
-        for name in ("mlp", "model.ffn", "feed_forward", "fc1", "fc2"):
-            assert _MLP_PATTERNS.search(name), f"Should match: {name}"
-        assert not _MLP_PATTERNS.search("self_attn")
-
     def test_lm_head_patterns(self):
         for name in ("lm_head", "embed_out", "output_projection"):
             assert _LM_HEAD_PATTERNS.search(name), f"Should match: {name}"
         assert not _LM_HEAD_PATTERNS.search("mlp")
         assert not _LM_HEAD_PATTERNS.search("classifier")
-
-    def test_embed_patterns(self):
-        for name in ("embed", "wte", "wpe", "model.embedding", "token_embedding"):
-            assert _EMBED_PATTERNS.search(name), f"Should match: {name}"
-        assert not _EMBED_PATTERNS.search("lm_head")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
