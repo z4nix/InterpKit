@@ -202,7 +202,7 @@ def run_scan(
             from interpkit.ops.attribute import run_attribute
 
             attr_result = run_attribute(
-                model, input_data, save=_save("attr"),
+                model, input_data, method="gradient", save=_save("attr"),
             )
             results["attribution"] = attr_result
 

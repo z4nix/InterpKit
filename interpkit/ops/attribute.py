@@ -94,6 +94,8 @@ def _attribute_text(
             else:
                 target = logits_clean[0].argmax().item()
 
+    model_input = {k: v.to(model._device) for k, v in encoded.items()}
+
     if method == "integrated_gradients":
         # Sundararajan et al. 2017: integrate gradients along path from
         # zero baseline to actual embeddings
@@ -102,30 +104,24 @@ def _attribute_text(
             task = progress.add_task("Integrated gradients", total=n_steps)
             for step in range(n_steps):
                 alpha = (step + 0.5) / n_steps
-                interpolated = alpha * base_embeddings
-                interpolated = interpolated.requires_grad_(True)
-
-                model._model.zero_grad(set_to_none=True)
+                interpolated = (alpha * base_embeddings).requires_grad_(True)
 
                 def _patched_forward_ig(*args: Any, **kwargs: Any) -> torch.Tensor:
                     return interpolated
 
                 embed_layer.forward = _patched_forward_ig  # type: ignore[assignment]
                 try:
-                    model_input = {k: v.to(model._device) for k, v in encoded.items()}
                     logits = model._forward_with_grad(model_input).float()
                     if logits.dim() == 3:
-                        logits_last = logits[0, -1, :]
+                        score = logits[0, -1, target]
                     else:
-                        logits_last = logits[0]
+                        score = logits[0, target]
 
-                    score = logits_last[target]
-                    score.backward()
+                    (grad,) = torch.autograd.grad(score, interpolated)
+                    accumulated_grads += grad.detach()
                 finally:
                     embed_layer.forward = original_forward  # type: ignore[assignment]
 
-                if interpolated.grad is not None:
-                    accumulated_grads += interpolated.grad.detach()
                 progress.advance(task)
 
         ig = (base_embeddings / n_steps) * accumulated_grads
@@ -139,20 +135,17 @@ def _attribute_text(
 
         embed_layer.forward = _patched_forward_gxi  # type: ignore[assignment]
         try:
-            model_input = {k: v.to(model._device) for k, v in encoded.items()}
             logits = model._forward_with_grad(model_input).float()
             if logits.dim() == 3:
-                logits_last = logits[0, -1, :]
+                score = logits[0, -1, target]
             else:
-                logits_last = logits[0]
-            score = logits_last[target]
-            score.backward()
+                score = logits[0, target]
+
+            (grad,) = torch.autograd.grad(score, embeddings)
         finally:
             embed_layer.forward = original_forward  # type: ignore[assignment]
 
-        if embeddings.grad is None:
-            raise RuntimeError("Gradient computation failed — no gradients on embeddings.")
-        gxi = embeddings.grad[0] * base_embeddings[0]
+        gxi = grad[0] * base_embeddings[0]
         token_scores = gxi.norm(dim=-1).tolist()
 
     else:  # "gradient" — vanilla saliency
@@ -163,20 +156,17 @@ def _attribute_text(
 
         embed_layer.forward = _patched_forward_grad  # type: ignore[assignment]
         try:
-            model_input = {k: v.to(model._device) for k, v in encoded.items()}
             logits = model._forward_with_grad(model_input).float()
             if logits.dim() == 3:
-                logits_last = logits[0, -1, :]
+                score = logits[0, -1, target]
             else:
-                logits_last = logits[0]
-            score = logits_last[target]
-            score.backward()
+                score = logits[0, target]
+
+            (grad,) = torch.autograd.grad(score, embeddings)
         finally:
             embed_layer.forward = original_forward  # type: ignore[assignment]
 
-        if embeddings.grad is None:
-            raise RuntimeError("Gradient computation failed — no gradients on embeddings.")
-        token_scores = embeddings.grad[0].norm(dim=-1).tolist()
+        token_scores = grad[0].norm(dim=-1).tolist()
 
     tokens = model._tokenizer.convert_ids_to_tokens(input_ids[0].tolist())
     render_attribution_tokens(tokens, token_scores)
