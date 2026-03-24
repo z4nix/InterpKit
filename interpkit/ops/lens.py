@@ -133,12 +133,14 @@ def run_lens(
         seq_len = hidden.shape[1]
 
         if final_norm is not None:
-            hidden = final_norm(hidden)
+            norm_dtype = next(final_norm.parameters()).dtype
+            hidden = final_norm(hidden.to(norm_dtype)).float()
 
         # Project through project_out if the model has embed_dim != hidden_size
         projected = hidden
         if project_out_mod is not None:
-            projected = project_out_mod(projected)
+            proj_dtype = next(project_out_mod.parameters()).dtype
+            projected = project_out_mod(projected.to(proj_dtype)).float()
 
         logits = projected @ unembed_weight.float().T
         if unembed_bias is not None:

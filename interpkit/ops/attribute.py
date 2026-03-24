@@ -291,10 +291,13 @@ def _find_embedding(model: torch.nn.Module) -> torch.nn.Module | None:
     to the largest embedding (by num_embeddings), which is almost always the
     token embedding rather than a position embedding.
     """
-    # Prefer explicitly named token embeddings
+    # Prefer explicitly named token/word embeddings, excluding token_type
     for name, mod in model.named_modules():
         if isinstance(mod, torch.nn.Embedding):
-            if "token" in name.lower() or "wte" in name.lower():
+            lower = name.lower()
+            if "token_type" in lower or "segment" in lower:
+                continue
+            if "word" in lower or "token" in lower or "wte" in lower:
                 return mod
 
     # Fall back to the largest embedding (token > position in practice)

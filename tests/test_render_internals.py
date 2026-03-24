@@ -43,7 +43,7 @@ def _capture(func, *args, **kwargs) -> str:
 
     buf = StringIO()
     old_console = render_mod.console
-    render_mod.console = Console(file=buf, width=200, force_terminal=True)
+    render_mod.console = Console(file=buf, width=200, no_color=True, highlight=False)
     try:
         func(*args, **kwargs)
     finally:

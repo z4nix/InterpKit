@@ -95,17 +95,9 @@ def test_dtype_torch_object_passed_directly():
     assert captured["torch_dtype"] is torch.bfloat16
 
 
-def test_dtype_unknown_string_passthrough():
-    captured = {}
-
-    def _fake_load_from_hf(name, *, tokenizer, image_processor, device, torch_dtype, device_map):
-        captured["torch_dtype"] = torch_dtype
-        return _SimpleModel(), _FakeTokenizer(), None
-
-    with patch("interpkit.core.model._load_from_hf", side_effect=_fake_load_from_hf):
+def test_dtype_unknown_string_raises():
+    with pytest.raises(ValueError, match="Unknown dtype"):
         load("gpt2", dtype="int8", device="cpu")
-
-    assert captured["torch_dtype"] == "int8"
 
 
 def test_dtype_none_not_forwarded():

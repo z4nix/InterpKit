@@ -92,6 +92,8 @@ class Model:
 
         if hasattr(out, "logits"):
             return out.logits
+        if hasattr(out, "start_logits"):
+            return torch.stack([out.start_logits, out.end_logits], dim=-1)
         if isinstance(out, torch.Tensor):
             return out
         if isinstance(out, (tuple, list)):
