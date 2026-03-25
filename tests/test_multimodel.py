@@ -122,7 +122,14 @@ def test_discover_recurrentgemma(recurrentgemma_model):
     arch = recurrentgemma_model.arch_info
     assert arch.is_language_model
     assert arch.layer_names
-    # FAILURE_MODE_CHECK: mixed recurrent/attention blocks
+    assert arch.is_hybrid, "RecurrentGemma should be detected as hybrid"
+    assert len(arch.attention_layer_indices) > 0, "Should find attention layers"
+    assert len(arch.attention_layer_indices) < len(arch.layer_names), (
+        "Not all layers should be attention"
+    )
+    for li in arch.attention_layer_infos:
+        assert li.attn_path is not None
+        assert li.layer_type in ("standard", "attention_only")
 
 
 def test_discover_qwen2(qwen2_model):
@@ -984,9 +991,14 @@ def test_ov_scores_bloom(bloom_model):
 
 @slow
 def test_ov_scores_recurrentgemma(recurrentgemma_model):
-    # FAILURE_MODE_CHECK: should only work on attention layers
-    result = recurrentgemma_model.ov_scores(layer=0)
+    # Layer 0 is recurrent — should auto-redirect to the nearest attention layer
+    import warnings
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        result = recurrentgemma_model.ov_scores(layer=0)
     assert "heads" in result
+    assert result["layer"] in recurrentgemma_model.arch_info.attention_layer_indices
+    assert any("Redirecting" in str(warning.message) for warning in w)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1012,12 +1024,18 @@ def test_composition_qwen2(qwen2_model):
 
 @slow
 def test_composition_recurrentgemma(recurrentgemma_model):
-    # FAILURE_MODE_CHECK: undefined if src/dst is recurrent
-    layers = recurrentgemma_model.arch_info.layer_names
-    if len(layers) < 2:
-        pytest.skip("Not enough layers")
-    result = recurrentgemma_model.composition(src_layer=0, dst_layer=1, comp_type="q")
+    # src=0 and dst=1 are both recurrent — should auto-redirect to attention layers
+    arch = recurrentgemma_model.arch_info
+    if len(arch.attention_layer_indices) < 2:
+        pytest.skip("Not enough attention layers")
+    import warnings
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        result = recurrentgemma_model.composition(src_layer=0, dst_layer=1, comp_type="q")
     assert "scores" in result
+    assert result["src_layer"] in arch.attention_layer_indices
+    assert result["dst_layer"] in arch.attention_layer_indices
+    assert any("Redirecting" in str(warning.message) for warning in w)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

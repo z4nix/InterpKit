@@ -22,9 +22,9 @@ _HEAD_BASE_NAMES = frozenset({
 })
 
 _FUSED_QKV_NAMES = frozenset({"c_attn", "qkv", "query_key_value"})
-_Q_PROJ_NAMES = frozenset({"q_proj", "query", "q_lin"})
-_K_PROJ_NAMES = frozenset({"k_proj", "key", "k_lin"})
-_V_PROJ_NAMES = frozenset({"v_proj", "value", "v_lin"})
+_Q_PROJ_NAMES = frozenset({"q_proj", "query", "q_lin", "q"})
+_K_PROJ_NAMES = frozenset({"k_proj", "key", "k_lin", "k"})
+_V_PROJ_NAMES = frozenset({"v_proj", "value", "v_lin", "v"})
 _O_PROJ_NAMES = frozenset({"c_proj", "out_proj", "o_proj", "dense", "out_lin", "o"})
 _INTERLEAVED_QKV_CLASSES = frozenset({"GPTNeoXAttention"})
 
@@ -46,6 +46,7 @@ class LayerInfo:
 
     name: str
     index: int
+    layer_type: str = "standard"
     attn_path: str | None = None
     mlp_path: str | None = None
     o_proj_path: str | None = None
@@ -80,6 +81,22 @@ class ModelArchInfo:
     @property
     def is_language_model(self) -> bool:
         return self.has_lm_head and self.unembedding_name is not None
+
+    @property
+    def attention_layer_indices(self) -> list[int]:
+        """Indices of layers that have a resolved attention submodule."""
+        return [li.index for li in self.layer_infos if li.attn_path is not None]
+
+    @property
+    def attention_layer_infos(self) -> list["LayerInfo"]:
+        """LayerInfo objects for layers that have a resolved attention submodule."""
+        return [li for li in self.layer_infos if li.attn_path is not None]
+
+    @property
+    def is_hybrid(self) -> bool:
+        """True when the model contains layers of different types."""
+        types = {li.layer_type for li in self.layer_infos}
+        return len(types) > 1
 
 
 def _is_norm_module(mod: nn.Module) -> bool:
@@ -197,6 +214,13 @@ def _parse_hf_config(model: nn.Module) -> dict[str, Any]:
             break
 
     info["vocab_size"] = getattr(config, "vocab_size", None)
+
+    for attr in ("block_types", "layers_block_type"):
+        val = getattr(config, attr, None)
+        if val is not None:
+            info["block_types"] = list(val)
+            break
+
     return info
 
 
@@ -356,27 +380,118 @@ def _resolve_output_proj(
             return
 
 
+_ALL_QKV_NAMES = _Q_PROJ_NAMES | _K_PROJ_NAMES | _V_PROJ_NAMES | _FUSED_QKV_NAMES
+
+
+def _has_qkv_children(mod: nn.Module) -> bool:
+    """True if *mod*'s direct children include Q/K/V (or fused) projections."""
+    names = {n for n, m in mod.named_children() if hasattr(m, "weight")}
+    has_sep = (
+        bool(names & _Q_PROJ_NAMES)
+        and bool(names & _K_PROJ_NAMES)
+        and bool(names & _V_PROJ_NAMES)
+    )
+    return has_sep or bool(names & _FUSED_QKV_NAMES)
+
+
+def _probe_for_attention(
+    layer_mod: nn.Module,
+    layer_path: str,
+) -> tuple[str, nn.Module] | None:
+    """BFS for the shallowest submodule whose *direct* children are Q/K/V
+    projections.  Unlike the old version (which returned the first coarse
+    container that had Q/K/V *somewhere* inside), this drills through
+    intermediate wrappers like ``nn.ModuleList`` to find the actual
+    attention module."""
+    queue: deque[tuple[str, nn.Module]] = deque()
+    for name, mod in layer_mod.named_children():
+        queue.append((f"{layer_path}.{name}", mod))
+    while queue:
+        path, mod = queue.popleft()
+        if _has_qkv_children(mod):
+            return path, mod
+        for cname, cmod in mod.named_children():
+            queue.append((f"{path}.{cname}", cmod))
+    return None
+
+
+def _probe_for_mlp(
+    layer_mod: nn.Module,
+    layer_path: str,
+    attn_path: str | None,
+) -> tuple[str, nn.Module] | None:
+    """BFS for the shallowest submodule that looks like an MLP: contains 2+
+    Linear-like weight modules, is not the attention module, and carries no
+    Q/K/V projections.  Drills through intermediate containers like
+    ``nn.ModuleList``."""
+    queue: deque[tuple[str, nn.Module]] = deque()
+    for name, mod in layer_mod.named_children():
+        queue.append((f"{layer_path}.{name}", mod))
+    while queue:
+        path, mod = queue.popleft()
+        if attn_path and path == attn_path:
+            continue
+        if _is_norm_module(mod):
+            continue
+        linear_count = 0
+        has_qkv = False
+        for sub_name, sub_mod in mod.named_modules():
+            if not sub_name or not hasattr(sub_mod, "weight"):
+                continue
+            if sub_mod.weight.dim() < 2:
+                continue
+            linear_count += 1
+            if sub_name.split(".")[-1] in _ALL_QKV_NAMES:
+                has_qkv = True
+        if linear_count >= 2 and not has_qkv:
+            return path, mod
+        for cname, cmod in mod.named_children():
+            queue.append((f"{path}.{cname}", cmod))
+    return None
+
+
 def _resolve_layer_info(
     model: nn.Module,
     layer_name: str,
     layer_idx: int,
+    *,
+    block_types: list[str] | None = None,
 ) -> LayerInfo:
     """Build a fully resolved :class:`LayerInfo` for one transformer layer."""
     info = LayerInfo(name=layer_name, index=layer_idx)
+
+    # If the config declares this layer recurrent, mark it early and skip
+    # the attention probe (MLP may still exist).
+    config_type = (
+        block_types[layer_idx]
+        if block_types and layer_idx < len(block_types)
+        else None
+    )
+
     try:
         layer_mod = _get_mod_by_path(model, layer_name)
     except AttributeError:
+        info.layer_type = "recurrent"
         return info
 
-    attn_result = _find_submodule_recursive(layer_mod, layer_name, _ATTN_RE)
+    # --- attention detection ---
+    attn_result: tuple[str, nn.Module] | None = None
+    if config_type not in ("recurrent",):
+        attn_result = _find_submodule_recursive(layer_mod, layer_name, _ATTN_RE)
+        if attn_result is None:
+            attn_result = _probe_for_attention(layer_mod, layer_name)
     if attn_result is not None:
         info.attn_path = attn_result[0]
         _resolve_projections(attn_result[1], attn_result[0], info)
 
+    # --- MLP detection ---
     mlp_result = _find_submodule_recursive(layer_mod, layer_name, _MLP_RE)
+    if mlp_result is None:
+        mlp_result = _probe_for_mlp(layer_mod, layer_name, info.attn_path)
     if mlp_result is not None:
         info.mlp_path = mlp_result[0]
 
+    # --- output projection ---
     _resolve_output_proj(
         attn_result[1] if attn_result else None,
         attn_result[0] if attn_result else None,
@@ -384,6 +499,19 @@ def _resolve_layer_info(
         layer_name,
         info,
     )
+
+    # --- classify layer type ---
+    if config_type == "recurrent":
+        info.layer_type = "recurrent"
+    elif info.attn_path and info.mlp_path:
+        info.layer_type = "standard"
+    elif info.attn_path:
+        info.layer_type = "attention_only"
+    elif info.mlp_path:
+        info.layer_type = "mlp_only"
+    else:
+        info.layer_type = "recurrent"
+
     return info
 
 
@@ -542,8 +670,10 @@ def discover(
     layer_names = _detect_layers(module_infos)
 
     # Resolve per-layer structural details
+    block_types = hf_meta.get("block_types")
     layer_infos = [
-        _resolve_layer_info(model, ln, idx) for idx, ln in enumerate(layer_names)
+        _resolve_layer_info(model, ln, idx, block_types=block_types)
+        for idx, ln in enumerate(layer_names)
     ]
 
     # Assign semantic roles using resolved structure

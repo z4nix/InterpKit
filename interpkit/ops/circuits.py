@@ -3,18 +3,54 @@
 from __future__ import annotations
 
 import re
+import warnings
 from typing import TYPE_CHECKING, Any
 
 import torch
 from rich.console import Console
 
 from interpkit.ops.patch import _get_module
-from interpkit.core.discovery import extract_proj_weight, _get_mod_by_path
+from interpkit.core.discovery import extract_proj_weight, _get_mod_by_path, ModelArchInfo
 
 if TYPE_CHECKING:
     from interpkit.core.model import Model
 
 console = Console()
+
+
+def _nearest_attention_layer(arch: ModelArchInfo, layer: int) -> int | None:
+    """Return the nearest attention layer index, preferring forward."""
+    indices = arch.attention_layer_indices
+    if not indices:
+        return None
+    forward = [i for i in indices if i >= layer]
+    if forward:
+        return forward[0]
+    return indices[-1]
+
+
+def _redirect_to_attention(arch: ModelArchInfo, layer: int, op_name: str) -> int:
+    """Validate that *layer* has attention; if not, redirect with a warning."""
+    li = arch.layer_infos[layer] if layer < len(arch.layer_infos) else None
+    if li is not None and li.attn_path is not None:
+        return layer
+
+    alt = _nearest_attention_layer(arch, layer)
+    if alt is None:
+        raise ValueError(
+            f"{op_name}: this model has no attention layers "
+            f"(all layers are {li.layer_type if li else 'unknown'})."
+        )
+
+    reason = (
+        f"layer_type='{li.layer_type}'" if li else "layer not found"
+    )
+    warnings.warn(
+        f"{op_name}: Layer {layer} has no attention ({reason}). "
+        f"Redirecting to nearest attention layer {alt}.",
+        stacklevel=3,
+    )
+    return alt
 
 
 # ------------------------------------------------------------------
@@ -170,11 +206,9 @@ def run_ov_scores(
     if not arch.layer_names or not arch.num_attention_heads:
         raise ValueError("OV analysis requires detected layer structure and head count.")
 
+    layer = _redirect_to_attention(arch, layer, "ov_scores")
     num_heads = arch.num_attention_heads
-    li = arch.layer_infos[layer] if layer < len(arch.layer_infos) else None
-
-    if li is None or li.attn_path is None:
-        raise ValueError(f"No attention submodule found in layer {layer}.")
+    li = arch.layer_infos[layer]
 
     # Find V projection weight via centralised extractor
     w_v = extract_proj_weight(
@@ -249,11 +283,9 @@ def run_qk_scores(
     if not arch.layer_names or not arch.num_attention_heads:
         raise ValueError("QK analysis requires detected layer structure and head count.")
 
+    layer = _redirect_to_attention(arch, layer, "qk_scores")
     num_heads = arch.num_attention_heads
-    li = arch.layer_infos[layer] if layer < len(arch.layer_infos) else None
-
-    if li is None or li.attn_path is None:
-        raise ValueError(f"No attention submodule found in layer {layer}.")
+    li = arch.layer_infos[layer]
 
     w_q = extract_proj_weight(
         model._model, li, "q", num_heads, arch.num_key_value_heads,
@@ -339,13 +371,14 @@ def run_composition(
     if not arch.layer_names or not arch.num_attention_heads:
         raise ValueError("Composition analysis requires layer structure and head count.")
 
+    src_layer = _redirect_to_attention(arch, src_layer, "composition (src)")
+    dst_layer = _redirect_to_attention(arch, dst_layer, "composition (dst)")
+
     num_heads = arch.num_attention_heads
     num_kv_heads = arch.num_key_value_heads or num_heads
 
     # Source layer: build W_OV = W_O @ W_V for each head
-    src_li = arch.layer_infos[src_layer] if src_layer < len(arch.layer_infos) else None
-    if src_li is None or src_li.attn_path is None:
-        raise ValueError(f"No attention in source layer {src_layer}.")
+    src_li = arch.layer_infos[src_layer]
     if src_li.o_proj_path is None:
         raise ValueError(f"No output projection in source layer {src_layer}.")
 
@@ -367,9 +400,7 @@ def run_composition(
     w_v_src = w_v_src.float()
 
     # Destination layer: get the composition target projection
-    dst_li = arch.layer_infos[dst_layer] if dst_layer < len(arch.layer_infos) else None
-    if dst_li is None or dst_li.attn_path is None:
-        raise ValueError(f"No attention in destination layer {dst_layer}.")
+    dst_li = arch.layer_infos[dst_layer]
 
     if comp_type not in ("q", "k", "v"):
         raise ValueError(f"comp_type must be 'q', 'k', or 'v', got {comp_type!r}")

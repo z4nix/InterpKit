@@ -493,3 +493,384 @@ class TestModelArchInfoProperty:
     def test_is_language_model_false_head_no_unembed(self):
         info = ModelArchInfo(has_lm_head=True, unembedding_name=None)
         assert info.is_language_model is False
+
+    def test_attention_layer_indices(self):
+        infos = [
+            LayerInfo(name="l.0", index=0, attn_path=None, layer_type="recurrent"),
+            LayerInfo(name="l.1", index=1, attn_path=None, layer_type="recurrent"),
+            LayerInfo(name="l.2", index=2, attn_path="l.2.attn", layer_type="standard"),
+            LayerInfo(name="l.3", index=3, attn_path=None, layer_type="recurrent"),
+            LayerInfo(name="l.4", index=4, attn_path=None, layer_type="recurrent"),
+            LayerInfo(name="l.5", index=5, attn_path="l.5.attn", layer_type="standard"),
+        ]
+        arch = ModelArchInfo(layer_infos=infos)
+        assert arch.attention_layer_indices == [2, 5]
+
+    def test_attention_layer_infos(self):
+        infos = [
+            LayerInfo(name="l.0", index=0, attn_path="l.0.attn"),
+            LayerInfo(name="l.1", index=1, attn_path=None),
+        ]
+        arch = ModelArchInfo(layer_infos=infos)
+        result = arch.attention_layer_infos
+        assert len(result) == 1
+        assert result[0].index == 0
+
+    def test_is_hybrid_true(self):
+        infos = [
+            LayerInfo(name="l.0", index=0, layer_type="recurrent"),
+            LayerInfo(name="l.1", index=1, layer_type="standard"),
+        ]
+        arch = ModelArchInfo(layer_infos=infos)
+        assert arch.is_hybrid is True
+
+    def test_is_hybrid_false(self):
+        infos = [
+            LayerInfo(name="l.0", index=0, layer_type="standard"),
+            LayerInfo(name="l.1", index=1, layer_type="standard"),
+        ]
+        arch = ModelArchInfo(layer_infos=infos)
+        assert arch.is_hybrid is False
+
+    def test_is_hybrid_empty(self):
+        arch = ModelArchInfo(layer_infos=[])
+        assert arch.is_hybrid is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Bottom-up Q/K/V probe tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestBottomUpProbe:
+    """Verify attention detection works when the container has a non-standard
+    name that _ATTN_RE won't match."""
+
+    def test_nonstandard_name_with_qkv_inside(self):
+        """temporal_block (RecurrentGemma-style) containing q/k/v projections."""
+        class _WeirdAttn(nn.Module):
+            def __init__(self, d=64):
+                super().__init__()
+                self.q_proj = _Linear(d, d)
+                self.k_proj = _Linear(d, d)
+                self.v_proj = _Linear(d, d)
+                self.o_proj = _Linear(d, d)
+
+        class _WeirdLayer(nn.Module):
+            def __init__(self, d=64):
+                super().__init__()
+                self.temporal_block = _WeirdAttn(d)
+                self.mlp_block = _MLP(d)
+
+        model = nn.Module()
+        model.layers = nn.ModuleList([_WeirdLayer()])
+        info = _resolve_layer_info(model, "layers.0", 0)
+        assert info.attn_path == "layers.0.temporal_block"
+        assert info.qkv_style == "separate"
+        assert info.q_proj_path is not None
+        assert info.k_proj_path is not None
+        assert info.v_proj_path is not None
+        assert info.o_proj_path is not None
+
+    def test_nonstandard_name_with_fused_qkv(self):
+        """Container with fused c_attn but non-standard container name."""
+        class _FusedBlock(nn.Module):
+            def __init__(self, d=64):
+                super().__init__()
+                self.c_attn = _Linear(d, 3 * d)
+                self.c_proj = _Linear(d, d)
+
+        class _Layer(nn.Module):
+            def __init__(self, d=64):
+                super().__init__()
+                self.compute_block = _FusedBlock(d)
+                self.feed = _MLP(d)
+
+        model = nn.Module()
+        model.layers = nn.ModuleList([_Layer()])
+        info = _resolve_layer_info(model, "layers.0", 0)
+        assert info.attn_path == "layers.0.compute_block"
+        assert info.qkv_style == "fused"
+
+    def test_no_qkv_projections_returns_none(self):
+        """A child with linear modules but no Q/K/V — probe should NOT match."""
+        class _Recurrent(nn.Module):
+            def __init__(self, d=64):
+                super().__init__()
+                self.gate = _Linear(d, d)
+                self.state = _Linear(d, d)
+
+        class _Layer(nn.Module):
+            def __init__(self, d=64):
+                super().__init__()
+                self.temporal_block = _Recurrent(d)
+
+        model = nn.Module()
+        model.layers = nn.ModuleList([_Layer()])
+        info = _resolve_layer_info(model, "layers.0", 0)
+        assert info.attn_path is None
+
+    def test_standard_name_still_takes_fast_path(self):
+        """When the name matches _ATTN_RE, probe is never needed."""
+        model = _SimpleModel(n_layers=1, attn_cls=_Attn)
+        info = _resolve_layer_info(model, "layers.0", 0)
+        assert info.attn_path == "layers.0.self_attn"
+        assert info.qkv_style == "separate"
+
+    def test_nested_qkv_projections(self):
+        """Q/K/V projections nested two levels deep — probe drills through
+        the wrapper to the actual attention module."""
+        class _Inner(nn.Module):
+            def __init__(self, d=64):
+                super().__init__()
+                self.q_proj = _Linear(d, d)
+                self.k_proj = _Linear(d, d)
+                self.v_proj = _Linear(d, d)
+                self.out_proj = _Linear(d, d)
+
+        class _Outer(nn.Module):
+            def __init__(self, d=64):
+                super().__init__()
+                self.core = _Inner(d)
+
+        class _Layer(nn.Module):
+            def __init__(self, d=64):
+                super().__init__()
+                self.block_x = _Outer(d)
+
+        model = nn.Module()
+        model.layers = nn.ModuleList([_Layer()])
+        info = _resolve_layer_info(model, "layers.0", 0)
+        assert info.attn_path == "layers.0.block_x.core"
+        assert info.q_proj_path is not None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  MLP-by-elimination probe tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestMLPByElimination:
+    """Verify MLP detection works when _MLP_RE doesn't match the name."""
+
+    def test_nonstandard_mlp_name(self):
+        """mlp_block (RecurrentGemma-style) detected by elimination."""
+        class _WeirdAttn(nn.Module):
+            def __init__(self, d=64):
+                super().__init__()
+                self.q_proj = _Linear(d, d)
+                self.k_proj = _Linear(d, d)
+                self.v_proj = _Linear(d, d)
+                self.o_proj = _Linear(d, d)
+
+        class _WeirdMLP(nn.Module):
+            def __init__(self, d=64):
+                super().__init__()
+                self.up = _Linear(d, d * 4)
+                self.down = _Linear(d * 4, d)
+
+        class _Layer(nn.Module):
+            def __init__(self, d=64):
+                super().__init__()
+                self.temporal_block = _WeirdAttn(d)
+                self.mlp_block = _WeirdMLP(d)
+
+        model = nn.Module()
+        model.layers = nn.ModuleList([_Layer()])
+        info = _resolve_layer_info(model, "layers.0", 0)
+        assert info.mlp_path == "layers.0.mlp_block"
+
+    def test_standard_mlp_name_still_works(self):
+        model = _SimpleModel(n_layers=1)
+        info = _resolve_layer_info(model, "layers.0", 0)
+        assert info.mlp_path == "layers.0.mlp"
+
+    def test_single_linear_not_mlp(self):
+        """A child with only one Linear should not be tagged as MLP."""
+        class _Layer(nn.Module):
+            def __init__(self, d=64):
+                super().__init__()
+                self.proj = _Linear(d, d)
+
+        model = nn.Module()
+        model.layers = nn.ModuleList([_Layer()])
+        info = _resolve_layer_info(model, "layers.0", 0)
+        assert info.mlp_path is None
+
+    def test_norm_child_not_tagged_as_mlp(self):
+        """Norm layers should be excluded even if they technically have weight."""
+        class _Layer(nn.Module):
+            def __init__(self, d=64):
+                super().__init__()
+                self.self_attn = _Attn(d)
+                self.norm = nn.LayerNorm(d)
+
+        model = nn.Module()
+        model.layers = nn.ModuleList([_Layer()])
+        info = _resolve_layer_info(model, "layers.0", 0)
+        assert info.mlp_path is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  layer_type classification tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestLayerType:
+
+    def test_standard_layer(self):
+        model = _SimpleModel(n_layers=1)
+        info = _resolve_layer_info(model, "layers.0", 0)
+        assert info.layer_type == "standard"
+
+    def test_attention_only_layer(self):
+        class _AttnOnlyLayer(nn.Module):
+            def __init__(self, d=64):
+                super().__init__()
+                self.self_attn = _Attn(d)
+
+        model = nn.Module()
+        model.layers = nn.ModuleList([_AttnOnlyLayer()])
+        info = _resolve_layer_info(model, "layers.0", 0)
+        assert info.layer_type == "attention_only"
+
+    def test_mlp_only_layer(self):
+        class _MLPOnlyLayer(nn.Module):
+            def __init__(self, d=64):
+                super().__init__()
+                self.mlp = _MLP(d)
+
+        model = nn.Module()
+        model.layers = nn.ModuleList([_MLPOnlyLayer()])
+        info = _resolve_layer_info(model, "layers.0", 0)
+        assert info.layer_type == "mlp_only"
+
+    def test_recurrent_layer(self):
+        class _RecurrentLayer(nn.Module):
+            def __init__(self, d=64):
+                super().__init__()
+                self.gate = _Linear(d, d)
+
+        model = nn.Module()
+        model.layers = nn.ModuleList([_RecurrentLayer()])
+        info = _resolve_layer_info(model, "layers.0", 0)
+        assert info.layer_type == "recurrent"
+
+    def test_block_types_override_recurrent(self):
+        """Config-declared recurrent skips the attention probe entirely."""
+        class _Layer(nn.Module):
+            def __init__(self, d=64):
+                super().__init__()
+                self.self_attn = _Attn(d)
+                self.mlp = _MLP(d)
+
+        model = nn.Module()
+        model.layers = nn.ModuleList([_Layer()])
+        info = _resolve_layer_info(
+            model, "layers.0", 0, block_types=["recurrent"],
+        )
+        assert info.layer_type == "recurrent"
+        assert info.attn_path is None
+
+    def test_block_types_attention_layer_proceeds(self):
+        """Config-declared attention layer proceeds normally."""
+        class _WeirdAttn(nn.Module):
+            def __init__(self, d=64):
+                super().__init__()
+                self.q_proj = _Linear(d, d)
+                self.k_proj = _Linear(d, d)
+                self.v_proj = _Linear(d, d)
+                self.o_proj = _Linear(d, d)
+
+        class _Layer(nn.Module):
+            def __init__(self, d=64):
+                super().__init__()
+                self.temporal_block = _WeirdAttn(d)
+
+        model = nn.Module()
+        model.layers = nn.ModuleList([_Layer()])
+        info = _resolve_layer_info(
+            model, "layers.0", 0, block_types=["attention"],
+        )
+        assert info.attn_path == "layers.0.temporal_block"
+        assert info.layer_type == "attention_only"
+
+    def test_hybrid_model_mixed_types(self):
+        """Simulate a hybrid model with alternating layer types."""
+        class _AttnLayer(nn.Module):
+            def __init__(self, d=64):
+                super().__init__()
+                self.temporal_block = _Attn(d)
+                self.mlp_block = _MLP(d)
+
+        class _RecurrentLayer(nn.Module):
+            def __init__(self, d=64):
+                super().__init__()
+                self.gate = _Linear(d, d)
+                self.state = _Linear(d, d)
+                self.mlp_block = _MLP(d)
+
+        model = nn.Module()
+        model.layers = nn.ModuleList([
+            _RecurrentLayer(),  # 0
+            _RecurrentLayer(),  # 1
+            _AttnLayer(),       # 2
+            _RecurrentLayer(),  # 3
+            _RecurrentLayer(),  # 4
+            _AttnLayer(),       # 5
+        ])
+        block_types = ["recurrent", "recurrent", "attention",
+                       "recurrent", "recurrent", "attention"]
+
+        infos = [
+            _resolve_layer_info(model, f"layers.{i}", i, block_types=block_types)
+            for i in range(6)
+        ]
+
+        assert infos[0].layer_type == "recurrent"
+        assert infos[0].attn_path is None
+        assert infos[1].layer_type == "recurrent"
+        assert infos[2].layer_type == "standard"
+        assert infos[2].attn_path is not None
+        assert infos[3].layer_type == "recurrent"
+        assert infos[5].layer_type == "standard"
+        assert infos[5].attn_path is not None
+
+        arch = ModelArchInfo(layer_infos=infos)
+        assert arch.is_hybrid is True
+        assert arch.attention_layer_indices == [2, 5]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  HF config block_types parsing
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestBlockTypesParsing:
+
+    def test_block_types_parsed(self):
+        model = nn.Linear(10, 10)
+        model.config = SimpleNamespace(
+            hidden_size=256,
+            num_hidden_layers=3,
+            num_attention_heads=4,
+            vocab_size=1000,
+            block_types=("recurrent", "recurrent", "attention"),
+        )
+        info = _parse_hf_config(model)
+        assert info["block_types"] == ["recurrent", "recurrent", "attention"]
+
+    def test_layers_block_type_alias(self):
+        model = nn.Linear(10, 10)
+        model.config = SimpleNamespace(
+            hidden_size=256,
+            layers_block_type=["attention", "recurrent"],
+        )
+        info = _parse_hf_config(model)
+        assert info["block_types"] == ["attention", "recurrent"]
+
+    def test_no_block_types(self):
+        model = nn.Linear(10, 10)
+        model.config = SimpleNamespace(hidden_size=256)
+        info = _parse_hf_config(model)
+        assert "block_types" not in info
