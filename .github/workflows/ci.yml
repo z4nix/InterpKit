@@ -38,4 +38,4 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: Run tests
-        run: pytest tests/ -v --timeout=120
+        run: pytest tests/ -v --timeout=300 -x

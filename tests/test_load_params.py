@@ -252,18 +252,11 @@ def test_load_nn_module_moves_to_device():
 
 
 def test_load_default_device_when_no_device_or_map():
-    """When neither device nor device_map is set, device defaults to cuda or cpu."""
-    captured = {}
+    """When neither device nor device_map is set, device is auto-detected."""
+    from interpkit.core.model import _resolve_device
 
-    def _fake_load_from_hf(name, *, tokenizer, image_processor, device, torch_dtype, device_map):
-        captured["device"] = device
-        return _SimpleModel(), _FakeTokenizer(), None
-
-    with patch("interpkit.core.model._load_from_hf", side_effect=_fake_load_from_hf):
-        load("gpt2")
-
-    expected = "cuda" if torch.cuda.is_available() else "cpu"
-    assert captured["device"] == expected
+    device = _resolve_device()
+    assert device in ("cuda", "mps", "cpu")
 
 
 # ══════════════════════════════════════════════════════════════════

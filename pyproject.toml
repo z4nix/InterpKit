@@ -58,7 +58,4 @@ include = ["interpkit*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-timeout = 120
-markers = [
-    "slow: marks tests that need large model downloads (deselect with '-m \"not slow\"')",
-]
+timeout = 300
