@@ -1,13 +1,6 @@
-```
-██╗███╗   ██╗████████╗███████╗██████╗ ██████╗ ██╗  ██╗██╗████████╗
-██║████╗  ██║╚══██╔══╝██╔════╝██╔══██╗██╔══██╗██║ ██╔╝██║╚══██╔══╝
-██║██╔██╗ ██║   ██║   █████╗  ██████╔╝██████╔╝█████╔╝ ██║   ██║
-██║██║╚██╗██║   ██║   ██╔══╝  ██╔══██╗██╔═══╝ ██╔═██╗ ██║   ██║
-██║██║ ╚████║   ██║   ███████╗██║  ██║██║     ██║  ██╗██║   ██║
-╚═╝╚═╝  ╚═══╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝   ╚═╝
-```
-
-> Mech interp for any HuggingFace model.
+<p align="center">
+  <img src="assets/logo.svg" alt="InterpKit" width="680">
+</p>
 
 [![PyPI version](https://img.shields.io/pypi/v/interpkit.svg)](https://pypi.org/project/interpkit/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
