@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "interpkit"
-version = "0.1.0"
+version = "0.2.0"
 description = "Mech interp for any HuggingFace model."
 readme = "README.md"
 license = "MIT"
@@ -47,9 +47,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/davidezani/InterpKit"
-Repository = "https://github.com/davidezani/InterpKit"
-Issues = "https://github.com/davidezani/InterpKit/issues"
+Homepage = "https://github.com/z4nix/MechKit"
+Repository = "https://github.com/z4nix/MechKit"
+Issues = "https://github.com/z4nix/MechKit/issues"
 
 [project.scripts]
 interpkit = "interpkit.cli.main:app"
