@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING, Any
 import torch
 from rich.console import Console
 
+from interpkit.core.discovery import ModelArchInfo, _get_mod_by_path, extract_proj_weight
 from interpkit.ops.patch import _get_module
-from interpkit.core.discovery import extract_proj_weight, _get_mod_by_path, ModelArchInfo
 
 if TYPE_CHECKING:
     from interpkit.core.model import Model
@@ -59,7 +59,7 @@ def _redirect_to_attention(arch: ModelArchInfo, layer: int, op_name: str) -> int
 
 
 def run_decompose(
-    model: "Model",
+    model: Model,
     input_data: Any,
     *,
     position: int = -1,
@@ -188,7 +188,7 @@ def run_decompose(
 
 
 def run_ov_scores(
-    model: "Model",
+    model: Model,
     *,
     layer: int,
 ) -> dict[str, Any]:
@@ -235,7 +235,7 @@ def run_ov_scores(
     # GQA: V may have fewer head slices than O
     num_kv_heads = arch.num_key_value_heads or num_heads
     head_dim = w_o.shape[1] // num_heads
-    d_model = w_o.shape[0]
+    w_o.shape[0]
 
     heads: list[dict[str, Any]] = []
     for h in range(num_heads):
@@ -271,7 +271,7 @@ def run_ov_scores(
 
 
 def run_qk_scores(
-    model: "Model",
+    model: Model,
     *,
     layer: int,
 ) -> dict[str, Any]:
@@ -342,7 +342,7 @@ def run_qk_scores(
 
 
 def run_composition(
-    model: "Model",
+    model: Model,
     *,
     src_layer: int,
     dst_layer: int,
@@ -389,7 +389,7 @@ def run_composition(
     raw_w_o_src = src_proj.weight.float()
     is_conv1d = type(src_proj).__name__ == "Conv1D"
     w_o_src = raw_w_o_src.T if is_conv1d else raw_w_o_src  # -> (d_model, H*D_h)
-    d_model = w_o_src.shape[0]
+    w_o_src.shape[0]
     head_dim = w_o_src.shape[1] // num_heads
 
     w_v_src = extract_proj_weight(

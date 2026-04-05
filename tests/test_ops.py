@@ -13,7 +13,6 @@ import tempfile
 import pytest
 import torch
 
-
 TEXT = "The capital of France is"
 CLEAN = "The Eiffel Tower is in Paris"
 CORRUPT = "The Eiffel Tower is in Rome"

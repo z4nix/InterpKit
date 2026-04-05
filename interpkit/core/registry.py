@@ -1,17 +1,27 @@
 """Manual annotation registry for custom nn.Module models.
 
-Usage::
+When interpkit's auto-discovery cannot detect your model's structure
+(you'll see a warning like "Could not auto-detect layer structure"),
+use ``register()`` to tell interpkit where the layers, attention, MLP,
+and output head live.
+
+Example — custom GPT-style model::
 
     import interpkit
 
     interpkit.register(
         my_model,
         layers=["blocks.0", "blocks.1", "blocks.2"],
+        attention_modules=["blocks.0.attn", "blocks.1.attn", "blocks.2.attn"],
+        mlp_modules=["blocks.0.ffn", "blocks.1.ffn", "blocks.2.ffn"],
         output_head="head",
     )
 
     model = interpkit.load(my_model, tokenizer=my_tokenizer)
     model.trace(tensor_a, tensor_b)
+
+To find the right module names, call ``model.inspect()`` after loading
+or use ``dict(model.named_modules())`` on your raw ``nn.Module``.
 """
 
 from __future__ import annotations
@@ -23,7 +33,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import torch.nn as nn
 
-_REGISTRY: dict[int, "Registration"] = {}
+_REGISTRY: dict[int, Registration] = {}
 
 
 @dataclass
@@ -44,6 +54,9 @@ def register(
 ) -> None:
     """Annotate a custom ``nn.Module`` so interpkit knows its structure.
 
+    Call this **before** ``interpkit.load()`` when auto-discovery fails or
+    misidentifies your model's components.
+
     Parameters
     ----------
     model:
@@ -52,9 +65,10 @@ def register(
         Ordered list of module names that constitute the repeated layer blocks
         (e.g. ``["blocks.0", "blocks.1", ...]``).
     output_head:
-        Module name of the output / LM head.
+        Module name of the output / LM head (enables DLA, logit lens, etc.).
     attention_modules:
-        Module names that should be treated as attention.
+        Module names that should be treated as attention (enables patching,
+        tracing, head-level analysis).
     mlp_modules:
         Module names that should be treated as MLPs.
     """

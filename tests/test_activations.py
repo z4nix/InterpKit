@@ -23,8 +23,10 @@ def test_activations_multiple_modules(gpt2_model):
 
 
 def test_activations_resnet(resnet_model):
+    import os
+    import tempfile
+
     from PIL import Image
-    import tempfile, os
 
     img = Image.new("RGB", (224, 224), color=(128, 64, 32))
     path = os.path.join(tempfile.gettempdir(), "test_act.jpg")

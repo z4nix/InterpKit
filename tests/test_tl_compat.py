@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from unittest.mock import MagicMock
 
 import torch
@@ -10,7 +9,6 @@ import torch.nn as nn
 
 import interpkit
 from interpkit.core.tl_compat import list_tl_hooks, to_native_name, to_tl_name
-
 
 # ── Name translation tests ──────────────────────────────────────
 

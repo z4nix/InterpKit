@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any
 import torch
 from rich.console import Console
 from rich.panel import Panel
-from rich.table import Table
 
 if TYPE_CHECKING:
     from interpkit.core.model import Model
@@ -16,7 +15,7 @@ console = Console()
 
 
 def run_scan(
-    model: "Model",
+    model: Model,
     input_data: Any,
     *,
     save: str | None = None,

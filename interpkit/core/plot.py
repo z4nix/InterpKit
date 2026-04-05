@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import Any
 
-import torch
-import numpy as np
-import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
 from rich.console import Console
 
 console = Console()
@@ -466,7 +465,7 @@ def plot_attribution(
         norm_scores = [s / max_score if max_score > 0 else 0 for s in scores]
         colors = [_PALETTE["accent"] if ns > 0.5 else "#0f3460" for ns in [abs(n) for n in norm_scores]]
 
-        bars = ax.bar(range(len(tokens)), [abs(s) for s in scores], color=colors, width=0.7)
+        ax.bar(range(len(tokens)), [abs(s) for s in scores], color=colors, width=0.7)
         ax.set_xticks(range(len(tokens)))
         ax.set_xticklabels(tokens, rotation=45, ha="right", fontsize=9)
         ax.set_ylabel("Attribution Score", fontsize=10)

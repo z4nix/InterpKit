@@ -87,7 +87,7 @@ def test_run_features_dimension_mismatch(gpt2_model):
             sae=sae,
             print_results=False,
         )
-        assert False, "Should have raised ValueError for dimension mismatch"
+        raise AssertionError("Should have raised ValueError for dimension mismatch")
     except ValueError as e:
         assert "does not match" in str(e)
 

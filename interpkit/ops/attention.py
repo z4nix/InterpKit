@@ -18,7 +18,7 @@ console = Console()
 
 
 def run_attention(
-    model: "Model",
+    model: Model,
     input_data: Any,
     *,
     layer: int | None = None,

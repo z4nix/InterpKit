@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 
 def run_dla(
-    model: "Model",
+    model: Model,
     input_data: Any,
     *,
     token: int | str | None = None,
@@ -300,7 +300,8 @@ def run_dla(
         plot_dla(result, top_k=top_k, save_path=save)
 
     if html is not None:
-        from interpkit.core.html import html_dla as gen_html_dla, save_html
+        from interpkit.core.html import html_dla as gen_html_dla
+        from interpkit.core.html import save_html
 
         save_html(gen_html_dla(result), html)
 

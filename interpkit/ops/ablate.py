@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 
 def run_ablate(
-    model: "Model",
+    model: Model,
     input_data: Any,
     *,
     at: str,

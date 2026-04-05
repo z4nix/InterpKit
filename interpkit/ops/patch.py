@@ -20,7 +20,7 @@ def _get_module(model: torch.nn.Module, name: str) -> torch.nn.Module:
 
 
 def run_patch(
-    model: "Model",
+    model: Model,
     clean: Any,
     corrupted: Any,
     *,

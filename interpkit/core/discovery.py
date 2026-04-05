@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 import re
+import warnings
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
-
-from collections import deque
 
 import torch
 import torch.nn as nn
 
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Known module names & structural role assignment
@@ -88,7 +90,7 @@ class ModelArchInfo:
         return [li.index for li in self.layer_infos if li.attn_path is not None]
 
     @property
-    def attention_layer_infos(self) -> list["LayerInfo"]:
+    def attention_layer_infos(self) -> list[LayerInfo]:
         """LayerInfo objects for layers that have a resolved attention submodule."""
         return [li for li in self.layer_infos if li.attn_path is not None]
 
@@ -97,6 +99,56 @@ class ModelArchInfo:
         """True when the model contains layers of different types."""
         types = {li.layer_type for li in self.layer_infos}
         return len(types) > 1
+
+    def discovery_summary(self) -> str:
+        """Return a human-readable summary of what auto-discovery found (and missed).
+
+        Useful for diagnosing why operations fail or return unexpected results.
+        """
+        lines = [f"Architecture: {self.arch_family or 'unknown'}"]
+
+        if self.num_layers is not None:
+            lines.append(f"Layers: {self.num_layers}")
+        if self.hidden_size is not None:
+            lines.append(f"Hidden size: {self.hidden_size}")
+        if self.num_attention_heads is not None:
+            lines.append(f"Attention heads: {self.num_attention_heads}")
+        if self.num_key_value_heads is not None and self.num_key_value_heads != self.num_attention_heads:
+            lines.append(f"KV heads: {self.num_key_value_heads}")
+
+        lines.append(f"LM head: {'found (' + self.unembedding_name + ')' if self.has_lm_head else 'not found'}")
+        lines.append(f"Detected layers: {len(self.layer_names)}")
+
+        if self.layer_infos:
+            type_counts: dict[str, int] = {}
+            attn_count = sum(1 for li in self.layer_infos if li.attn_path)
+            mlp_count = sum(1 for li in self.layer_infos if li.mlp_path)
+            for li in self.layer_infos:
+                type_counts[li.layer_type] = type_counts.get(li.layer_type, 0) + 1
+            type_str = ", ".join(f"{k}: {v}" for k, v in sorted(type_counts.items()))
+            lines.append(f"Layer types: {type_str}")
+            lines.append(f"Attention resolved: {attn_count}/{len(self.layer_infos)}")
+            lines.append(f"MLP resolved: {mlp_count}/{len(self.layer_infos)}")
+
+            missing = []
+            if attn_count == 0 and len(self.layer_infos) > 0:
+                missing.append("attention paths")
+            if mlp_count == 0 and len(self.layer_infos) > 0:
+                missing.append("MLP paths")
+            if not self.has_lm_head:
+                missing.append("LM head / unembedding")
+            if missing:
+                lines.append(f"Not found: {', '.join(missing)}")
+                lines.append("Tip: use interpkit.register() to manually specify missing components.")
+
+        return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        return (
+            f"ModelArchInfo(family={self.arch_family!r}, layers={len(self.layer_names)}, "
+            f"hidden={self.hidden_size}, heads={self.num_attention_heads}, "
+            f"lm_head={self.has_lm_head})"
+        )
 
 
 def _is_norm_module(mod: nn.Module) -> bool:
@@ -471,6 +523,10 @@ def _resolve_layer_info(
     try:
         layer_mod = _get_mod_by_path(model, layer_name)
     except AttributeError:
+        logger.debug(
+            "Could not resolve module path %r — marking layer %d as recurrent.",
+            layer_name, layer_idx,
+        )
         info.layer_type = "recurrent"
         return info
 
@@ -669,12 +725,29 @@ def discover(
     # Detect layer names
     layer_names = _detect_layers(module_infos)
 
+    if not layer_names:
+        warnings.warn(
+            "Could not auto-detect layer structure for this model. "
+            "If this model has repeated blocks (transformer layers, SSM layers, etc.), "
+            "use interpkit.register() to manually specify architecture components. "
+            "See: https://github.com/z4nix/interpkit#register",
+            stacklevel=2,
+        )
+
     # Resolve per-layer structural details
     block_types = hf_meta.get("block_types")
     layer_infos = [
         _resolve_layer_info(model, ln, idx, block_types=block_types)
         for idx, ln in enumerate(layer_names)
     ]
+
+    if layer_names and all(li.layer_type == "recurrent" for li in layer_infos):
+        warnings.warn(
+            "All layers classified as recurrent — attention and MLP submodules "
+            "were not found. If this model has standard transformer blocks, "
+            "use interpkit.register() to manually specify attention and MLP paths.",
+            stacklevel=2,
+        )
 
     # Assign semantic roles using resolved structure
     _assign_roles(module_infos, model, layer_infos, layer_names, unembed_name)

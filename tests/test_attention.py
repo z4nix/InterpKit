@@ -31,8 +31,10 @@ def test_attention_gpt2_specific_head(gpt2_model):
 
 
 def test_attention_resnet_returns_none(resnet_model):
+    import os
+    import tempfile
+
     from PIL import Image
-    import tempfile, os
 
     img = Image.new("RGB", (224, 224), color=(128, 64, 32))
     path = os.path.join(tempfile.gettempdir(), "test_attn.jpg")

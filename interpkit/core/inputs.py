@@ -45,8 +45,8 @@ def prepare_input(
         # Text
         if tokenizer is None:
             raise ValueError(
-                f"Cannot tokenize string input — no tokenizer available. "
-                f"Pass a tokenizer when loading the model or provide a torch.Tensor directly."
+                "Cannot tokenize string input — no tokenizer available. "
+                "Pass a tokenizer when loading the model or provide a torch.Tensor directly."
             )
         encoded = tokenizer(raw, return_tensors="pt")
         return {k: v.to(device) for k, v in encoded.items()}

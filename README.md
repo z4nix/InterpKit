@@ -35,8 +35,8 @@ pip install interpkit[probe]
 Or install from source for development:
 
 ```bash
-git clone https://github.com/davidezani/InterpKit.git
-cd InterpKit
+git clone https://github.com/z4nix/interpkit.git
+cd interpkit
 pip install -e ".[dev]"
 ```
 

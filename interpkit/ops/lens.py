@@ -16,7 +16,7 @@ console = Console()
 
 
 def run_lens(
-    model: "Model",
+    model: Model,
     text: Any,
     *,
     save: str | None = None,
@@ -197,7 +197,8 @@ def run_lens(
     if html is not None:
         import re as _re_html
 
-        from interpkit.core.html import html_lens as gen_html_lens, save_html
+        from interpkit.core.html import html_lens as gen_html_lens
+        from interpkit.core.html import save_html
 
         flat_preds = []
         for pred in predictions:

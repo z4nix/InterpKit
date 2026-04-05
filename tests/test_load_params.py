@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 import torch
 import torch.nn as nn
 
-import interpkit
-from interpkit.core.model import load
-
+from interpkit.core.loader import load
 
 # ── Helpers ──────────────────────────────────────────────────────
 
@@ -76,7 +74,7 @@ def test_dtype_map_string_to_torch(dtype_str, expected):
         model = _SimpleModel()
         return model, _FakeTokenizer(), None
 
-    with patch("interpkit.core.model._load_from_hf", side_effect=_fake_load_from_hf):
+    with patch("interpkit.core.loader._load_from_hf", side_effect=_fake_load_from_hf):
         load("gpt2", dtype=dtype_str, device="cpu")
 
     assert captured["torch_dtype"] == expected
@@ -89,7 +87,7 @@ def test_dtype_torch_object_passed_directly():
         captured["torch_dtype"] = torch_dtype
         return _SimpleModel(), _FakeTokenizer(), None
 
-    with patch("interpkit.core.model._load_from_hf", side_effect=_fake_load_from_hf):
+    with patch("interpkit.core.loader._load_from_hf", side_effect=_fake_load_from_hf):
         load("gpt2", dtype=torch.bfloat16, device="cpu")
 
     assert captured["torch_dtype"] is torch.bfloat16
@@ -107,7 +105,7 @@ def test_dtype_none_not_forwarded():
         captured["torch_dtype"] = torch_dtype
         return _SimpleModel(), _FakeTokenizer(), None
 
-    with patch("interpkit.core.model._load_from_hf", side_effect=_fake_load_from_hf):
+    with patch("interpkit.core.loader._load_from_hf", side_effect=_fake_load_from_hf):
         load("gpt2", device="cpu")
 
     assert captured["torch_dtype"] is None
@@ -126,7 +124,7 @@ def test_device_map_auto_forwarded_to_hf():
         captured["device"] = device
         return _SimpleModel(), _FakeTokenizer(), None
 
-    with patch("interpkit.core.model._load_from_hf", side_effect=_fake_load_from_hf):
+    with patch("interpkit.core.loader._load_from_hf", side_effect=_fake_load_from_hf):
         load("gpt2", device_map="auto")
 
     assert captured["device_map"] == "auto"
@@ -140,7 +138,7 @@ def test_device_map_skips_device_default():
         captured["device"] = device
         return _SimpleModel(), _FakeTokenizer(), None
 
-    with patch("interpkit.core.model._load_from_hf", side_effect=_fake_load_from_hf):
+    with patch("interpkit.core.loader._load_from_hf", side_effect=_fake_load_from_hf):
         load("gpt2", device_map="auto")
 
     assert captured["device"] is None
@@ -153,7 +151,7 @@ def test_device_map_infers_device_from_params():
         model = _SimpleModel()
         return model, _FakeTokenizer(), None
 
-    with patch("interpkit.core.model._load_from_hf", side_effect=_fake_load_from_hf):
+    with patch("interpkit.core.loader._load_from_hf", side_effect=_fake_load_from_hf):
         model = load("gpt2", device_map="auto")
 
     assert model._device == torch.device("cpu")
@@ -172,7 +170,7 @@ def test_custom_tokenizer_used_for_hf_model():
     def _fake_load_from_hf(name, *, tokenizer, image_processor, device, torch_dtype, device_map):
         return _SimpleModel(), tokenizer, None
 
-    with patch("interpkit.core.model._load_from_hf", side_effect=_fake_load_from_hf):
+    with patch("interpkit.core.loader._load_from_hf", side_effect=_fake_load_from_hf):
         model = load("gpt2", tokenizer=custom_tok, device="cpu")
 
     assert model._tokenizer is custom_tok
@@ -189,7 +187,7 @@ def test_custom_tokenizer_pad_token_preserved():
     def _fake_load_from_hf(name, *, tokenizer, image_processor, device, torch_dtype, device_map):
         return _SimpleModel(), tokenizer, None
 
-    with patch("interpkit.core.model._load_from_hf", side_effect=_fake_load_from_hf):
+    with patch("interpkit.core.loader._load_from_hf", side_effect=_fake_load_from_hf):
         model = load("gpt2", tokenizer=custom_tok, device="cpu")
 
     assert model._tokenizer.pad_token == "<my_pad>"
@@ -206,7 +204,7 @@ def test_custom_tokenizer_pad_token_set_from_eos():
             tokenizer.pad_token = tokenizer.eos_token
         return _SimpleModel(), tokenizer, None
 
-    with patch("interpkit.core.model._load_from_hf", side_effect=_fake_load_from_hf):
+    with patch("interpkit.core.loader._load_from_hf", side_effect=_fake_load_from_hf):
         model = load("gpt2", tokenizer=custom_tok, device="cpu")
 
     assert model._tokenizer.pad_token == "<eos>"
@@ -253,7 +251,7 @@ def test_load_nn_module_moves_to_device():
 
 def test_load_default_device_when_no_device_or_map():
     """When neither device nor device_map is set, device is auto-detected."""
-    from interpkit.core.model import _resolve_device
+    from interpkit.core.loader import _resolve_device
 
     device = _resolve_device()
     assert device in ("cuda", "mps", "cpu")
@@ -278,7 +276,7 @@ def test_all_params_forwarded_together():
     custom_tok = _FakeTokenizer()
     custom_tok.pad_token = "<p>"
 
-    with patch("interpkit.core.model._load_from_hf", side_effect=_fake_load_from_hf):
+    with patch("interpkit.core.loader._load_from_hf", side_effect=_fake_load_from_hf):
         load(
             "my-model",
             tokenizer=custom_tok,

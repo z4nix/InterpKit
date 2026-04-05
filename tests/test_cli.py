@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 import torch
 from typer.testing import CliRunner
 
-from interpkit.cli.main import app, _json_dump
+from interpkit.cli.main import _json_dump, app
 
 runner = CliRunner()
 

@@ -50,7 +50,6 @@ def load_sae(hf_id: str, *, device: str | torch.device = "cpu") -> SAE:
     Expects the repo to contain ``sae_weights.safetensors`` (or ``.pt``)
     and optionally ``cfg.json`` with metadata.
     """
-    from huggingface_hub import hf_hub_download
 
     device = torch.device(device)
 
@@ -108,7 +107,7 @@ def load_sae_from_tensors(
 
 
 def run_features(
-    model: "Model",
+    model: Model,
     input_data: Any,
     *,
     at: str,
@@ -183,7 +182,7 @@ def run_features(
 
 
 def run_contrastive_features(
-    model: "Model",
+    model: Model,
     positive_inputs: list[Any],
     negative_inputs: list[Any],
     *,
@@ -260,7 +259,7 @@ def run_contrastive_features(
 
 
 def _compute_feature_attribution(
-    model: "Model",
+    model: Model,
     sae: SAE,
     features: torch.Tensor,
     topk_idxs: torch.Tensor,
@@ -270,7 +269,6 @@ def _compute_feature_attribution(
     if not arch.unembedding_name:
         return []
 
-    from interpkit.ops.patch import _get_module
 
     unembed_mod = _get_module(model._model, arch.unembedding_name)
     w_unembed = None
@@ -345,7 +343,7 @@ def _download_weights(hf_id: str) -> dict[str, torch.Tensor]:
         raise FileNotFoundError(
             f"HuggingFace repository {hf_id!r} not found. "
             f"Check the repo ID and your network/auth settings."
-        )
+        ) from None
 
     # Fall back to .pt
     try:
@@ -357,7 +355,7 @@ def _download_weights(hf_id: str) -> dict[str, torch.Tensor]:
         raise FileNotFoundError(
             f"HuggingFace repository {hf_id!r} not found. "
             f"Check the repo ID and your network/auth settings."
-        )
+        ) from None
 
     raise FileNotFoundError(
         f"Could not find sae_weights.safetensors or sae_weights.pt in {hf_id!r}. "

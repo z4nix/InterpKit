@@ -13,7 +13,7 @@ console = Console()
 
 
 def run_report(
-    model: "Model",
+    model: Model,
     input_data: Any,
     *,
     save: str = "report.html",

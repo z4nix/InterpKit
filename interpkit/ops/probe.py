@@ -15,7 +15,7 @@ console = Console()
 
 
 def run_probe(
-    model: "Model",
+    model: Model,
     texts: list[str],
     labels: list[int],
     *,
@@ -131,7 +131,6 @@ def _probe_sklearn(X: Any, y: Any) -> dict[str, Any]:
 
 def _probe_torch(X: Any, y: Any) -> dict[str, Any]:
     """Fallback probe using pure PyTorch when sklearn is not available."""
-    import numpy as np
 
     X_t = torch.tensor(X, dtype=torch.float32)
     y_t = torch.tensor(y, dtype=torch.long)

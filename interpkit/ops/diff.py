@@ -14,8 +14,8 @@ console = Console()
 
 
 def run_diff(
-    model_a: "Model",
-    model_b: "Model",
+    model_a: Model,
+    model_b: Model,
     input_data: Any,
     *,
     save: str | None = None,

@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 console = Console()
 
 
-def _activation_mean(model: "Model", text: Any, *, at: str) -> torch.Tensor:
+def _activation_mean(model: Model, text: Any, *, at: str) -> torch.Tensor:
     """Return the mean activation vector for a single input at *at*."""
     from interpkit.ops.activations import run_activations
 
@@ -35,7 +35,7 @@ def _activation_mean(model: "Model", text: Any, *, at: str) -> torch.Tensor:
 
 
 def run_steer_vector(
-    model: "Model",
+    model: Model,
     positive: Any | list[Any],
     negative: Any | list[Any],
     *,
@@ -88,7 +88,7 @@ def run_steer_vector(
 
 
 def run_steer(
-    model: "Model",
+    model: Model,
     input_data: Any,
     *,
     vector: torch.Tensor,
@@ -149,7 +149,7 @@ def run_steer(
 
 
 def _top_tokens(
-    model: "Model",
+    model: Model,
     logits: torch.Tensor,
     k: int = 10,
 ) -> list[tuple[str, float]]:

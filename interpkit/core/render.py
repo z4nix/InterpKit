@@ -7,10 +7,9 @@ from typing import TYPE_CHECKING, Any
 import torch
 from rich.console import Console
 from rich.table import Table
-from rich.tree import Tree
 
 if TYPE_CHECKING:
-    from interpkit.core.discovery import ModelArchInfo, ModuleInfo
+    from interpkit.core.discovery import ModelArchInfo
 
 console = Console()
 
@@ -28,7 +27,7 @@ _ROLE_TAGS = {
 # ------------------------------------------------------------------
 
 
-def render_inspect(arch_info: "ModelArchInfo", nn_model: "torch.nn.Module | None" = None) -> None:
+def render_inspect(arch_info: ModelArchInfo, nn_model: torch.nn.Module | None = None) -> None:
     """Print a module tree with types, param counts, and detected roles."""
     header_parts = []
     if arch_info.arch_family:

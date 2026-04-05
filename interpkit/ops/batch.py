@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
-import torch
 from rich.console import Console
 from rich.progress import Progress
 
@@ -15,7 +14,7 @@ console = Console()
 
 
 def run_batch(
-    model: "Model",
+    model: Model,
     operation: str,
     dataset: list[dict[str, Any]],
     *,
@@ -96,7 +95,7 @@ def run_batch(
 
 
 def run_trace_batch(
-    model: "Model",
+    model: Model,
     dataset: list[dict[str, str]],
     *,
     clean_col: str = "clean",
@@ -120,7 +119,7 @@ def run_trace_batch(
 
 
 def run_dla_batch(
-    model: "Model",
+    model: Model,
     texts: list[str],
     *,
     top_k: int = 10,

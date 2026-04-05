@@ -6,10 +6,8 @@ import os
 import tempfile
 from unittest.mock import patch
 
-import pytest
-import torch
-import numpy as np
 import matplotlib.pyplot as plt
+import torch
 
 from interpkit.core.plot import (
     _INTERPKIT_RC,
@@ -17,15 +15,14 @@ from interpkit.core.plot import (
     _save_and_show,
     plot_attention,
     plot_attention_multi,
-    plot_trace,
-    plot_position_trace,
-    plot_lens,
-    plot_steer,
-    plot_diff,
     plot_attribution,
+    plot_diff,
     plot_dla,
+    plot_lens,
+    plot_position_trace,
+    plot_steer,
+    plot_trace,
 )
-
 
 # ── Helpers ──────────────────────────────────────────────────────
 
@@ -46,7 +43,7 @@ def _intercept_fig(func, *args, **kwargs):
     """
     captured = {}
 
-    original_save = _save_and_show.__wrapped__ if hasattr(_save_and_show, "__wrapped__") else None
+    _save_and_show.__wrapped__ if hasattr(_save_and_show, "__wrapped__") else None
 
     def _intercept(fig, path, default_name):
         axes = fig.get_axes()
@@ -99,7 +96,7 @@ def test_save_and_show_svg():
         ax.plot([1, 2], [3, 4])
         result = _save_and_show(fig, path, "default.svg")
         assert result == path
-        with open(path, "r") as f:
+        with open(path) as f:
             content = f.read()
             assert "<svg" in content or "<?xml" in content
     finally:
@@ -167,7 +164,7 @@ def test_plot_attention_no_tokens():
     path = _tmp()
     try:
         weights = torch.rand(4, 4)
-        result = plot_attention(weights, tokens=None, save_path=path)
+        plot_attention(weights, tokens=None, save_path=path)
         assert os.path.exists(path)
     finally:
         _cleanup(path)
@@ -178,7 +175,7 @@ def test_plot_attention_long_tokens_truncated():
     try:
         weights = torch.rand(3, 3)
         tokens = ["a" * 50, "b" * 50, "c" * 50]
-        result = plot_attention(weights, tokens, save_path=path)
+        plot_attention(weights, tokens, save_path=path)
         assert os.path.exists(path)
     finally:
         _cleanup(path)
@@ -216,7 +213,7 @@ def test_plot_attention_multi_caps_at_8_heads():
             {"layer": 0, "head": h, "weights": torch.rand(3, 3)}
             for h in range(12)
         ]
-        result = plot_attention_multi(data, save_path=path)
+        plot_attention_multi(data, save_path=path)
         assert os.path.exists(path)
     finally:
         _cleanup(path)
@@ -265,7 +262,7 @@ def test_plot_trace_more_than_25_results_capped():
     path = _tmp()
     try:
         results = [{"module": f"x.y.m{i}", "effect": i * 0.01} for i in range(30)]
-        result = plot_trace(results, save_path=path)
+        plot_trace(results, save_path=path)
         assert os.path.exists(path)
     finally:
         _cleanup(path)
@@ -299,7 +296,7 @@ def test_plot_position_trace_list_input():
             "effects": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]],
             "layer_names": ["layer.0", "layer.1"],
         }
-        result = plot_position_trace(result_data, save_path=path)
+        plot_position_trace(result_data, save_path=path)
         assert os.path.exists(path)
     finally:
         _cleanup(path)
@@ -313,7 +310,7 @@ def test_plot_position_trace_unicode_token_replacement():
             "layer_names": ["layer.0", "layer.1"],
             "tokens": ["\u0120The", "\u0120capital", "\u0120of"],
         }
-        result = plot_position_trace(result_data, save_path=path)
+        plot_position_trace(result_data, save_path=path)
         assert os.path.exists(path)
     finally:
         _cleanup(path)
@@ -332,7 +329,7 @@ def test_plot_lens_1d():
             {"layer_name": "layer.1", "top1_prob": 0.5, "top1_token": "Paris"},
             {"layer_name": "layer.2", "top1_prob": 0.9, "top1_token": "Paris"},
         ]
-        result = plot_lens(predictions, save_path=path)
+        plot_lens(predictions, save_path=path)
         assert os.path.exists(path)
     finally:
         _cleanup(path)
@@ -359,7 +356,7 @@ def test_plot_lens_2d():
                 ],
             },
         ]
-        result = plot_lens(predictions, save_path=path)
+        plot_lens(predictions, save_path=path)
         assert os.path.exists(path)
     finally:
         _cleanup(path)
@@ -370,7 +367,7 @@ def test_plot_lens_2d_more_than_20_positions_no_annotations():
     try:
         positions = [{"pos": i, "top1_prob": 0.1 * (i % 10), "top1_token": f"t{i}"} for i in range(25)]
         predictions = [{"layer_name": "layer.0", "positions": positions}]
-        result = plot_lens(predictions, save_path=path)
+        plot_lens(predictions, save_path=path)
         assert os.path.exists(path)
     finally:
         _cleanup(path)
@@ -482,7 +479,7 @@ def test_plot_attribution_all_zero_scores():
     try:
         tokens = ["a", "b", "c"]
         scores = [0.0, 0.0, 0.0]
-        result = plot_attribution(tokens, scores, save_path=path)
+        plot_attribution(tokens, scores, save_path=path)
         assert os.path.exists(path)
     finally:
         _cleanup(path)
@@ -493,7 +490,7 @@ def test_plot_attribution_negative_scores():
     try:
         tokens = ["pos", "neg"]
         scores = [0.5, -0.3]
-        result = plot_attribution(tokens, scores, save_path=path)
+        plot_attribution(tokens, scores, save_path=path)
         assert os.path.exists(path)
     finally:
         _cleanup(path)
@@ -515,7 +512,7 @@ def test_plot_dla_basic():
             ],
             "target_token": "Paris",
         }
-        result = plot_dla(result_data, save_path=path)
+        plot_dla(result_data, save_path=path)
         assert os.path.exists(path)
     finally:
         _cleanup(path)
@@ -540,7 +537,7 @@ def test_plot_dla_with_head_contributions():
             ],
             "target_token": "Paris",
         }
-        result = plot_dla(result_data, save_path=path)
+        plot_dla(result_data, save_path=path)
         assert os.path.exists(path)
         head_path = path.rsplit(".", 1)
         head_file = f"{head_path[0]}_heads.{head_path[1]}"
@@ -565,7 +562,7 @@ def test_plot_dla_head_path_no_extension_does_not_crash():
             ],
             "target_token": "x",
         }
-        result = plot_dla(result_data, save_path=path)
+        plot_dla(result_data, save_path=path)
         assert os.path.exists(path)
     finally:
         _cleanup(path)

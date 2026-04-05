@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json as _json
-from typing import Optional
 
 import typer
 from rich.console import Console
@@ -467,9 +466,9 @@ IIIII nn   nn  tttt  eeeee rr     pp      KK  KK iii  tttt
 @app.command()
 def inspect(
     model_name: str = typer.Argument(..., help="HuggingFace model ID (e.g. gpt2, microsoft/resnet-50)"),
-    device: Optional[str] = typer.Option(None, help="Device (cpu, cuda, mps). Auto-detected if omitted."),
-    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
-    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
+    device: str | None = typer.Option(None, help="Device (cpu, cuda, mps). Auto-detected if omitted."),
+    dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Print the model's module tree with types, param counts, and detected roles."""
     m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
@@ -488,12 +487,12 @@ def patch(
     clean: str = typer.Option(..., "--clean", help="Clean input (text string or image path)"),
     corrupted: str = typer.Option(..., "--corrupted", help="Corrupted input (text string or image path)"),
     at: str = typer.Option(..., "--at", help="Module name to patch (e.g. transformer.h.8.mlp)"),
-    head: Optional[int] = typer.Option(None, "--head", help="Specific attention head to patch (requires attention module)"),
-    positions: Optional[str] = typer.Option(None, "--positions", help="Comma-separated token positions to patch (e.g. '3,4,5')"),
+    head: int | None = typer.Option(None, "--head", help="Specific attention head to patch (requires attention module)"),
+    positions: str | None = typer.Option(None, "--positions", help="Comma-separated token positions to patch (e.g. '3,4,5')"),
     metric: str = typer.Option("logit_diff", "--metric", help="Effect metric: logit_diff, kl_div, target_prob, l2_prob"),
-    device: Optional[str] = typer.Option(None, help="Device"),
-    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
-    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
+    device: str | None = typer.Option(None, help="Device"),
+    dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Activation patching: swap one module's output from clean into corrupted run."""
     m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
@@ -519,11 +518,11 @@ def trace(
     top_k: int = typer.Option(20, "--top-k", help="Scan top-K modules by proxy score. 0 = scan all."),
     mode: str = typer.Option("module", "--mode", help="Tracing mode: 'module' (default) or 'position' (Meng et al. 2D heatmap)"),
     metric: str = typer.Option("logit_diff", "--metric", help="Effect metric: logit_diff, kl_div, target_prob, l2_prob"),
-    save: Optional[str] = typer.Option(None, "--save", help="Save bar chart / heatmap to file (e.g. trace.png)"),
-    html_path: Optional[str] = typer.Option(None, "--html", help="Save interactive HTML to file (e.g. trace.html)"),
-    device: Optional[str] = typer.Option(None, help="Device"),
-    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
-    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
+    save: str | None = typer.Option(None, "--save", help="Save bar chart / heatmap to file (e.g. trace.png)"),
+    html_path: str | None = typer.Option(None, "--html", help="Save interactive HTML to file (e.g. trace.html)"),
+    device: str | None = typer.Option(None, help="Device"),
+    dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Causal tracing: rank modules by how much patching them restores clean output."""
     effective_top_k: int | None = top_k if top_k > 0 else None
@@ -542,12 +541,12 @@ def trace(
 def lens(
     model_name: str = typer.Argument(..., help="HuggingFace model ID"),
     text: str = typer.Argument(..., help="Input text"),
-    save: Optional[str] = typer.Option(None, "--save", help="Save heatmap to file (e.g. lens.png)"),
-    html_path: Optional[str] = typer.Option(None, "--html", help="Save interactive HTML to file"),
-    position: Optional[int] = typer.Option(None, "--position", help="Single token position to analyse (-1 = last). Omit for all positions."),
-    device: Optional[str] = typer.Option(None, help="Device"),
-    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
-    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
+    save: str | None = typer.Option(None, "--save", help="Save heatmap to file (e.g. lens.png)"),
+    html_path: str | None = typer.Option(None, "--html", help="Save interactive HTML to file"),
+    position: int | None = typer.Option(None, "--position", help="Single token position to analyse (-1 = last). Omit for all positions."),
+    device: str | None = typer.Option(None, help="Device"),
+    dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Logit lens: project each layer's hidden state to vocabulary space."""
     m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
@@ -566,13 +565,13 @@ def lens(
 def attribute(
     model_name: str = typer.Argument(..., help="HuggingFace model ID"),
     input_data: str = typer.Argument(..., help="Input text or image path"),
-    target: Optional[int] = typer.Option(None, "--target", help="Target class/token index for attribution"),
+    target: int | None = typer.Option(None, "--target", help="Target class/token index for attribution"),
     method: str = typer.Option("integrated_gradients", "--method", help="Attribution method: integrated_gradients, gradient, gradient_x_input"),
-    save: Optional[str] = typer.Option(None, "--save", help="Save figure to file (e.g. attribution.png)"),
-    html_path: Optional[str] = typer.Option(None, "--html", help="Save interactive HTML to file (e.g. attribution.html)"),
-    device: Optional[str] = typer.Option(None, help="Device"),
-    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
-    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
+    save: str | None = typer.Option(None, "--save", help="Save figure to file (e.g. attribution.png)"),
+    html_path: str | None = typer.Option(None, "--html", help="Save interactive HTML to file (e.g. attribution.html)"),
+    device: str | None = typer.Option(None, help="Device"),
+    dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Gradient-based attribution over input tokens or pixels."""
     m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
@@ -591,9 +590,9 @@ def activations(
     model_name: str = typer.Argument(..., help="HuggingFace model ID"),
     input_data: str = typer.Argument(..., help="Input text or image path"),
     at: str = typer.Option(..., "--at", help="Module name(s) to extract, comma-separated"),
-    device: Optional[str] = typer.Option(None, help="Device"),
-    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
-    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
+    device: str | None = typer.Option(None, help="Device"),
+    dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Extract and display activation statistics at named modules."""
     m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
@@ -618,10 +617,10 @@ def ablate(
     input_data: str = typer.Argument(..., help="Input text or image path"),
     at: str = typer.Option(..., "--at", help="Module name to ablate"),
     method: str = typer.Option("zero", "--method", help="Ablation method: zero, mean, or resample"),
-    reference: Optional[str] = typer.Option(None, "--reference", help="Reference input for resample ablation"),
-    device: Optional[str] = typer.Option(None, help="Device"),
-    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
-    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
+    reference: str | None = typer.Option(None, "--reference", help="Reference input for resample ablation"),
+    device: str | None = typer.Option(None, help="Device"),
+    dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Zero, mean, or resample ablate a module and measure the effect on output."""
     m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
@@ -640,13 +639,13 @@ def ablate(
 def attention(
     model_name: str = typer.Argument(..., help="HuggingFace model ID"),
     input_data: str = typer.Argument(..., help="Input text"),
-    layer: Optional[int] = typer.Option(None, "--layer", help="Specific layer index"),
-    head: Optional[int] = typer.Option(None, "--head", help="Specific head index"),
-    save: Optional[str] = typer.Option(None, "--save", help="Save heatmap to file (e.g. attention.png)"),
-    html_path: Optional[str] = typer.Option(None, "--html", help="Save interactive HTML to file (e.g. attention.html)"),
-    device: Optional[str] = typer.Option(None, help="Device"),
-    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
-    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
+    layer: int | None = typer.Option(None, "--layer", help="Specific layer index"),
+    head: int | None = typer.Option(None, "--head", help="Specific head index"),
+    save: str | None = typer.Option(None, "--save", help="Save heatmap to file (e.g. attention.png)"),
+    html_path: str | None = typer.Option(None, "--html", help="Save interactive HTML to file (e.g. attention.html)"),
+    device: str | None = typer.Option(None, help="Device"),
+    dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Show attention patterns for transformer models."""
     m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
@@ -665,16 +664,16 @@ def attention(
 def steer(
     model_name: str = typer.Argument(..., help="HuggingFace model ID"),
     input_data: str = typer.Argument(..., help="Input text to steer"),
-    positive: Optional[str] = typer.Option(None, "--positive", help="Positive direction text (single example)"),
-    negative: Optional[str] = typer.Option(None, "--negative", help="Negative direction text (single example)"),
-    positive_file: Optional[str] = typer.Option(None, "--positive-file", help="Text file with positive examples, one per line"),
-    negative_file: Optional[str] = typer.Option(None, "--negative-file", help="Text file with negative examples, one per line"),
+    positive: str | None = typer.Option(None, "--positive", help="Positive direction text (single example)"),
+    negative: str | None = typer.Option(None, "--negative", help="Negative direction text (single example)"),
+    positive_file: str | None = typer.Option(None, "--positive-file", help="Text file with positive examples, one per line"),
+    negative_file: str | None = typer.Option(None, "--negative-file", help="Text file with negative examples, one per line"),
     at: str = typer.Option(..., "--at", help="Module name to apply steering at"),
     scale: float = typer.Option(2.0, "--scale", help="Steering vector scale factor"),
-    save: Optional[str] = typer.Option(None, "--save", help="Save comparison chart to file"),
-    device: Optional[str] = typer.Option(None, help="Device"),
-    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
-    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
+    save: str | None = typer.Option(None, "--save", help="Save comparison chart to file"),
+    device: str | None = typer.Option(None, help="Device"),
+    dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Extract a steering vector and apply it during inference."""
     from interpkit.core.inputs import read_examples_file
@@ -714,9 +713,9 @@ def probe(
     model_name: str = typer.Argument(..., help="HuggingFace model ID"),
     at: str = typer.Option(..., "--at", help="Module name to probe"),
     data: str = typer.Option(..., "--data", help="JSON file with {texts: [...], labels: [...]}"),
-    device: Optional[str] = typer.Option(None, help="Device"),
-    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
-    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
+    device: str | None = typer.Option(None, help="Device"),
+    dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Train a linear probe on activations to test linear separability."""
     import json
@@ -739,10 +738,10 @@ def diff(
     model_a_name: str = typer.Argument(..., help="First model (e.g. gpt2)"),
     model_b_name: str = typer.Argument(..., help="Second model (e.g. my-finetuned-gpt2)"),
     input_data: str = typer.Argument(..., help="Input text to compare on"),
-    save: Optional[str] = typer.Option(None, "--save", help="Save bar chart to file"),
-    device: Optional[str] = typer.Option(None, help="Device"),
-    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
-    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
+    save: str | None = typer.Option(None, "--save", help="Save bar chart to file"),
+    device: str | None = typer.Option(None, help="Device"),
+    dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Compare activations between two models on the same input."""
     import interpkit
@@ -763,15 +762,15 @@ def diff(
 @app.command()
 def features(
     model_name: str = typer.Argument(..., help="HuggingFace model ID (e.g. gpt2)"),
-    input_data: Optional[str] = typer.Argument(None, help="Input text (omit when using --positive-file / --negative-file)"),
+    input_data: str | None = typer.Argument(None, help="Input text (omit when using --positive-file / --negative-file)"),
     at: str = typer.Option(..., "--at", help="Module name to decompose (e.g. transformer.h.8)"),
     sae: str = typer.Option(..., "--sae", help="HuggingFace repo ID for the SAE weights"),
     top_k: int = typer.Option(20, "--top-k", help="Number of top features to display"),
-    positive_file: Optional[str] = typer.Option(None, "--positive-file", help="Text file with positive examples for contrastive analysis, one per line"),
-    negative_file: Optional[str] = typer.Option(None, "--negative-file", help="Text file with negative examples for contrastive analysis, one per line"),
-    device: Optional[str] = typer.Option(None, help="Device"),
-    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
-    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
+    positive_file: str | None = typer.Option(None, "--positive-file", help="Text file with positive examples for contrastive analysis, one per line"),
+    negative_file: str | None = typer.Option(None, "--negative-file", help="Text file with negative examples for contrastive analysis, one per line"),
+    device: str | None = typer.Option(None, help="Device"),
+    dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Decompose activations through a Sparse Autoencoder into interpretable features."""
     contrastive = positive_file is not None or negative_file is not None
@@ -805,10 +804,10 @@ def features(
 def scan(
     model_name: str = typer.Argument(..., help="HuggingFace model ID"),
     input_data: str = typer.Argument(..., help="Input text"),
-    save: Optional[str] = typer.Option(None, "--save", help="Prefix for exported figures (e.g. scan → scan_dla.png, scan_lens.png)"),
-    device: Optional[str] = typer.Option(None, help="Device"),
-    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
-    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
+    save: str | None = typer.Option(None, "--save", help="Prefix for exported figures (e.g. scan → scan_dla.png, scan_lens.png)"),
+    device: str | None = typer.Option(None, help="Device"),
+    dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """One-command model overview: runs DLA, logit lens, attention, and attribution."""
     m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
@@ -826,14 +825,14 @@ def scan(
 def dla(
     model_name: str = typer.Argument(..., help="HuggingFace model ID"),
     input_data: str = typer.Argument(..., help="Input text"),
-    token: Optional[str] = typer.Option(None, "--token", help="Target token (string or int). Uses top-1 prediction if omitted."),
+    token: str | None = typer.Option(None, "--token", help="Target token (string or int). Uses top-1 prediction if omitted."),
     position: int = typer.Option(-1, "--position", help="Token position to analyse (-1 = last)"),
     top_k: int = typer.Option(10, "--top-k", help="Number of top/bottom contributors to show"),
-    save: Optional[str] = typer.Option(None, "--save", help="Save bar chart to file (e.g. dla.png)"),
-    html_path: Optional[str] = typer.Option(None, "--html", help="Save interactive HTML to file"),
-    device: Optional[str] = typer.Option(None, help="Device"),
-    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
-    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
+    save: str | None = typer.Option(None, "--save", help="Save bar chart to file (e.g. dla.png)"),
+    html_path: str | None = typer.Option(None, "--html", help="Save interactive HTML to file"),
+    device: str | None = typer.Option(None, help="Device"),
+    dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Direct Logit Attribution: decompose output logits by component."""
     m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
@@ -859,9 +858,9 @@ def decompose(
     model_name: str = typer.Argument(..., help="HuggingFace model ID"),
     input_data: str = typer.Argument(..., help="Input text"),
     position: int = typer.Option(-1, "--position", help="Token position to decompose (-1 = last)"),
-    device: Optional[str] = typer.Option(None, help="Device"),
-    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
-    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
+    device: str | None = typer.Option(None, help="Device"),
+    dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Decompose the residual stream into per-component contributions."""
     m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
@@ -879,16 +878,16 @@ def decompose(
 @app.command("find-circuit")
 def find_circuit(
     model_name: str = typer.Argument(..., help="HuggingFace model ID"),
-    clean: Optional[str] = typer.Option(None, "--clean", help="Clean input text (single example)"),
-    corrupted: Optional[str] = typer.Option(None, "--corrupted", help="Corrupted input text (single example)"),
-    clean_file: Optional[str] = typer.Option(None, "--clean-file", help="Text file with clean examples, one per line"),
-    corrupted_file: Optional[str] = typer.Option(None, "--corrupted-file", help="Text file with corrupted examples, one per line (must match --clean-file line count)"),
+    clean: str | None = typer.Option(None, "--clean", help="Clean input text (single example)"),
+    corrupted: str | None = typer.Option(None, "--corrupted", help="Corrupted input text (single example)"),
+    clean_file: str | None = typer.Option(None, "--clean-file", help="Text file with clean examples, one per line"),
+    corrupted_file: str | None = typer.Option(None, "--corrupted-file", help="Text file with corrupted examples, one per line (must match --clean-file line count)"),
     threshold: float = typer.Option(0.01, "--threshold", help="Minimum ablation effect to include in circuit (0-1)"),
     method: str = typer.Option("mean", "--method", help="Ablation method: mean (default), zero, resample"),
     metric: str = typer.Option("logit_diff", "--metric", help="Effect metric: logit_diff, kl_div, target_prob, l2_prob"),
-    device: Optional[str] = typer.Option(None, help="Device"),
-    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
-    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
+    device: str | None = typer.Option(None, help="Device"),
+    dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Automated circuit discovery: find the minimal circuit for a behaviour."""
     from interpkit.core.inputs import read_examples_file
@@ -926,9 +925,9 @@ def report(
     model_name: str = typer.Argument(..., help="HuggingFace model ID"),
     input_data: str = typer.Argument(..., help="Input text"),
     save: str = typer.Option("report.html", "--save", help="Output HTML report path"),
-    device: Optional[str] = typer.Option(None, help="Device"),
-    dtype: Optional[str] = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
-    device_map: Optional[str] = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
+    device: str | None = typer.Option(None, help="Device"),
+    dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
     """Generate a comprehensive HTML report: prediction, DLA, logit lens, attention, attribution."""
     m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)

@@ -6,9 +6,7 @@ import os
 import tempfile
 from dataclasses import dataclass, field
 from io import StringIO
-from typing import Any
 
-import pytest
 import torch
 from rich.console import Console
 
@@ -31,7 +29,6 @@ from interpkit.core.render import (
     render_steer,
     render_trace,
 )
-
 
 # ── Helpers ──────────────────────────────────────────────────────
 

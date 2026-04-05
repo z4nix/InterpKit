@@ -52,7 +52,7 @@ def _make_ablation_hook(method: str = "mean", *, resample_act: torch.Tensor | No
 
 
 def run_find_circuit(
-    model: "Model",
+    model: Model,
     clean: Any | list[Any],
     corrupted: Any | list[Any],
     *,
@@ -181,13 +181,13 @@ def run_find_circuit(
                 for comp in components:
                     key = comp["module_name"]
 
-                    def _cache(k: str):
+                    def _cache(k: str, _acts=corrupted_acts):
                         def fn(_mod, _inp, output):
                             t = output if isinstance(output, torch.Tensor) else (
                                 output[0] if isinstance(output, (tuple, list)) and len(output) > 0 and isinstance(output[0], torch.Tensor) else None
                             )
                             if t is not None:
-                                corrupted_acts[k] = t.detach().clone()
+                                _acts[k] = t.detach().clone()
                         return fn
 
                     cache_hooks.append(comp["module"].register_forward_hook(_cache(key)))
@@ -316,7 +316,6 @@ def run_find_circuit(
 def _render_circuit(result: dict[str, Any]) -> None:
     """Print circuit discovery results."""
     from rich.table import Table
-    from rich.panel import Panel
 
     circuit = result["circuit"]
     excluded = result["excluded"]
@@ -325,7 +324,7 @@ def _render_circuit(result: dict[str, Any]) -> None:
     n_pairs = result.get("num_pairs", 1)
     pairs_label = f"  |  Pairs: {n_pairs}" if n_pairs > 1 else ""
 
-    console.print(f"\n[bold]Circuit Discovery[/bold]")
+    console.print("\n[bold]Circuit Discovery[/bold]")
     console.print(
         f"  Threshold: {result['threshold']}  |  "
         f"Circuit: {len(circuit)}/{result['total_components']} components  |  "

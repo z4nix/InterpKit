@@ -57,7 +57,7 @@ _TL_TO_COMPONENT: list[tuple[str, list[str]]] = [
 ]
 
 
-def to_tl_name(native_name: str, arch_info: "ModelArchInfo | None" = None) -> str:
+def to_tl_name(native_name: str, arch_info: ModelArchInfo | None = None) -> str:
     """Translate a native PyTorch module name to the corresponding TL hook name.
 
     Examples::
@@ -92,7 +92,7 @@ def to_tl_name(native_name: str, arch_info: "ModelArchInfo | None" = None) -> st
 
 def to_native_name(
     tl_name: str,
-    arch_info: "ModelArchInfo | None" = None,
+    arch_info: ModelArchInfo | None = None,
 ) -> str:
     """Translate a TL hook name back to the most likely native module name.
 
@@ -153,7 +153,7 @@ def list_tl_hooks(model: Any) -> list[str]:
     return sorted(hooks)
 
 
-def _infer_native_prefix(arch_info: "ModelArchInfo | None") -> str:
+def _infer_native_prefix(arch_info: ModelArchInfo | None) -> str:
     """Infer the native layer name prefix (e.g. 'transformer.h', 'model.layers')."""
     if arch_info is None:
         return "blocks"

@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 
 def run_activations(
-    model: "Model",
+    model: Model,
     input_data: Any,
     *,
     at: str | list[str],

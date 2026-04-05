@@ -7,9 +7,17 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from interpkit.core.discovery import ModelArchInfo, discover
+from interpkit.core.cache import empty_device_cache, hash_input
+from interpkit.core.discovery import ModelArchInfo
 from interpkit.core.inputs import prepare_input, prepare_pair
-from interpkit.core.registry import Registration, get_registration
+from interpkit.core.loader import (
+    _is_hooked_transformer,
+    _load_from_hf,
+    _make_dummy_input,
+    _resolve_device,
+    load,
+)
+from interpkit.core.registry import Registration
 
 
 class Model:
@@ -116,7 +124,7 @@ class Model:
         input_data: str | torch.Tensor | Any,
         *,
         at: list[str] | None = None,
-    ) -> "Model":
+    ) -> Model:
         """Run a forward pass and cache activations for reuse by other operations.
 
         Parameters
@@ -131,7 +139,7 @@ class Model:
         from interpkit.ops.activations import run_activations
 
         model_input = self._prepare(input_data)
-        input_hash = _hash_input(model_input)
+        input_hash = hash_input(model_input)
 
         if at is None:
             at = [m.name for m in self.arch_info.modules if m.param_count > 0]
@@ -150,7 +158,7 @@ class Model:
         """Free cached activation tensors and release device memory."""
         self._cache.clear()
         self._cache_input_hash = None
-        _empty_device_cache(self._device)
+        empty_device_cache(self._device)
 
     def _get_cached(
         self,
@@ -168,7 +176,7 @@ class Model:
             return None
 
         model_input = _prepared_input if _prepared_input is not None else self._prepare(input_data)
-        input_hash = _hash_input(model_input)
+        input_hash = hash_input(model_input)
 
         if input_hash != self._cache_input_hash:
             return None
@@ -694,7 +702,6 @@ class Model:
             self, clean, corrupted, threshold=threshold, method=method, metric=metric,
         )
 
-
     def report(
         self,
         input_data: str | torch.Tensor | Any,
@@ -711,319 +718,17 @@ class Model:
         return run_report(self, input_data, save=save)
 
 
-# ======================================================================
-# Device helpers
-# ======================================================================
+# Backward-compatible re-exports so existing ``from interpkit.core.model import ...``
+# statements continue to work.
+__all__ = [
+    "Model",
+    "load",
+    "_resolve_device",
+    "_load_from_hf",
+    "_make_dummy_input",
+    "_is_hooked_transformer",
+]
 
-
-def _resolve_device() -> str:
-    """Auto-detect the best available device: cuda > mps > cpu."""
-    if torch.cuda.is_available():
-        return "cuda"
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
-
-
-def _empty_device_cache(device: torch.device | str) -> None:
-    """Release cached memory for the given device backend."""
-    dev = str(device)
-    if dev.startswith("cuda") and torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    elif dev == "mps" and hasattr(torch, "mps"):
-        torch.mps.empty_cache()
-
-
-# ======================================================================
-# Top-level loader
-# ======================================================================
-
-
-def load(
-    model_or_name: str | nn.Module,
-    *,
-    tokenizer: Any | None = None,
-    image_processor: Any | None = None,
-    device: str | torch.device | None = None,
-    dtype: str | torch.dtype | None = None,
-    device_map: str | dict | None = None,
-) -> Model:
-    """Load a model for mechanistic interpretability.
-
-    Parameters
-    ----------
-    model_or_name:
-        A HuggingFace model ID (``"gpt2"``, ``"microsoft/resnet-50"``)
-        or an existing ``nn.Module`` instance.
-    tokenizer:
-        An explicit tokenizer. Auto-loaded for HF models if not provided.
-    image_processor:
-        An explicit image processor. Auto-loaded for HF vision models if not provided.
-    device:
-        Device to run on. Auto-detected (cuda > mps > cpu) if omitted.
-        Ignored when *device_map* is set (HF handles placement).
-    dtype:
-        Model dtype: ``"float16"``, ``"bfloat16"``, ``"float32"``,
-        ``"auto"``, or a ``torch.dtype``.  Maps to ``torch_dtype`` in
-        HuggingFace ``from_pretrained``.
-    device_map:
-        HuggingFace ``device_map`` for multi-GPU / offload placement
-        (e.g. ``"auto"``).  Requires the ``accelerate`` package.
-    """
-    # Resolve dtype string shortcuts
-    _dtype_map = {
-        "float16": torch.float16,
-        "fp16": torch.float16,
-        "bfloat16": torch.bfloat16,
-        "bf16": torch.bfloat16,
-        "float32": torch.float32,
-        "fp32": torch.float32,
-        "auto": "auto",
-    }
-    torch_dtype: torch.dtype | str | None = None
-    if dtype is not None:
-        if isinstance(dtype, str):
-            if dtype not in _dtype_map:
-                raise ValueError(
-                    f"Unknown dtype {dtype!r}. Allowed values: {', '.join(sorted(_dtype_map.keys()))}"
-                )
-            torch_dtype = _dtype_map[dtype]
-        else:
-            torch_dtype = dtype
-
-    if device is None and device_map is None:
-        device = _resolve_device()
-
-    # MPS does not fully support bfloat16 in many PyTorch versions;
-    # silently downgrade to float16 to avoid hard-to-debug errors.
-    if str(device) == "mps" and torch_dtype is torch.bfloat16:
-        import warnings
-
-        warnings.warn(
-            "bfloat16 is not fully supported on MPS; falling back to float16.",
-            stacklevel=2,
-        )
-        torch_dtype = torch.float16
-
-    is_tl = False
-
-    if isinstance(model_or_name, str):
-        model, tokenizer, image_processor = _load_from_hf(
-            model_or_name,
-            tokenizer=tokenizer,
-            image_processor=image_processor,
-            device=device,
-            torch_dtype=torch_dtype,
-            device_map=device_map,
-        )
-    else:
-        model = model_or_name
-
-        # Detect TransformerLens HookedTransformer
-        if _is_hooked_transformer(model):
-            is_tl = True
-            if tokenizer is None:
-                tl_tok = getattr(model, "tokenizer", None)
-                if tl_tok is not None:
-                    tokenizer = tl_tok
-                    if hasattr(tokenizer, "pad_token") and tokenizer.pad_token is None:
-                        tokenizer.pad_token = tokenizer.eos_token
-
-        if device_map is None and device is not None:
-            model.to(device)
-
-    model.eval()
-
-    if device is None and device_map is not None:
-        device = next(model.parameters()).device
-    registration = get_registration(model)
-
-    # Build a dummy input for shape enumeration
-    # TL models accept a raw token tensor, not tokenizer dict kwargs
-    if is_tl:
-        dummy = torch.tensor([[0]], device=device)
-    else:
-        dummy = _make_dummy_input(model, tokenizer=tokenizer, image_processor=image_processor, device=device)
-    arch_info = discover(model, dummy_input=dummy)
-    arch_info.is_tl_model = is_tl
-
-    # Merge manual registration into arch_info
-    if registration is not None:
-        if registration.layers:
-            arch_info.layer_names = registration.layers
-        if registration.output_head:
-            arch_info.output_head_name = registration.output_head
-            arch_info.unembedding_name = registration.output_head
-            arch_info.has_lm_head = True
-        for mod_info in arch_info.modules:
-            if mod_info.name in registration.attention_modules:
-                mod_info.role = "attention"
-            elif mod_info.name in registration.mlp_modules:
-                mod_info.role = "mlp"
-
-    return Model(
-        model,
-        tokenizer=tokenizer,
-        image_processor=image_processor,
-        arch_info=arch_info,
-        registration=registration,
-        device=device,
-    )
-
-
-def _load_from_hf(
-    name: str,
-    *,
-    tokenizer: Any | None,
-    image_processor: Any | None,
-    device: str | torch.device | None,
-    torch_dtype: torch.dtype | str | None = None,
-    device_map: str | dict | None = None,
-) -> tuple[nn.Module, Any | None, Any | None]:
-    from transformers import AutoConfig, AutoModel, AutoTokenizer
-
-    extra_kwargs: dict[str, Any] = {}
-    if torch_dtype is not None:
-        extra_kwargs["torch_dtype"] = torch_dtype
-    if device_map is not None:
-        extra_kwargs["device_map"] = device_map
-
-    config = AutoConfig.from_pretrained(name)
-
-    # Build Auto class priority from config.architectures so we pick the
-    # right task head (e.g. QuestionAnswering, not CausalLM) automatically.
-    _TASK_HINTS: list[tuple[str, str]] = [
-        ("questionanswering", "AutoModelForQuestionAnswering"),
-        ("tokenclassification", "AutoModelForTokenClassification"),
-        ("sequenceclassification", "AutoModelForSequenceClassification"),
-        ("maskgeneration", "AutoModelForMaskGeneration"),
-        ("objectdetection", "AutoModelForObjectDetection"),
-        ("semanticsegmentation", "AutoModelForSemanticSegmentation"),
-    ]
-    architectures = getattr(config, "architectures", None) or []
-    arch_str = " ".join(architectures).lower()
-
-    auto_order: list[str] = []
-    for keyword, cls_name in _TASK_HINTS:
-        if keyword in arch_str:
-            auto_order.append(cls_name)
-    auto_order.extend([
-        "AutoModelForCausalLM",
-        "AutoModelForSeq2SeqLM",
-        "AutoModelForMaskedLM",
-        "AutoModelForImageClassification",
-        "AutoModel",
-    ])
-
-    import transformers
-
-    model = None
-    for auto_cls_name in auto_order:
-        auto_cls = getattr(transformers, auto_cls_name, None)
-        if auto_cls is None:
-            continue
-        try:
-            model = auto_cls.from_pretrained(name, config=config, **extra_kwargs)
-            break
-        except (ValueError, OSError, KeyError):
-            continue
-
-    if model is None:
-        model = AutoModel.from_pretrained(name, **extra_kwargs)
-
-    if device_map is None and device is not None:
-        model = model.to(device)
-
-    if tokenizer is None:
-        try:
-            tokenizer = AutoTokenizer.from_pretrained(name)
-        except Exception:
-            pass
-
-    if tokenizer is not None and tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    if image_processor is None:
-        try:
-            from transformers import AutoImageProcessor
-
-            image_processor = AutoImageProcessor.from_pretrained(name)
-        except (OSError, KeyError, ImportError):
-            pass
-
-    return model, tokenizer, image_processor
-
-
-def _make_dummy_input(
-    model: nn.Module,
-    *,
-    tokenizer: Any | None,
-    image_processor: Any | None,
-    device: str | torch.device,
-) -> dict[str, torch.Tensor] | torch.Tensor | None:
-    """Create a small dummy input for forward-pass shape enumeration."""
-    if tokenizer is not None:
-        try:
-            encoded = tokenizer("hello", return_tensors="pt")
-            result = {k: v.to(device) for k, v in encoded.items()}
-            config = getattr(model, "config", None)
-            is_enc_dec = getattr(config, "is_encoder_decoder", False)
-            if is_enc_dec and "decoder_input_ids" not in result:
-                decoder_start = getattr(config, "decoder_start_token_id", 0) or 0
-                result["decoder_input_ids"] = torch.tensor(
-                    [[decoder_start]], dtype=torch.long, device=device,
-                )
-            return result
-        except Exception:
-            pass
-
-    if image_processor is not None:
-        try:
-            from PIL import Image
-
-            dummy_img = Image.new("RGB", (224, 224), color=(128, 128, 128))
-            processed = image_processor(images=dummy_img, return_tensors="pt")
-            return {k: v.to(device) for k, v in processed.items()}
-        except Exception:
-            pass
-
-    # Fallback: try a simple tensor
-    config = getattr(model, "config", None)
-    if config is not None:
-        hidden = getattr(config, "hidden_size", None) or getattr(config, "n_embd", None)
-        if hidden:
-            return torch.randn(1, 8, hidden, device=device)
-
-    return None
-
-
-def _hash_input(model_input: dict[str, torch.Tensor] | torch.Tensor) -> int:
-    """Compute a hash of a model input for cache key comparison.
-
-    Uses the raw byte content of tensors to avoid collisions from inputs
-    that happen to share the same sum/shape.
-    """
-    import hashlib
-
-    h = hashlib.sha256()
-    if isinstance(model_input, dict):
-        for k in sorted(model_input.keys()):
-            v = model_input[k]
-            h.update(k.encode())
-            if isinstance(v, torch.Tensor):
-                h.update(v.detach().cpu().contiguous().numpy().tobytes())
-            else:
-                h.update(repr(v).encode())
-    else:
-        h.update(model_input.detach().cpu().contiguous().numpy().tobytes())
-    return int.from_bytes(h.digest()[:8], "little")
-
-
-def _is_hooked_transformer(model: nn.Module) -> bool:
-    """Detect a TransformerLens HookedTransformer without importing the library."""
-    cls_name = type(model).__name__
-    if cls_name in ("HookedTransformer", "HookedEncoder", "HookedEncoderDecoder"):
-        return True
-    if hasattr(model, "hook_dict") and hasattr(model, "cfg"):
-        return True
-    return False
+# Keep private names accessible for tests that patch them at this module path.
+_hash_input = hash_input
+_empty_device_cache = empty_device_cache

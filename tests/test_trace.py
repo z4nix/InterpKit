@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 
 def test_trace_gpt2_returns_results(gpt2_model):
     results = gpt2_model.trace(

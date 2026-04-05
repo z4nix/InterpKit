@@ -10,7 +10,6 @@ import torch.nn as nn
 
 import interpkit
 
-
 # ── Shared fake TL model ────────────────────────────────────────
 
 

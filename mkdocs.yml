@@ -1,0 +1,57 @@
+site_name: InterpKit
+site_description: Mech interp for any HuggingFace model
+site_url: https://z4nix.github.io/interpkit
+repo_url: https://github.com/z4nix/interpkit
+repo_name: z4nix/interpkit
+
+theme:
+  name: material
+  palette:
+    - scheme: slate
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  features:
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
+    - search.highlight
+
+nav:
+  - Home: index.md
+  - Quickstart: quickstart.md
+  - API Reference:
+    - Model: api/model.md
+    - Operations: api/ops.md
+    - Discovery: api/discovery.md
+  - CLI: cli.md
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            show_source: false
+            show_root_heading: true
+            heading_level: 2
+            members_order: source
+            docstring_style: numpy
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - toc:
+      permalink: true

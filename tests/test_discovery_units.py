@@ -7,23 +7,21 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
 import torch
 import torch.nn as nn
 
 from interpkit.core.discovery import (
+    _LM_HEAD_PATTERNS,
+    LayerInfo,
     ModelArchInfo,
     ModuleInfo,
-    LayerInfo,
     _detect_layers,
     _find_unembedding,
     _parse_hf_config,
     _resolve_layer_info,
     _split_fused_weight,
     extract_proj_weight,
-    _LM_HEAD_PATTERNS,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  Helpers — synthetic module builders
@@ -358,7 +356,7 @@ class TestResolveLayerInfo:
                     self.q_proj = _Linear(64, 64)
                     self.k_proj = _Linear(64, 64)
                     self.v_proj = _Linear(64, 64)
-                    setattr(self, o_name, _Linear(64, 64))
+                    setattr(self, o_name, _Linear(64, 64))  # noqa: B023
 
             class _L(nn.Module):
                 def __init__(self):
@@ -449,7 +447,7 @@ class TestExtractProjWeight:
         assert q.shape == (d, d)
         assert k.shape == (d, d)
         assert v.shape == (d, d)
-        reconstructed = torch.zeros_like(w)
+        torch.zeros_like(w)
         grouped_orig = w.view(heads, 3, head_dim, d)
         q_check = grouped_orig[:, 0, :, :].reshape(-1, d)
         assert torch.allclose(q, q_check)

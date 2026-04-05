@@ -15,7 +15,7 @@ console = Console()
 
 
 def run_attribute(
-    model: "Model",
+    model: Model,
     input_data: Any,
     *,
     target: int | None = None,
@@ -53,7 +53,7 @@ def run_attribute(
 
 
 def _attribute_text(
-    model: "Model",
+    model: Model,
     text: str,
     *,
     target: int | None,
@@ -106,8 +106,8 @@ def _attribute_text(
                 alpha = (step + 0.5) / n_steps
                 interpolated = (alpha * base_embeddings).requires_grad_(True)
 
-                def _patched_forward_ig(*args: Any, **kwargs: Any) -> torch.Tensor:
-                    return interpolated
+                def _patched_forward_ig(*args: Any, _interp=interpolated, **kwargs: Any) -> torch.Tensor:
+                    return _interp
 
                 embed_layer.forward = _patched_forward_ig  # type: ignore[assignment]
                 try:
@@ -185,7 +185,7 @@ def _attribute_text(
     return {"tokens": tokens, "scores": token_scores, "target": target, "method": method}
 
 
-def _attribute_image(model: "Model", image_path: str, *, target: int | None, save: str | None = None) -> dict[str, Any]:
+def _attribute_image(model: Model, image_path: str, *, target: int | None, save: str | None = None) -> dict[str, Any]:
     from interpkit.core.inputs import _load_image
     from interpkit.core.render import render_attribution_heatmap
 
@@ -227,7 +227,7 @@ def _attribute_image(model: "Model", image_path: str, *, target: int | None, sav
     return {"grad": grad, "target": target}
 
 
-def _attribute_tensor(model: "Model", tensor_input: Any, *, target: int | None) -> dict[str, Any]:
+def _attribute_tensor(model: Model, tensor_input: Any, *, target: int | None) -> dict[str, Any]:
     from interpkit.core.render import render_attribution_tokens
 
     inp = model._prepare(tensor_input)

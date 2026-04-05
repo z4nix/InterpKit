@@ -6,7 +6,6 @@ import html
 import json
 from typing import Any
 
-
 _DARK_BG = "#1a1a2e"
 _PANEL_BG = "#16213e"
 _ACCENT = "#0f3460"
@@ -303,7 +302,7 @@ def html_attribution(
 
     max_score = max(abs(s) for s in scores) if scores else 1.0
 
-    body = f"""
+    body = """
 <h1>Attribution (Gradient Saliency)</h1>
 <div class="panel controls">
     <label>Threshold: <input type="range" id="threshold" min="0" max="100" value="0"

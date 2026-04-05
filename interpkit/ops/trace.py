@@ -17,7 +17,7 @@ console = Console()
 
 
 def run_trace(
-    model: "Model",
+    model: Model,
     clean: Any,
     corrupted: Any,
     *,
@@ -59,7 +59,7 @@ def run_trace(
 # ------------------------------------------------------------------
 
 def _run_module_trace(
-    model: "Model",
+    model: Model,
     clean: Any,
     corrupted: Any,
     *,
@@ -206,7 +206,7 @@ def _run_module_trace(
 # ------------------------------------------------------------------
 
 def _run_position_trace(
-    model: "Model",
+    model: Model,
     clean: Any,
     corrupted: Any,
     *,
@@ -341,7 +341,8 @@ def _run_position_trace(
         plot_position_trace(result, save_path=save)
 
     if html is not None:
-        from interpkit.core.html import html_position_trace as gen_html_pt, save_html
+        from interpkit.core.html import html_position_trace as gen_html_pt
+        from interpkit.core.html import save_html
 
         save_html(gen_html_pt(result), html)
 

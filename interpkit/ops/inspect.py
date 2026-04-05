@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from interpkit.core.model import Model
 
 
-def run_inspect(model: "Model") -> None:
+def run_inspect(model: Model) -> None:
     from interpkit.core.render import render_inspect
 
     render_inspect(model.arch_info, nn_model=model._model)

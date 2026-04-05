@@ -35,6 +35,9 @@ FAILURES.md
 # Jupyter
 .ipynb_checkpoints/
 
+# Docs
+site/
+
 # Distribution
 *.tar.gz
 *.whl
