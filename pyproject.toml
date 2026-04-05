@@ -26,6 +26,7 @@ dependencies = [
     "transformers>=4.36",
     "safetensors>=0.4",
     "rich>=13.0",
+    "rich-gradient>=0.3",
     "typer>=0.9",
     "Pillow>=10.0",
     "matplotlib>=3.8",

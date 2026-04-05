@@ -8,7 +8,10 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich.text import Text
+from rich_gradient import Rule as GradientRule
+from rich_gradient import Text as GradientText
+
+_BRAND_COLORS = ["#ebf4f5", "#a3b5d1"]
 
 app = typer.Typer(
     name="interpkit",
@@ -20,6 +23,8 @@ app = typer.Typer(
 console = Console()
 
 _output_format: str = "rich"
+
+_VERSION = "0.2.0"
 
 
 def _json_dump(result: dict) -> None:
@@ -44,9 +49,9 @@ def _load_model(
 ):
     from interpkit.core.model import load
 
-    with console.status(f"Loading {model_name}..."):
+    with console.status(f"  Loading [bold]{model_name}[/bold]..."):
         m = load(model_name, device=device, dtype=dtype, device_map=device_map)
-    console.print(f"  [dim]Device: {m._device}[/dim]")
+    console.print(f"  [bold green]Loaded[/bold green] [#a3b5d1]{model_name}[/#a3b5d1] on [bold]{m._device}[/bold]")
     return m
 
 
@@ -62,7 +67,7 @@ def _show_extensive_help() -> None:
     console.print()
     console.print(Panel(
         "[bold]All commands share this basic shape:[/bold]\n\n"
-        "  [bold cyan]interpkit[/bold cyan] [bold]<command>[/bold] [bold yellow]<model>[/bold yellow]"
+        "  [bold #a3b5d1]interpkit[/bold #a3b5d1] [bold]<command>[/bold] [bold yellow]<model>[/bold yellow]"
         " [dim]'your text'[/dim] [dim][options][/dim]\n\n"
         "  [bold yellow]<model>[/bold yellow] is any HuggingFace model ID —"
         " e.g. [dim]gpt2[/dim], [dim]EleutherAI/pythia-70m[/dim], [dim]meta-llama/Llama-3-8B[/dim]\n\n"
@@ -70,43 +75,43 @@ def _show_extensive_help() -> None:
         " and [bold green]--html path.html[/bold green] for an interactive version.\n"
         "  Use [bold green]--device cpu|cuda|mps[/bold green] and [bold green]--dtype float16|bfloat16|float32|auto"
         "[/bold green] to control how the model loads.",
-        title="[bold cyan]InterpKit — Beginner's Command Guide[/bold cyan]",
-        border_style="cyan",
+        title="[bold #a3b5d1]InterpKit — Beginner's Command Guide[/bold #a3b5d1]",
+        border_style="#a3b5d1",
         padding=(1, 2),
     ))
 
     # ── Quick Start ───────────────────────────────────────────────
     console.print()
-    console.print(Rule("[bold]Quick Start[/bold]", style="cyan"))
+    console.print(Rule("[bold]Quick Start[/bold]", style="#a3b5d1"))
     console.print()
 
     console.print(Panel(
-        "[bold cyan]scan[/bold cyan]  [dim]interpkit scan gpt2 'The capital of France is'[/dim]\n\n"
+        "[bold #a3b5d1]scan[/bold #a3b5d1]  [dim]interpkit scan gpt2 'The capital of France is'[/dim]\n\n"
         "The best place to start. Runs four analyses in a single pass — DLA, logit lens, attention,"
         " and gradient attribution — and prints a combined overview. Think of it as a model health"
         " check that gives you a broad picture before you zoom in on anything specific.\n\n"
         "  [bold green]--save prefix[/bold green]  writes each sub-figure to [dim]prefix_dla.png[/dim],"
         " [dim]prefix_lens.png[/dim], etc.",
         title="scan",
-        border_style="dim cyan",
+        border_style="dim #a3b5d1",
         padding=(0, 2),
     ))
 
     console.print()
     console.print(Panel(
-        "[bold cyan]report[/bold cyan]  [dim]interpkit report gpt2 'The capital of France is'[/dim]\n\n"
-        "Like [bold cyan]scan[/bold cyan], but bundles everything into a self-contained, interactive"
+        "[bold #a3b5d1]report[/bold #a3b5d1]  [dim]interpkit report gpt2 'The capital of France is'[/dim]\n\n"
+        "Like [bold #a3b5d1]scan[/bold #a3b5d1], but bundles everything into a self-contained, interactive"
         " HTML file instead of printing to the terminal. Hand it to a colleague or open it in a"
         " browser for a polished, shareable analysis.\n\n"
         "  [bold green]--save report.html[/bold green]  output path (default: [dim]report.html[/dim])",
         title="report",
-        border_style="dim cyan",
+        border_style="dim #a3b5d1",
         padding=(0, 2),
     ))
 
     # ── Core Operations ───────────────────────────────────────────
     console.print()
-    console.print(Rule("[bold]Core Operations[/bold]", style="cyan"))
+    console.print(Rule("[bold]Core Operations[/bold]", style="#a3b5d1"))
     console.print()
 
     entries = [
@@ -184,10 +189,10 @@ def _show_extensive_help() -> None:
             " being used.\n"
             "  [bold]If it doesn't:[/bold] the information isn't stored there; look elsewhere.\n\n"
             "  Think of it as a targeted transplant: you're isolating one component and asking"
-            " 'is the fix inside here?' Use [bold cyan]trace[/bold cyan] first to rank candidates,"
-            " then [bold cyan]patch[/bold cyan] to confirm.",
+            " 'is the fix inside here?' Use [bold #a3b5d1]trace[/bold #a3b5d1] first to rank candidates,"
+            " then [bold #a3b5d1]patch[/bold #a3b5d1] to confirm.",
             [
-                ("--at", "Module to patch — get exact names from [bold cyan]inspect[/bold cyan]."),
+                ("--at", "Module to patch — get exact names from [bold #a3b5d1]inspect[/bold #a3b5d1]."),
                 ("--head", "Patch only a specific attention head within the module."),
                 ("--positions", "Restrict the patch to certain token positions (e.g. 3,4,5)."),
                 ("--metric", "How to measure recovery: logit_diff · kl_div · target_prob · l2_prob"),
@@ -202,15 +207,15 @@ def _show_extensive_help() -> None:
                 f"    [bold green]{k}[/bold green]  {v}" for k, v in opts
             )
         console.print(Panel(
-            f"[bold cyan]{name}[/bold cyan]  [dim]{example}[/dim]\n\n{description}{opt_lines}",
+            f"[bold #a3b5d1]{name}[/bold #a3b5d1]  [dim]{example}[/dim]\n\n{description}{opt_lines}",
             title=name,
-            border_style="dim cyan",
+            border_style="dim #a3b5d1",
             padding=(0, 2),
         ))
         console.print()
 
     # ── Analysis Operations ───────────────────────────────────────
-    console.print(Rule("[bold]Analysis Operations[/bold]", style="cyan"))
+    console.print(Rule("[bold]Analysis Operations[/bold]", style="#a3b5d1"))
     console.print()
 
     analysis_entries = [
@@ -220,7 +225,7 @@ def _show_extensive_help() -> None:
             "Extracts the raw activation tensor at one or more named modules and prints summary"
             " statistics (shape, mean, std, min/max). Use this when you want to inspect or export"
             " internal representations directly — for instance, to feed them into your own analysis.",
-            [("--at", "Module name(s), comma-separated. Find names with [bold cyan]inspect[/bold cyan].")],
+            [("--at", "Module name(s), comma-separated. Find names with [bold #a3b5d1]inspect[/bold #a3b5d1].")],
         ),
         (
             "ablate",
@@ -302,19 +307,19 @@ def _show_extensive_help() -> None:
                 f"    [bold green]{k}[/bold green]  {v}" for k, v in opts
             )
         console.print(Panel(
-            f"[bold cyan]{name}[/bold cyan]  [dim]{example}[/dim]\n\n{description}{opt_lines}",
+            f"[bold #a3b5d1]{name}[/bold #a3b5d1]  [dim]{example}[/dim]\n\n{description}{opt_lines}",
             title=name,
-            border_style="dim cyan",
+            border_style="dim #a3b5d1",
             padding=(0, 2),
         ))
         console.print()
 
     # ── Circuit Analysis ──────────────────────────────────────────
-    console.print(Rule("[bold]Circuit Analysis[/bold]", style="cyan"))
+    console.print(Rule("[bold]Circuit Analysis[/bold]", style="#a3b5d1"))
     console.print()
 
     console.print(Panel(
-        "[bold cyan]find-circuit[/bold cyan]  "
+        "[bold #a3b5d1]find-circuit[/bold #a3b5d1]  "
         "[dim]interpkit find-circuit gpt2 --clean '...' --corrupted '...'[/dim]\n\n"
         "Automated circuit discovery. Iteratively ablates every module and keeps only those whose"
         " removal meaningfully changes the output (above [bold green]--threshold[/bold green])."
@@ -332,13 +337,13 @@ def _show_extensive_help() -> None:
         "    [bold green]--method[/bold green]  Ablation method: mean (default), zero, resample.\n"
         "    [bold green]--metric[/bold green]  logit_diff · kl_div · target_prob · l2_prob",
         title="find-circuit",
-        border_style="dim cyan",
+        border_style="dim #a3b5d1",
         padding=(0, 2),
     ))
     console.print()
 
     console.print(Panel(
-        "[bold cyan]features[/bold cyan]  "
+        "[bold #a3b5d1]features[/bold #a3b5d1]  "
         "[dim]interpkit features gpt2 '...' --at transformer.h.8 --sae jbloom/GPT2-Small-SAEs[/dim]\n\n"
         "Sparse Autoencoder (SAE) feature decomposition. Takes a module's activation and projects"
         " it through a separately trained SAE to recover a sparse set of interpretable features."
@@ -353,13 +358,13 @@ def _show_extensive_help() -> None:
         "  [bold green]--top-k[/bold green]  How many top features to display (default 20).\n"
         "  [bold green]--positive-file / --negative-file[/bold green]  Text files for contrastive feature analysis.",
         title="features",
-        border_style="dim cyan",
+        border_style="dim #a3b5d1",
         padding=(0, 2),
     ))
 
     console.print()
     console.print(
-        "  Run [bold cyan]interpkit <command> --help[/bold cyan] for the full option list of any command.\n"
+        "  Run [bold #a3b5d1]interpkit <command> --help[/bold #a3b5d1] for the full option list of any command.\n"
     )
 
 
@@ -385,77 +390,86 @@ def main(
         _show_extensive_help()
         return
 
-    logo = r"""
-IIIII         tt                          KK  KK iii tt
- III  nn nnn  tt      eee  rr rr  pp pp   KK KK      tt
- III  nnn  nn tttt  ee   e rrr  r ppp  pp KKKK   iii tttt
- III  nn   nn tt    eeeee  rr     pppppp  KK KK  iii tt
-IIIII nn   nn  tttt  eeeee rr     pp      KK  KK iii  tttt
-                                  pp
-"""
-    console.print(f"[bold cyan]{logo}[/bold cyan]", highlight=False)
-
-    table = Table(
-        show_header=True, header_style="bold", show_lines=False,
-        pad_edge=True, expand=True,
-    )
-    table.add_column("Command", style="cyan", no_wrap=True)
-    table.add_column("Description")
-    table.add_column("Example", style="dim")
-
-    rows = [
-        ("", "[bold]Quick Start[/bold]", ""),
-        ("scan", "One-command overview — DLA, lens, attention, attribution", "interpkit scan gpt2 'The capital of France is'"),
-        ("", "", ""),
-        ("", "[bold]Core Operations[/bold]", ""),
-        ("inspect", "Module tree with types, params, roles", "interpkit inspect gpt2"),
-        ("dla", "Direct Logit Attribution — decompose logit by component", "interpkit dla gpt2 'The capital of France is'"),
-        ("trace", "Causal tracing — module or position-aware (Meng et al.)", "interpkit trace gpt2 --clean '...' --corrupted '...'"),
-        ("lens", "Logit lens — project layers to vocab (all positions)", "interpkit lens gpt2 'The capital of France is'"),
-        ("attribute", "Gradient saliency over inputs", "interpkit attribute gpt2 'The capital of France is'"),
-        ("patch", "Activation patching at module/head/position", "interpkit patch gpt2 --clean '...' --corrupted '...' --at transformer.h.8.mlp"),
-        ("", "", ""),
-        ("", "[bold]Analysis Operations[/bold]", ""),
-        ("activations", "Extract raw activation tensors", "interpkit activations gpt2 '...' --at transformer.h.8"),
-        ("ablate", "Zero/mean ablate a component", "interpkit ablate gpt2 '...' --at transformer.h.8.mlp"),
-        ("attention", "Visualize attention patterns", "interpkit attention gpt2 '...' --layer 8"),
-        ("decompose", "Residual stream decomposition by component", "interpkit decompose gpt2 'The capital of France is'"),
-        ("steer", "Steering vector (inline or file-based)", "interpkit steer gpt2 '...' --positive-file pos.txt --negative-file neg.txt --at ..."),
-        ("probe", "Linear probe on activations", "interpkit probe gpt2 --at transformer.h.8 --data data.json"),
-        ("diff", "Compare two models' activations", "interpkit diff gpt2 my-finetuned-gpt2 '...'"),
-        ("", "", ""),
-        ("", "[bold]Circuit Analysis[/bold]", ""),
-        ("find-circuit", "Circuit discovery (single or multi-pair)", "interpkit find-circuit gpt2 --clean-file c.txt --corrupted-file r.txt"),
-        ("features", "SAE features (single or contrastive)", "interpkit features gpt2 '...' --at ... --sae jbloom/..."),
-    ]
-
-    for cmd, desc, example in rows:
-        table.add_row(cmd, desc, example)
-
-    panel = Panel(
-        table,
-        title="[bold cyan]Commands[/bold cyan]",
-        subtitle="[dim]Mech interp for any HuggingFace model.[/dim]",
-        border_style="cyan",
-        padding=(1, 2),
+    _LOGO_STR = (
+        "\u2588\u2588\u2557\u2588\u2588\u2588\u2557   \u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2557  \u2588\u2588\u2557\u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\n"
+        "\u2588\u2588\u2551\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2551\u255a\u2550\u2550\u2588\u2588\u2554\u2550\u2550\u255d\u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255d\u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557\u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557\u2588\u2588\u2551 \u2588\u2588\u2554\u255d\u2588\u2588\u2551\u255a\u2550\u2550\u2588\u2588\u2554\u2550\u2550\u255d\n"
+        "\u2588\u2588\u2551\u2588\u2588\u2554\u2588\u2588\u2557 \u2588\u2588\u2551   \u2588\u2588\u2551   \u2588\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255d\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255d\u2588\u2588\u2588\u2588\u2588\u2554\u255d \u2588\u2588\u2551   \u2588\u2588\u2551\n"
+        "\u2588\u2588\u2551\u2588\u2588\u2551\u255a\u2588\u2588\u2557\u2588\u2588\u2551   \u2588\u2588\u2551   \u2588\u2588\u2554\u2550\u2550\u255d  \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557\u2588\u2588\u2554\u2550\u2550\u2550\u255d \u2588\u2588\u2554\u2550\u2588\u2588\u2557 \u2588\u2588\u2551   \u2588\u2588\u2551\n"
+        "\u2588\u2588\u2551\u2588\u2588\u2551 \u255a\u2588\u2588\u2588\u2588\u2551   \u2588\u2588\u2551   \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2551  \u2588\u2588\u2551\u2588\u2588\u2551     \u2588\u2588\u2551  \u2588\u2588\u2557\u2588\u2588\u2551   \u2588\u2588\u2551\n"
+        "\u255a\u2550\u255d\u255a\u2550\u255d  \u255a\u2550\u2550\u2550\u255d   \u255a\u2550\u255d   \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u255d\u255a\u2550\u255d  \u255a\u2550\u255d\u255a\u2550\u255d     \u255a\u2550\u255d  \u255a\u2550\u255d\u255a\u2550\u255d   \u255a\u2550\u255d"
     )
     console.print()
-    console.print(panel)
-
-    save_hint = Text.assemble(
-        ("  Tip: ", "bold"),
-        ("Most commands accept ", ""),
-        ("--save path.png", "bold green"),
-        (" to export a matplotlib figure and ", ""),
-        ("--html path.html", "bold green"),
-        (" for interactive visualizations.\n", ""),
-    )
-    console.print(save_hint)
+    console.print(GradientText(_LOGO_STR, colors=_BRAND_COLORS, style="bold"), highlight=False)
     console.print(
-        "  Run [bold cyan]interpkit <command> --help[/bold cyan] for detailed usage.\n"
-        "  New here? Run [bold cyan]interpkit --extensive[/bold cyan] for a plain-English"
-        " walkthrough of every command.\n"
+        GradientText(
+            f"  Mech interp for any HuggingFace model  v{_VERSION}",
+            colors=_BRAND_COLORS,
+        )
     )
+
+    def _cmd_table(commands: list[tuple[str, str]]) -> Table:
+        table = Table(
+            show_header=False, box=None, pad_edge=False,
+            padding=(0, 2), expand=True,
+        )
+        table.add_column("Command", style="bold #a3b5d1", no_wrap=True, min_width=16)
+        table.add_column("Description")
+        for cmd, desc in commands:
+            table.add_row(cmd, desc)
+        return table
+
+    quick_start = _cmd_table([
+        ("scan", "One-command overview \u2014 DLA, lens, attention, attribution"),
+        ("report", "Generate an interactive HTML report"),
+    ])
+
+    core_ops = _cmd_table([
+        ("inspect", "Module tree with types, params, roles"),
+        ("dla", "Direct Logit Attribution \u2014 decompose logit by component"),
+        ("trace", "Causal tracing \u2014 module or position-aware"),
+        ("lens", "Logit lens \u2014 project layers to vocab"),
+        ("attribute", "Gradient saliency over inputs"),
+        ("patch", "Activation patching at module/head/position"),
+    ])
+
+    analysis_ops = _cmd_table([
+        ("activations", "Extract raw activation tensors"),
+        ("ablate", "Zero/mean/resample ablate a component"),
+        ("attention", "Visualize attention patterns"),
+        ("decompose", "Residual stream decomposition by component"),
+        ("steer", "Activation steering (inline or file-based)"),
+        ("probe", "Linear probe on activations"),
+        ("diff", "Compare two models' activations"),
+    ])
+
+    circuit_ops = _cmd_table([
+        ("find-circuit", "Automated circuit discovery"),
+        ("features", "SAE feature decomposition (single or contrastive)"),
+    ])
+
+    layout = Table(show_header=False, box=None, pad_edge=False, padding=0, expand=True)
+    layout.add_column(ratio=1)
+
+    layout.add_row(GradientRule("Quick Start", colors=_BRAND_COLORS, align="left"))
+    layout.add_row(quick_start)
+    layout.add_row("")
+    layout.add_row(GradientRule("Core Operations", colors=_BRAND_COLORS, align="left"))
+    layout.add_row(core_ops)
+    layout.add_row("")
+    layout.add_row(GradientRule("Analysis", colors=_BRAND_COLORS, align="left"))
+    layout.add_row(analysis_ops)
+    layout.add_row("")
+    layout.add_row(GradientRule("Circuit Analysis", colors=_BRAND_COLORS, align="left"))
+    layout.add_row(circuit_ops)
+
+    console.print()
+    console.print(layout)
+
+    console.print()
+    console.print("  [dim]\u25b8[/dim] Most commands accept [bold green]--save[/bold green] and [bold green]--html[/bold green] for exports.")
+    console.print("  [dim]\u25b8[/dim] Run [bold #a3b5d1]interpkit <command> --help[/bold #a3b5d1] for detailed usage.")
+    console.print("  [dim]\u25b8[/dim] New here? Try [bold #a3b5d1]interpkit --extensive[/bold #a3b5d1] for a plain-English walkthrough.")
+    console.print()
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -472,7 +486,7 @@ def inspect(
 ) -> None:
     """Print the model's module tree with types, param counts, and detected roles."""
     m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
-    with console.status("Inspecting model..."):
+    with console.status("  Inspecting model..."):
         m.inspect()
 
 
@@ -499,8 +513,9 @@ def patch(
     pos_list: list[int] | None = None
     if positions is not None:
         pos_list = [int(p.strip()) for p in positions.split(",")]
-    with console.status("Running activation patching..."):
+    with console.status("  Patching activations..."):
         result = m.patch(clean, corrupted, at=at, head=head, positions=pos_list, metric=metric)
+    console.print(f"  [bold green]Patched[/bold green] [#a3b5d1]{at}[/#a3b5d1]")
     if _output_format == "json":
         _json_dump(result)
 
@@ -550,7 +565,7 @@ def lens(
 ) -> None:
     """Logit lens: project each layer's hidden state to vocabulary space."""
     m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
-    with console.status("Running logit lens..."):
+    with console.status("  Running logit lens..."):
         result = m.lens(text, save=save, html=html_path, position=position)
     if _output_format == "json":
         _json_dump(result if isinstance(result, dict) else {"results": result})
@@ -597,7 +612,7 @@ def activations(
     """Extract and display activation statistics at named modules."""
     m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
     modules = [s.strip() for s in at.split(",")]
-    with console.status("Extracting activations..."):
+    with console.status("  Extracting activations..."):
         if len(modules) == 1:
             result = m.activations(input_data, at=modules[0])
         else:
@@ -624,8 +639,9 @@ def ablate(
 ) -> None:
     """Zero, mean, or resample ablate a module and measure the effect on output."""
     m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
-    with console.status("Running ablation..."):
+    with console.status("  Running ablation..."):
         result = m.ablate(input_data, at=at, method=method, reference=reference)
+    console.print(f"  [bold green]Ablated[/bold green] [#a3b5d1]{at}[/#a3b5d1] ({method})")
     if _output_format == "json":
         _json_dump(result)
 
@@ -649,7 +665,7 @@ def attention(
 ) -> None:
     """Show attention patterns for transformer models."""
     m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
-    with console.status("Computing attention patterns..."):
+    with console.status("  Computing attention patterns..."):
         result = m.attention(input_data, layer=layer, head=head, save=save, html=html_path)
     if _output_format == "json" and result is not None:
         _json_dump({"results": result} if isinstance(result, list) else result)
@@ -697,7 +713,7 @@ def steer(
 
     m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
     vector = m.steer_vector(pos_inputs, neg_inputs, at=at)
-    with console.status("Running steered inference..."):
+    with console.status("  Running steered inference..."):
         result = m.steer(input_data, vector=vector, at=at, scale=scale, save=save)
     if _output_format == "json":
         _json_dump(result)
@@ -748,7 +764,7 @@ def diff(
 
     m_a = _load_model(model_a_name, device=device, dtype=dtype, device_map=device_map)
     m_b = _load_model(model_b_name, device=device, dtype=dtype, device_map=device_map)
-    with console.status("Comparing models..."):
+    with console.status("  Comparing models..."):
         result = interpkit.diff(m_a, m_b, input_data, save=save)
     if _output_format == "json":
         _json_dump(result)
@@ -788,7 +804,7 @@ def features(
         if input_data is None:
             raise typer.BadParameter("Provide input text or use --positive-file / --negative-file for contrastive mode")
         m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
-        with console.status("Decomposing features..."):
+        with console.status("  Decomposing features..."):
             result = m.features(input_data, at=at, sae=sae, top_k=top_k)
 
     if _output_format == "json":
@@ -842,7 +858,7 @@ def dla(
             parsed_token = int(token)
         except ValueError:
             parsed_token = token
-    with console.status("Running DLA..."):
+    with console.status("  Running DLA..."):
         result = m.dla(input_data, token=parsed_token, position=position, top_k=top_k, save=save, html=html_path)
     if _output_format == "json":
         _json_dump(result)
@@ -864,7 +880,7 @@ def decompose(
 ) -> None:
     """Decompose the residual stream into per-component contributions."""
     m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
-    with console.status("Decomposing residual stream..."):
+    with console.status("  Decomposing residual stream..."):
         result = m.decompose(input_data, position=position)
     if _output_format == "json":
         _json_dump(result)

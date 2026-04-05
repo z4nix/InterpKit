@@ -5,21 +5,95 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import torch
+from rich import box
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
+from rich_gradient import Rule as GradientRule
+
+_BRAND_COLORS = ["#ebf4f5", "#a3b5d1"]
 
 if TYPE_CHECKING:
     from interpkit.core.discovery import ModelArchInfo
 
 console = Console()
 
-_ROLE_TAGS = {
-    "attention": "[attn]",
-    "mlp": "[mlp]",
-    "head": "[head]",
-    "norm": "[norm]",
-    "embed": "[embed]",
+# ── Design tokens ────────────────────────────────────────────────
+
+_ROLE_PILL: dict[str, tuple[str, str]] = {
+    "attention": ("attn", "bold white on #6b7d9e"),
+    "mlp": ("mlp", "bold white on purple4"),
+    "head": ("head", "bold white on dark_blue"),
+    "norm": ("norm", "bold black on yellow"),
+    "embed": ("embed", "bold white on dark_green"),
 }
+
+_BAR_WIDTH = 24
+_TABLE_BOX = box.SIMPLE_HEAD
+
+
+# ── Helpers ──────────────────────────────────────────────────────
+
+
+def _section(title: str, subtitle: str = "") -> None:
+    """Print a styled section header using a gradient Rule."""
+    label = title
+    if subtitle:
+        label += f"  [dim]{subtitle}[/dim]"
+    console.print()
+    console.print(GradientRule(label, colors=_BRAND_COLORS, align="left"))
+
+
+def _bar(
+    value: float,
+    max_val: float,
+    *,
+    width: int = _BAR_WIDTH,
+    positive: bool | None = None,
+) -> str:
+    """Render a smooth unicode bar with half-block precision."""
+    if max_val <= 0:
+        return ""
+    ratio = min(abs(value) / max_val, 1.0)
+    full = int(ratio * width)
+    frac = ratio * width - full
+
+    blocks = "\u2588" * full
+    if frac >= 0.5:
+        blocks += "\u258c"
+
+    if not blocks:
+        return ""
+
+    if positive is None:
+        positive = value >= 0
+
+    color = "green" if positive else "red"
+    return f"[{color}]{blocks}[/{color}]"
+
+
+def _role_tag(role: str | None) -> str:
+    """Format a module role as a pill-style tag with background."""
+    if not role:
+        return ""
+    label, style = _ROLE_PILL.get(role, (role, "dim"))
+    return f"[{style}] {label} [/{style}]"
+
+
+def _callout(label: str, value: str, style: str = "#a3b5d1") -> None:
+    """Print a highlighted callout line with a marker."""
+    console.print(f"  [{style}]\u25b8[/{style}] {label}: [bold]{value}[/bold]")
+
+
+def _format_params(n: int) -> str:
+    if n >= 1_000_000_000:
+        return f"{n / 1_000_000_000:.1f}B"
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}K"
+    return str(n)
 
 
 # ------------------------------------------------------------------
@@ -50,20 +124,22 @@ def render_inspect(arch_info: ModelArchInfo, nn_model: torch.nn.Module | None = 
         total_params = sum(m.param_count for m in arch_info.modules)
     header_parts.append(f"{_format_params(total_params)} params total")
 
-    console.print(f"\n[bold]{' | '.join(header_parts)}[/bold]")
+    _section("Model Architecture")
+    details = " \u00b7 ".join(header_parts)
+    console.print(f"  [dim]{details}[/dim]")
 
-    table = Table(show_header=True, header_style="bold", show_lines=False, pad_edge=False)
-    table.add_column("Module", style="cyan", no_wrap=True)
+    table = Table(show_header=True, header_style="bold", box=_TABLE_BOX, pad_edge=False)
+    table.add_column("Module", style="#a3b5d1", no_wrap=True)
     table.add_column("Type", style="dim")
     table.add_column("Params", justify="right")
     table.add_column("Output Shape", style="dim")
-    table.add_column("Role", style="bold yellow")
+    table.add_column("Role")
 
     for m in arch_info.modules:
-        role_tag = _ROLE_TAGS.get(m.role or "", "")
+        tag = _role_tag(m.role)
         shape_str = str(m.output_shape) if m.output_shape else ""
         param_str = _format_params(m.param_count) if m.param_count > 0 else ""
-        table.add_row(m.name, m.type_name, param_str, shape_str, role_tag)
+        table.add_row(m.name, m.type_name, param_str, shape_str, tag)
 
     console.print(table)
     console.print()
@@ -81,68 +157,68 @@ def render_trace(
     top_k: int | None,
 ) -> None:
     """Print a ranked bar chart of causal tracing results."""
-    scanned = len(results)
     if top_k is not None:
-        title = f"Causal Trace: {model_name}  (top {scanned} of {total_modules} modules)"
+        subtitle = f"top {len(results)} of {total_modules} modules"
     else:
-        title = f"Causal Trace: {model_name}  ({total_modules} modules)"
+        subtitle = f"{total_modules} modules"
 
-    console.print(f"\n[bold]{title}[/bold]")
+    _section(f"Causal Trace \u2014 {model_name}", subtitle)
 
     if not results:
-        console.print("  No significant causal effects found.")
+        console.print("  [dim]No significant causal effects found.[/dim]")
         return
 
     max_effect = max(r["effect"] for r in results) if results else 1.0
-    bar_width = 30
 
-    table = Table(show_header=False, show_lines=False, pad_edge=False, box=None)
-    table.add_column("Module", style="cyan", no_wrap=True, min_width=35)
-    table.add_column("Role", style="yellow", min_width=8)
-    table.add_column("Bar", no_wrap=True)
+    table = Table(show_header=False, box=None, pad_edge=False, padding=(0, 1))
+    table.add_column("Module", style="#a3b5d1", no_wrap=True, min_width=35)
+    table.add_column("Role", min_width=8)
+    table.add_column("Bar", no_wrap=True, min_width=_BAR_WIDTH + 2)
     table.add_column("Effect", justify="right", style="bold")
 
     for r in results:
-        fill = int(bar_width * r["effect"] / max_effect) if max_effect > 0 else 0
-        bar = "█" * fill
-        role = _ROLE_TAGS.get(r.get("role") or "", "")
-        table.add_row(r["module"], role, f"[green]{bar}[/green]", f"{r['effect']:.3f}")
+        bar = _bar(r["effect"], max_effect)
+        role = _role_tag(r.get("role"))
+        table.add_row(r["module"], role, bar, f"{r['effect']:.3f}")
 
     console.print(table)
 
     if results:
         best = results[0]
-        console.print(f"\n  Top component: [bold cyan]{best['module']}[/bold cyan] (effect: {best['effect']:.3f})")
-
-    if top_k is not None and scanned < total_modules:
-        console.print(
-            f"  Run with --top-k 0 to scan all {total_modules} modules.\n"
-        )
-    else:
         console.print()
+        console.print(Panel(
+            f"[bold #a3b5d1]{best['module']}[/bold #a3b5d1]  effect [bold]{best['effect']:.3f}[/bold]",
+            title="[bold]Top component[/bold]",
+            border_style="#a3b5d1",
+            padding=(0, 2),
+            expand=False,
+        ))
+
+    if top_k is not None and len(results) < total_modules:
+        console.print(f"  [dim]Run with --top-k 0 to scan all {total_modules} modules.[/dim]")
+    console.print()
 
 
 def render_position_trace(result: dict[str, Any]) -> None:
     """Print a summary table for position-aware causal tracing."""
-    effects = result["effects"]  # (num_layers, seq_len)
+    effects = result["effects"]
     layer_names = result["layer_names"]
     tokens = result.get("tokens")
 
     if not isinstance(effects, torch.Tensor):
         effects = torch.tensor(effects)
 
-    console.print("\n[bold]Position-Aware Causal Trace[/bold]")
+    _section("Position-Aware Causal Trace")
 
     num_layers, seq_len = effects.shape
 
-    # Find top-5 (layer, position) pairs by effect
     flat = effects.view(-1)
     top_k = min(10, flat.numel())
     top_vals, top_idxs = flat.topk(top_k)
 
-    table = Table(show_header=True, header_style="bold", show_lines=False)
+    table = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
     table.add_column("Rank", justify="right", style="dim")
-    table.add_column("Layer", style="cyan")
+    table.add_column("Layer", style="#a3b5d1")
     table.add_column("Position", justify="right")
     table.add_column("Token", style="yellow")
     table.add_column("Effect", justify="right", style="bold")
@@ -155,8 +231,8 @@ def render_position_trace(result: dict[str, Any]) -> None:
 
     console.print(table)
     console.print(
-        f"\n  Heatmap: {num_layers} layers x {seq_len} positions. "
-        f"Use save= to export the full (layer, position) heatmap.\n"
+        f"\n  [dim]Heatmap: {num_layers} layers \u00d7 {seq_len} positions. "
+        f"Use --save to export the full heatmap.[/dim]\n"
     )
 
 
@@ -170,22 +246,26 @@ def render_lens(
     model_name: str,
 ) -> None:
     """Print logit lens top predictions per layer."""
-    console.print(f"\n[bold]Logit Lens: {model_name}[/bold]")
+    _section(f"Logit Lens \u2014 {model_name}")
 
-    table = Table(show_header=True, header_style="bold", show_lines=False)
-    table.add_column("Layer", style="cyan")
+    table = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
+    table.add_column("Layer", style="#a3b5d1")
     table.add_column("Top-1 Token", style="bold")
     table.add_column("Prob", justify="right")
+    table.add_column("", no_wrap=True, min_width=12)
     table.add_column("Top-5 Tokens", style="dim")
 
     for pred in predictions:
+        prob = pred["top1_prob"]
+        prob_bar = _bar(prob, 1.0, width=10)
         top5_str = ", ".join(
-            f"{tok} ({prob:.2f})" for tok, prob in zip(pred["top5_tokens"], pred["top5_probs"])
+            f"{tok} ({p:.2f})" for tok, p in zip(pred["top5_tokens"], pred["top5_probs"])
         )
         table.add_row(
             pred["layer_name"],
             pred["top1_token"],
-            f"{pred['top1_prob']:.3f}",
+            f"{prob:.3f}",
+            prob_bar,
             top5_str,
         )
 
@@ -203,36 +283,40 @@ def render_attribution_tokens(
     scores: list[float],
 ) -> None:
     """Print tokens coloured by attribution score (terminal)."""
-    console.print("\n[bold]Attribution (gradient saliency)[/bold]")
+    _section("Attribution", "gradient saliency")
 
     if not scores:
-        console.print("  No attribution scores computed.")
+        console.print("  [dim]No attribution scores computed.[/dim]")
         return
 
     max_score = max(abs(s) for s in scores) if scores else 1.0
 
-    parts: list[str] = []
+    text = Text("  ")
     for tok, score in zip(tokens, scores):
         intensity = abs(score) / max_score if max_score > 0 else 0
         if intensity > 0.7:
-            parts.append(f"[bold red]{tok}[/bold red]")
+            text.append(tok, style="bold red")
         elif intensity > 0.4:
-            parts.append(f"[yellow]{tok}[/yellow]")
+            text.append(tok, style="yellow")
         elif intensity > 0.15:
-            parts.append(f"[dim]{tok}[/dim]")
+            text.append(tok, style="dim")
         else:
-            parts.append(tok)
+            text.append(tok)
 
-    console.print("  " + "".join(parts))
-
-    # Also show ranked list
-    ranked = sorted(zip(tokens, scores), key=lambda x: abs(x[1]), reverse=True)
+    console.print(text)
     console.print()
-    for tok, score in ranked[:10]:
-        bar_len = int(20 * abs(score) / max_score) if max_score > 0 else 0
-        bar = "█" * bar_len
-        console.print(f"  {tok:>15s}  [green]{bar}[/green]  {score:.4f}")
 
+    ranked = sorted(zip(tokens, scores), key=lambda x: abs(x[1]), reverse=True)
+    table = Table(show_header=False, box=None, pad_edge=False, padding=(0, 1))
+    table.add_column("Token", justify="right", style="bold", min_width=15)
+    table.add_column("Bar", no_wrap=True, min_width=_BAR_WIDTH + 2)
+    table.add_column("Score", justify="right", style="dim")
+
+    for tok, score in ranked[:10]:
+        bar = _bar(score, max_score, positive=score >= 0)
+        table.add_row(tok, bar, f"{score:.4f}")
+
+    console.print(table)
     console.print()
 
 
@@ -246,7 +330,6 @@ def render_attribution_heatmap(
 
     attr_np = attribution.detach().cpu().numpy()
 
-    # Collapse channel dim if present
     if attr_np.ndim == 3:
         attr_np = attr_np.mean(axis=0)
     elif attr_np.ndim == 4:
@@ -260,7 +343,7 @@ def render_attribution_heatmap(
     fig.savefig(output_path, bbox_inches="tight", dpi=150)
     plt.close(fig)
 
-    console.print(f"\n  Attribution heatmap saved to [bold]{output_path}[/bold]\n")
+    console.print(f"\n  Heatmap saved to [bold]{output_path}[/bold]\n")
 
 
 # ------------------------------------------------------------------
@@ -270,8 +353,11 @@ def render_attribution_heatmap(
 
 def render_patch(result: dict[str, Any]) -> None:
     """Print the result of a single activation patch."""
-    console.print(f"\n[bold]Activation Patch at: {result['module']}[/bold]")
-    console.print(f"  Normalised effect: [bold]{result['effect']:.4f}[/bold]")
+    _section(f"Activation Patch \u2014 {result['module']}")
+
+    effect = result["effect"]
+    bar = _bar(effect, max(abs(effect), 0.001), width=16)
+    console.print(f"  Normalised effect: [bold]{effect:.4f}[/bold]  {bar}")
     console.print()
 
 
@@ -282,10 +368,10 @@ def render_patch(result: dict[str, Any]) -> None:
 
 def render_activations(cache: dict[str, torch.Tensor]) -> None:
     """Print a summary table of extracted activations."""
-    console.print("\n[bold]Activations[/bold]")
+    _section("Activations")
 
-    table = Table(show_header=True, header_style="bold", show_lines=False)
-    table.add_column("Module", style="cyan", no_wrap=True)
+    table = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
+    table.add_column("Module", style="#a3b5d1", no_wrap=True)
     table.add_column("Shape", style="dim")
     table.add_column("Norm", justify="right")
     table.add_column("Mean", justify="right")
@@ -317,8 +403,11 @@ def render_activations(cache: dict[str, torch.Tensor]) -> None:
 def render_ablate(result: dict[str, Any]) -> None:
     """Print the result of an ablation."""
     method = result.get("method", "zero")
-    console.print(f"\n[bold]Ablation ({method}) at: {result['module']}[/bold]")
-    console.print(f"  Effect on output: [bold]{result['effect']:.4f}[/bold]")
+    _section(f"Ablation ({method}) \u2014 {result['module']}")
+
+    effect = result["effect"]
+    bar = _bar(effect, max(abs(effect), 0.001), width=16)
+    console.print(f"  Effect on output: [bold]{effect:.4f}[/bold]  {bar}")
     console.print()
 
 
@@ -333,28 +422,28 @@ def render_attention(
     model_name: str,
 ) -> None:
     """Print attention summary per layer/head."""
-    console.print(f"\n[bold]Attention Patterns: {model_name}[/bold]")
+    _section(f"Attention Patterns \u2014 {model_name}")
 
     if not attention_data:
-        console.print("  No attention data captured.")
+        console.print("  [dim]No attention data captured.[/dim]")
         return
 
-    table = Table(show_header=True, header_style="bold", show_lines=False)
-    table.add_column("Layer", style="cyan")
-    table.add_column("Head", style="cyan", justify="right")
-    table.add_column("Top Attention", style="dim")
-    table.add_column("Entropy", justify="right")
+    table = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
+    table.add_column("Layer", style="#a3b5d1")
+    table.add_column("Head", style="#a3b5d1", justify="right")
+    table.add_column("Top Attention Pairs")
+    table.add_column("Entropy", justify="right", style="dim")
 
     for entry in attention_data:
         top_attn_parts = []
         for src, tgt, score in entry.get("top_pairs", [])[:3]:
             src_tok = tokens[src] if tokens and src < len(tokens) else str(src)
             tgt_tok = tokens[tgt] if tokens and tgt < len(tokens) else str(tgt)
-            top_attn_parts.append(f"{src_tok}->{tgt_tok} ({score:.2f})")
+            top_attn_parts.append(f"[bold]{src_tok}[/bold]\u2192{tgt_tok} [dim]({score:.2f})[/dim]")
         table.add_row(
             str(entry["layer"]),
             str(entry["head"]),
-            ", ".join(top_attn_parts),
+            "  ".join(top_attn_parts),
             f"{entry.get('entropy', 0.0):.2f}",
         )
 
@@ -374,12 +463,13 @@ def render_steer(
     scale: float,
 ) -> None:
     """Print side-by-side comparison of top tokens with and without steering."""
-    console.print(f"\n[bold]Steering at: {module_name} (scale={scale})[/bold]")
+    _section(f"Steering \u2014 {module_name}", f"scale={scale}")
 
-    table = Table(show_header=True, header_style="bold", show_lines=False)
+    table = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
     table.add_column("Rank", justify="right", style="dim")
-    table.add_column("Original Token", style="cyan")
+    table.add_column("Original Token", style="#a3b5d1")
     table.add_column("Prob", justify="right")
+    table.add_column("", justify="center", style="dim", width=3)
     table.add_column("Steered Token", style="green")
     table.add_column("Prob", justify="right")
 
@@ -389,7 +479,11 @@ def render_steer(
         orig_prob = f"{original_tokens[i][1]:.3f}" if i < len(original_tokens) else ""
         steer_tok = steered_tokens[i][0] if i < len(steered_tokens) else ""
         steer_prob = f"{steered_tokens[i][1]:.3f}" if i < len(steered_tokens) else ""
-        table.add_row(str(i + 1), orig_tok, orig_prob, steer_tok, steer_prob)
+        changed = orig_tok != steer_tok
+        arrow = "\u2192" if changed else "\u00b7"
+        steer_style = "[bold green]" if changed else ""
+        steer_end = "[/bold green]" if changed else ""
+        table.add_row(str(i + 1), orig_tok, orig_prob, arrow, f"{steer_style}{steer_tok}{steer_end}", steer_prob)
 
     console.print(table)
     console.print()
@@ -402,31 +496,41 @@ def render_steer(
 
 def render_probe(result: dict[str, Any]) -> None:
     """Print probe results — accuracy and top features."""
-    console.print(f"\n[bold]Linear Probe at: {result['module']}[/bold]")
+    _section(f"Linear Probe \u2014 {result['module']}")
 
     eval_method = result.get("eval_method", "")
+    accuracy = result["accuracy"]
+
+    if accuracy >= 0.9:
+        acc_style = "bold green"
+    elif accuracy >= 0.7:
+        acc_style = "bold yellow"
+    else:
+        acc_style = "bold red"
+
     if eval_method == "holdout":
-        console.print(f"  Test accuracy (holdout 20%): [bold]{result['accuracy']:.3f}[/bold]")
+        console.print(f"  Test accuracy (holdout 20%): [{acc_style}]{accuracy:.3f}[/{acc_style}]")
         if result.get("cv_accuracy") is not None:
             console.print(f"  CV accuracy (train split):   {result['cv_accuracy']:.3f}")
         if result.get("train_accuracy") is not None:
             console.print(f"  Train accuracy:              {result['train_accuracy']:.3f}")
     elif eval_method == "cv_only":
-        console.print(f"  CV accuracy: [bold]{result['accuracy']:.3f}[/bold]")
+        console.print(f"  CV accuracy: [{acc_style}]{accuracy:.3f}[/{acc_style}]")
         console.print("  [dim](too few samples for holdout split)[/dim]")
     elif eval_method == "train_only":
-        console.print(f"  Train accuracy: [bold]{result['accuracy']:.3f}[/bold]  [dim](no holdout — <10 samples)[/dim]")
+        console.print(f"  Train accuracy: [{acc_style}]{accuracy:.3f}[/{acc_style}]  [dim](no holdout \u2014 <10 samples)[/dim]")
     else:
-        console.print(f"  Accuracy: [bold]{result['accuracy']:.3f}[/bold]")
+        console.print(f"  Accuracy: [{acc_style}]{accuracy:.3f}[/{acc_style}]")
         if result.get("train_accuracy") is not None:
             console.print(f"  Train accuracy: {result['train_accuracy']:.3f}")
 
     if result.get("top_features"):
-        console.print("\n  Top features by weight magnitude:")
+        console.print()
+        console.print("  [bold]Top features by weight magnitude:[/bold]")
+        max_weight = abs(result["top_features"][0][1]) if result["top_features"][0][1] != 0 else 1.0
         for idx, weight in result["top_features"][:10]:
-            bar_len = int(20 * abs(weight) / abs(result["top_features"][0][1])) if result["top_features"][0][1] != 0 else 0
-            bar = "█" * bar_len
-            console.print(f"    dim {idx:>5d}  [green]{bar}[/green]  {weight:.4f}")
+            bar = _bar(weight, max_weight, width=16)
+            console.print(f"    dim [#a3b5d1]{idx:>5d}[/#a3b5d1]  {bar}  {weight:.4f}")
 
     console.print()
 
@@ -442,30 +546,35 @@ def render_diff(
     model_b_name: str,
 ) -> None:
     """Print per-module activation distance between two models."""
-    console.print(f"\n[bold]Model Diff: {model_a_name} vs {model_b_name}[/bold]")
+    _section(f"Model Diff \u2014 {model_a_name} vs {model_b_name}")
 
     if not results:
-        console.print("  No differences computed.")
+        console.print("  [dim]No differences computed.[/dim]")
         return
 
     max_dist = max(r["distance"] for r in results) if results else 1.0
-    bar_width = 30
 
-    table = Table(show_header=False, show_lines=False, pad_edge=False, box=None)
-    table.add_column("Module", style="cyan", no_wrap=True, min_width=35)
-    table.add_column("Bar", no_wrap=True)
+    table = Table(show_header=False, box=None, pad_edge=False, padding=(0, 1))
+    table.add_column("Module", style="#a3b5d1", no_wrap=True, min_width=35)
+    table.add_column("Bar", no_wrap=True, min_width=_BAR_WIDTH + 2)
     table.add_column("Cosine Dist", justify="right", style="bold")
 
     for r in results:
-        fill = int(bar_width * r["distance"] / max_dist) if max_dist > 0 else 0
-        bar = "█" * fill
-        table.add_row(r["module"], f"[green]{bar}[/green]", f"{r['distance']:.4f}")
+        bar = _bar(r["distance"], max_dist)
+        table.add_row(r["module"], bar, f"{r['distance']:.4f}")
 
     console.print(table)
 
     if results:
         best = results[0]
-        console.print(f"\n  Most changed: [bold cyan]{best['module']}[/bold cyan] (distance: {best['distance']:.4f})")
+        console.print()
+        console.print(Panel(
+            f"[bold #a3b5d1]{best['module']}[/bold #a3b5d1]  distance [bold]{best['distance']:.4f}[/bold]",
+            title="[bold]Most changed[/bold]",
+            border_style="#a3b5d1",
+            padding=(0, 2),
+            expand=False,
+        ))
 
     console.print()
 
@@ -477,73 +586,75 @@ def render_diff(
 
 def render_features(result: dict[str, Any]) -> None:
     """Print SAE feature decomposition results."""
-    console.print(f"\n[bold]SAE Features at: {result['module']}[/bold]")
+    _section(f"SAE Features \u2014 {result['module']}")
     console.print(
-        f"  Active features: [bold]{result['num_active_features']}[/bold] / {result['total_features']}  "
-        f"| Sparsity: {result['sparsity']:.2%}  "
-        f"| Reconstruction error: {result['reconstruction_error']:.4f}"
+        f"  Active: [bold]{result['num_active_features']}[/bold] / {result['total_features']}  "
+        f"[dim]\u2502[/dim]  Sparsity: [bold]{result['sparsity']:.2%}[/bold]  "
+        f"[dim]\u2502[/dim]  Recon error: {result['reconstruction_error']:.4f}"
     )
 
     top = result.get("top_features", [])
     if not top:
-        console.print("  No active features found.")
+        console.print("  [dim]No active features found.[/dim]")
         console.print()
         return
 
     max_val = max(abs(v) for _, v in top) if top else 1.0
+    console.print()
 
-    table = Table(show_header=True, header_style="bold", show_lines=False)
+    table = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
     table.add_column("Rank", justify="right", style="dim")
-    table.add_column("Feature", style="cyan", justify="right")
+    table.add_column("Feature", style="#a3b5d1", justify="right")
     table.add_column("Activation", justify="right")
-    table.add_column("Bar", no_wrap=True)
+    table.add_column("", no_wrap=True, min_width=_BAR_WIDTH + 2)
 
-    bar_width = 25
     for rank, (idx, val) in enumerate(top, 1):
-        fill = int(bar_width * abs(val) / max_val) if max_val > 0 else 0
-        bar = "█" * fill
-        table.add_row(str(rank), str(idx), f"{val:.4f}", f"[green]{bar}[/green]")
+        bar = _bar(val, max_val)
+        table.add_row(str(rank), str(idx), f"{val:.4f}", bar)
 
     console.print(table)
+
+    top_feat = top[0]
+    console.print(Panel(
+        f"Feature [bold #a3b5d1]{top_feat[0]}[/bold #a3b5d1]  activation [bold]{top_feat[1]:.4f}[/bold]",
+        title="[bold]Top feature[/bold]",
+        border_style="#a3b5d1",
+        padding=(0, 2),
+        expand=False,
+    ))
     console.print()
 
 
 def render_contrastive_features(result: dict[str, Any]) -> None:
     """Print contrastive SAE feature analysis results."""
-    console.print(f"\n[bold]Contrastive SAE Features at: {result['module']}[/bold]")
+    _section(f"Contrastive SAE Features \u2014 {result['module']}")
     console.print(
-        f"  Positive examples: {result['num_positive']}  |  "
-        f"Negative examples: {result['num_negative']}  |  "
+        f"  Positive: [green]{result['num_positive']}[/green]  [dim]\u2502[/dim]  "
+        f"Negative: [red]{result['num_negative']}[/red]  [dim]\u2502[/dim]  "
         f"Total features: {result['total_features']}"
     )
 
     top = result.get("top_differential_features", [])
     if not top:
-        console.print("  No differential features found.")
+        console.print("  [dim]No differential features found.[/dim]")
         console.print()
         return
 
     max_diff = max(abs(f["diff"]) for f in top) if top else 1.0
+    console.print()
 
-    table = Table(show_header=True, header_style="bold", show_lines=False)
+    table = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
     table.add_column("Rank", justify="right", style="dim")
-    table.add_column("Feature", style="cyan", justify="right")
+    table.add_column("Feature", style="#a3b5d1", justify="right")
     table.add_column("Pos Mean", justify="right")
     table.add_column("Neg Mean", justify="right")
     table.add_column("Diff", justify="right", style="bold")
-    table.add_column("", no_wrap=True, min_width=20)
+    table.add_column("", no_wrap=True, min_width=_BAR_WIDTH + 2)
 
-    bar_width = 20
     for rank, feat in enumerate(top, 1):
         diff = feat["diff"]
-        fill = int(bar_width * abs(diff) / max_diff) if max_diff > 0 else 0
-        bar_char = "█" * fill
-        if diff > 0:
-            bar = f"[green]+{bar_char}[/green]"
-            sign = "+"
-        else:
-            bar = f"[red]-{bar_char}[/red]"
-            sign = ""
+        bar = _bar(diff, max_diff, positive=diff > 0)
+        sign = "+" if diff > 0 else ""
         table.add_row(
             str(rank),
             str(feat["feature_idx"]),
@@ -567,25 +678,24 @@ def render_decompose(result: dict[str, Any]) -> None:
     components = result["components"]
     position = result["position"]
 
-    console.print(f"\n[bold]Residual Stream Decomposition (position {position})[/bold]")
-
-    table = Table(show_header=True, header_style="bold", show_lines=False)
-    table.add_column("Component", style="cyan")
-    table.add_column("Type", style="dim")
-    table.add_column("Norm", justify="right")
-    table.add_column("", min_width=20)
+    _section("Residual Stream Decomposition", f"position {position}")
 
     max_norm = max((c["norm"] for c in components), default=1.0) or 1.0
 
+    table = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
+    table.add_column("Component", style="#a3b5d1")
+    table.add_column("Type", style="dim")
+    table.add_column("Norm", justify="right")
+    table.add_column("", min_width=_BAR_WIDTH + 2, no_wrap=True)
+
     for c in components:
-        bar_len = int(c["norm"] / max_norm * 15)
-        bar = f"[green]{'█' * bar_len}[/green]"
+        bar = _bar(c["norm"], max_norm)
         table.add_row(c["name"], c["type"], f"{c['norm']:.3f}", bar)
 
     console.print(table)
 
     if result.get("residual") is not None:
-        console.print(f"  Final residual norm: {result['residual'].norm().item():.3f}")
+        console.print(f"  [dim]Final residual norm: {result['residual'].norm().item():.3f}[/dim]")
     console.print()
 
 
@@ -595,71 +705,55 @@ def render_dla(result: dict[str, Any], *, top_k: int = 10) -> None:
     contributions = result["contributions"]
     head_contribs = result.get("head_contributions", [])
 
-    console.print(f"\n[bold]Direct Logit Attribution → \"{target}\"[/bold]")
-    console.print(f"  Total component logit sum: {result['total_logit']:.3f}\n")
+    _section("Direct Logit Attribution")
 
-    # Component-level table (attn + mlp per layer)
-    table = Table(show_header=True, header_style="bold", show_lines=False)
-    table.add_column("Component", style="cyan")
-    table.add_column("Type", style="dim")
-    table.add_column("Contribution", justify="right")
-    table.add_column("", min_width=20)
+    console.print(Panel(
+        f'Target token: [bold]"{target}"[/bold]  |  Total logit sum: [bold]{result["total_logit"]:.3f}[/bold]',
+        border_style="#a3b5d1",
+        padding=(0, 2),
+        expand=False,
+    ))
 
     max_abs = max((abs(c["logit_contribution"]) for c in contributions), default=1.0) or 1.0
 
+    table = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
+    table.add_column("Component", style="#a3b5d1")
+    table.add_column("Type", style="dim")
+    table.add_column("Contribution", justify="right")
+    table.add_column("", min_width=_BAR_WIDTH + 2, no_wrap=True)
+
     for c in contributions[:top_k]:
         val = c["logit_contribution"]
-        bar_len = int(abs(val) / max_abs * 15)
-        if val >= 0:
-            bar = f"[green]{'█' * bar_len}[/green]"
-        else:
-            bar = f"[red]{'█' * bar_len}[/red]"
+        bar = _bar(val, max_abs, positive=val >= 0)
         table.add_row(c["component"], c["type"], f"{val:+.4f}", bar)
 
     if len(contributions) > top_k:
-        table.add_row("...", "", "", f"({len(contributions) - top_k} more)")
+        table.add_row("[dim]...[/dim]", "", "", f"[dim]({len(contributions) - top_k} more)[/dim]")
 
     console.print(table)
 
-    # Per-head table
     if head_contribs:
-        console.print(f"\n[bold]  Per-Head Breakdown (top {top_k})[/bold]")
-        htable = Table(show_header=True, header_style="bold", show_lines=False)
-        htable.add_column("Head", style="cyan")
-        htable.add_column("Contribution", justify="right")
-        htable.add_column("", min_width=20)
+        console.print()
+        console.print(f"  [bold]Per-Head Breakdown[/bold]  [dim](top {top_k})[/dim]")
 
         max_abs_h = max((abs(c["logit_contribution"]) for c in head_contribs), default=1.0) or 1.0
         shown = head_contribs[:top_k] + head_contribs[-top_k:] if len(head_contribs) > 2 * top_k else head_contribs
-        seen = set()
+        seen: set[str] = set()
+
+        htable = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
+        htable.add_column("Head", style="#a3b5d1")
+        htable.add_column("Contribution", justify="right")
+        htable.add_column("", min_width=_BAR_WIDTH + 2, no_wrap=True)
+
         for c in shown:
             key = c["component"]
             if key in seen:
                 continue
             seen.add(key)
             val = c["logit_contribution"]
-            bar_len = int(abs(val) / max_abs_h * 15)
-            if val >= 0:
-                bar = f"[green]{'█' * bar_len}[/green]"
-            else:
-                bar = f"[red]{'█' * bar_len}[/red]"
+            bar = _bar(val, max_abs_h, positive=val >= 0)
             htable.add_row(key, f"{val:+.4f}", bar)
 
         console.print(htable)
 
     console.print()
-
-
-# ------------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------------
-
-
-def _format_params(n: int) -> str:
-    if n >= 1_000_000_000:
-        return f"{n / 1_000_000_000:.1f}B"
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}M"
-    if n >= 1_000:
-        return f"{n / 1_000:.1f}K"
-    return str(n)

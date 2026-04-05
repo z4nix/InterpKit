@@ -526,7 +526,7 @@ def _probe_for_mlp(
             continue
         if not hasattr(mod, "weight"):
             continue
-        if mod.weight.dim() < 2:
+        if cast(torch.Tensor, mod.weight).ndim < 2:
             continue
         flat_fcs.append((full_path, mod))
     if len(flat_fcs) >= 2:
