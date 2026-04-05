@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 from rich.console import Console
 
+from interpkit.core.discovery import _get_weight
 from interpkit.ops.patch import _get_module
 
 if TYPE_CHECKING:
@@ -66,7 +67,7 @@ def run_lens(
     text_input = model._prepare(text)
 
     unembed_mod = _get_module(model._model, arch.unembedding_name)
-    unembed_weight = unembed_mod.weight  # (vocab_size, embed_dim) or (embed_dim, vocab_size) for Conv1D
+    unembed_weight = _get_weight(unembed_mod)  # (vocab_size, embed_dim) or (embed_dim, vocab_size) for Conv1D
     if type(unembed_mod).__name__ == "Conv1D":
         unembed_weight = unembed_weight.T  # normalize to (vocab_size, embed_dim)
     unembed_bias = getattr(unembed_mod, "bias", None)
@@ -227,6 +228,7 @@ def _find_final_norm(model: torch.nn.Module, arch: Any) -> torch.nn.Module | Non
     )
     for name, mod in model.named_modules():
         if norm_pattern.match(name):
+            assert isinstance(mod, torch.nn.Module)
             return mod
 
     # Generic fallback: look for a top-level norm module (LayerNorm or RMSNorm variants)
@@ -235,6 +237,7 @@ def _find_final_norm(model: torch.nn.Module, arch: Any) -> torch.nn.Module | Non
             cls_name = type(mod).__name__.lower()
             is_norm = isinstance(mod, torch.nn.LayerNorm) or "rmsnorm" in cls_name or "layernorm" in cls_name
             if is_norm and ("norm" in name.lower() or "Norm" in type(mod).__name__):
+                assert isinstance(mod, torch.nn.Module)
                 return mod
 
     return None

@@ -90,9 +90,9 @@ def _attribute_text(
             model_input_clean = {k: v.to(model._device) for k, v in encoded.items()}
             logits_clean = model._forward(model_input_clean)
             if logits_clean.dim() == 3:
-                target = logits_clean[0, -1, :].argmax().item()
+                target = int(logits_clean[0, -1, :].argmax().item())
             else:
-                target = logits_clean[0].argmax().item()
+                target = int(logits_clean[0].argmax().item())
 
     model_input = {k: v.to(model._device) for k, v in encoded.items()}
 
@@ -106,7 +106,7 @@ def _attribute_text(
                 alpha = (step + 0.5) / n_steps
                 interpolated = (alpha * base_embeddings).requires_grad_(True)
 
-                def _patched_forward_ig(*args: Any, _interp=interpolated, **kwargs: Any) -> torch.Tensor:
+                def _patched_forward_ig(*args: Any, _interp: torch.Tensor = interpolated, **kwargs: Any) -> torch.Tensor:
                     return _interp
 
                 embed_layer.forward = _patched_forward_ig  # type: ignore[assignment]
@@ -130,8 +130,8 @@ def _attribute_text(
     elif method == "gradient_x_input":
         embeddings = base_embeddings.requires_grad_(True)
 
-        def _patched_forward_gxi(*args: Any, **kwargs: Any) -> torch.Tensor:
-            return embeddings
+        def _patched_forward_gxi(*args: Any, _emb: torch.Tensor = embeddings, **kwargs: Any) -> torch.Tensor:
+            return _emb
 
         embed_layer.forward = _patched_forward_gxi  # type: ignore[assignment]
         try:
@@ -151,8 +151,8 @@ def _attribute_text(
     else:  # "gradient" — vanilla saliency
         embeddings = base_embeddings.requires_grad_(True)
 
-        def _patched_forward_grad(*args: Any, **kwargs: Any) -> torch.Tensor:
-            return embeddings
+        def _patched_forward_grad(*args: Any, _emb: torch.Tensor = embeddings, **kwargs: Any) -> torch.Tensor:
+            return _emb
 
         embed_layer.forward = _patched_forward_grad  # type: ignore[assignment]
         try:
@@ -198,7 +198,7 @@ def _attribute_image(model: Model, image_path: str, *, target: int | None, save:
     if isinstance(processed, dict):
         pixel_key = "pixel_values" if "pixel_values" in processed else list(processed.keys())[0]
         pixel_values = processed[pixel_key].requires_grad_(True)
-        model_input = {**processed, pixel_key: pixel_values}
+        model_input: dict[str, torch.Tensor] | torch.Tensor = {**processed, pixel_key: pixel_values}
     else:
         pixel_values = processed.requires_grad_(True)
         model_input = pixel_values
@@ -211,7 +211,7 @@ def _attribute_image(model: Model, image_path: str, *, target: int | None, save:
         logits_flat = logits
 
     if target is None:
-        target = logits_flat.argmax().item()
+        target = int(logits_flat.argmax().item())
 
     score = logits_flat[target]
     score.backward()
@@ -254,7 +254,7 @@ def _attribute_tensor(model: Model, tensor_input: Any, *, target: int | None) ->
         logits_last = logits.view(-1)
 
     if target is None:
-        target = logits_last.argmax().item()
+        target = int(logits_last.argmax().item())
 
     score = logits_last[target]
     score.backward()

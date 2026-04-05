@@ -25,7 +25,10 @@ def run_activations(
     """
     model_input = model._prepare(input_data)
     single = isinstance(at, str)
-    module_names = [at] if single else list(at)
+    if isinstance(at, str):
+        module_names: list[str] = [at]
+    else:
+        module_names = list(at)
 
     # Check activation cache first (pass prepared input to avoid re-tokenizing)
     cached = model._get_cached(input_data, module_names, _prepared_input=model_input)

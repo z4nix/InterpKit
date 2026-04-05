@@ -99,7 +99,8 @@ class Model:
             out = self._model(model_input)
 
         if hasattr(out, "logits"):
-            return out.logits
+            logits: torch.Tensor = out.logits
+            return logits
         if hasattr(out, "start_logits"):
             return torch.stack([out.start_logits, out.end_logits], dim=-1)
         if isinstance(out, torch.Tensor):
@@ -107,7 +108,8 @@ class Model:
         if isinstance(out, (tuple, list)):
             if len(out) == 0:
                 raise TypeError("Model returned an empty tuple/list — expected tensor output.")
-            return out[0]
+            first: torch.Tensor = out[0]
+            return first
         raise TypeError(f"Unexpected model output type: {type(out).__name__}")
 
     # ------------------------------------------------------------------

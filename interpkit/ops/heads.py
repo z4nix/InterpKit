@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
+from interpkit.core.discovery import _get_weight
 from interpkit.ops.patch import _get_module
 
 if TYPE_CHECKING:
@@ -112,10 +113,10 @@ def run_head_activations(
     per_head = per_head.permute(2, 0, 1, 3)  # (H, B, S, D_h)
 
     if output_proj and hasattr(proj_mod, "weight"):
-        raw_w_o = proj_mod.weight.float()
+        raw_w_o = _get_weight(proj_mod).float()
         is_conv1d = type(proj_mod).__name__ == "Conv1D"
         w_o = raw_w_o.T if is_conv1d else raw_w_o  # -> (d_model, H*D_h)
-        d_model = w_o.shape[0]
+        d_model = int(w_o.shape[0])
         w_o_heads = w_o.view(d_model, num_heads, head_dim)  # (d_model, H, D_h)
 
         projected = torch.zeros(num_heads, batch, seq, d_model, device=concat_heads.device)

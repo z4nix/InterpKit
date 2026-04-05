@@ -220,7 +220,8 @@ def run_contrastive_features(
             mean_feats = feats.mean(dim=0)
             feat_sum = mean_feats if feat_sum is None else feat_sum + mean_feats
             progress.advance(task)
-        return feat_sum / len(inputs)  # type: ignore[operator]
+        assert isinstance(feat_sum, torch.Tensor)
+        return feat_sum / len(inputs)
 
     total = len(positive_inputs) + len(negative_inputs)
     with Progress(console=console, transient=True) as progress:
@@ -348,7 +349,8 @@ def _download_weights(hf_id: str) -> dict[str, torch.Tensor]:
     # Fall back to .pt
     try:
         path = hf_hub_download(hf_id, filename="sae_weights.pt")
-        return torch.load(path, map_location="cpu", weights_only=True)
+        weights: dict[str, torch.Tensor] = torch.load(path, map_location="cpu", weights_only=True)
+        return weights
     except (EntryNotFoundError, FileNotFoundError):
         pass
     except RepositoryNotFoundError:
@@ -369,6 +371,7 @@ def _download_config(hf_id: str) -> dict[str, Any]:
 
     try:
         path = hf_hub_download(hf_id, filename="cfg.json")
-        return json.loads(Path(path).read_text())
+        cfg: dict[str, Any] = json.loads(Path(path).read_text())
+        return cfg
     except Exception:
         return {}

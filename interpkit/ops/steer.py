@@ -20,7 +20,9 @@ def _activation_mean(model: Model, text: Any, *, at: str) -> torch.Tensor:
     """Return the mean activation vector for a single input at *at*."""
     from interpkit.ops.activations import run_activations
 
-    act = run_activations(model, text, at=at, print_stats=False)
+    act_result = run_activations(model, text, at=at, print_stats=False)
+    assert isinstance(act_result, torch.Tensor)
+    act = act_result
     if act.dim() == 3:
         return act[0].mean(dim=0)
     elif act.dim() == 2:
@@ -81,8 +83,10 @@ def run_steer_vector(
             mv = _activation_mean(model, n, at=at)
             neg_sum = mv if neg_sum is None else neg_sum + mv
 
-    pos_mean = pos_sum / len(positives)  # type: ignore[operator]
-    neg_mean = neg_sum / len(negatives)  # type: ignore[operator]
+    assert pos_sum is not None, "No positive examples processed"
+    assert neg_sum is not None, "No negative examples processed"
+    pos_mean = pos_sum / len(positives)
+    neg_mean = neg_sum / len(negatives)
 
     return pos_mean - neg_mean
 

@@ -145,7 +145,7 @@ def _aggregate(results: list[Any], operation: str) -> dict[str, Any]:
                     name = entry.get("module", "")
                     module_effects.setdefault(name, []).append(entry.get("effect", 0.0))
 
-            ranked = []
+            ranked: list[dict[str, Any]] = []
             for module, effects in module_effects.items():
                 ranked.append({
                     "module": module,
@@ -154,7 +154,7 @@ def _aggregate(results: list[Any], operation: str) -> dict[str, Any]:
                     "min_effect": min(effects),
                     "count": len(effects),
                 })
-            ranked.sort(key=lambda x: x["mean_effect"], reverse=True)
+            ranked.sort(key=lambda x: float(x["mean_effect"]), reverse=True)
             summary["ranked_modules"] = ranked
 
     elif operation in ("patch", "ablate"):
@@ -178,15 +178,15 @@ def _aggregate(results: list[Any], operation: str) -> dict[str, Any]:
                 component_contribs.setdefault(name, []).append(
                     c.get("logit_contribution", 0.0)
                 )
-        ranked = []
+        ranked_comps: list[dict[str, Any]] = []
         for comp, vals in component_contribs.items():
-            ranked.append({
+            ranked_comps.append({
                 "component": comp,
                 "mean_contribution": sum(vals) / len(vals),
                 "count": len(vals),
             })
-        ranked.sort(key=lambda x: abs(x["mean_contribution"]), reverse=True)
-        summary["ranked_components"] = ranked
+        ranked_comps.sort(key=lambda x: abs(float(x["mean_contribution"])), reverse=True)
+        summary["ranked_components"] = ranked_comps
 
     elif operation == "attribute":
         # Aggregate token scores across examples

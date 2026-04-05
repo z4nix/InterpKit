@@ -219,10 +219,10 @@ def _compute_effect(
         patched_flat = patched_flat[-1:]
 
     if metric == "logit_diff":
-        target_idx = clean_flat[0].argmax().item()
-        clean_logit = clean_flat[0, target_idx].item()
-        corrupted_logit = corrupted_flat[0, target_idx].item()
-        patched_logit = patched_flat[0, target_idx].item()
+        target_idx = int(clean_flat[0].argmax().item())
+        clean_logit = float(clean_flat[0, target_idx].item())
+        corrupted_logit = float(corrupted_flat[0, target_idx].item())
+        patched_logit = float(patched_flat[0, target_idx].item())
         denom = clean_logit - corrupted_logit
         if abs(denom) < 1e-8:
             return 0.0
@@ -233,23 +233,23 @@ def _compute_effect(
         corrupted_lp = F.log_softmax(corrupted_flat, dim=-1)
         patched_lp = F.log_softmax(patched_flat, dim=-1)
         clean_probs = clean_lp.exp()
-        kl_corrupted = F.kl_div(corrupted_lp, clean_probs, reduction="batchmean").item()
-        kl_patched = F.kl_div(patched_lp, clean_probs, reduction="batchmean").item()
+        kl_corrupted = float(F.kl_div(corrupted_lp, clean_probs, reduction="batchmean").item())
+        kl_patched = float(F.kl_div(patched_lp, clean_probs, reduction="batchmean").item())
         if kl_corrupted < 1e-10:
             return 0.0
         return 1.0 - (kl_patched / kl_corrupted)
 
     elif metric == "target_prob":
-        target_idx = clean_flat[0].argmax().item()
+        target_idx = int(clean_flat[0].argmax().item())
         patched_probs = torch.softmax(patched_flat, dim=-1)
-        return patched_probs[0, target_idx].item()
+        return float(patched_probs[0, target_idx].item())
 
     elif metric == "l2_prob":
         clean_probs = torch.softmax(clean_flat, dim=-1)
         corrupted_probs = torch.softmax(corrupted_flat, dim=-1)
         patched_probs = torch.softmax(patched_flat, dim=-1)
-        dist_corrupted_clean = torch.norm(corrupted_probs - clean_probs).item()
-        dist_patched_clean = torch.norm(patched_probs - clean_probs).item()
+        dist_corrupted_clean = float(torch.norm(corrupted_probs - clean_probs).item())
+        dist_patched_clean = float(torch.norm(patched_probs - clean_probs).item())
         if dist_corrupted_clean < 1e-8:
             return 0.0
         return 1.0 - (dist_patched_clean / dist_corrupted_clean)

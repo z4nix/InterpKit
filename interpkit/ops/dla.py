@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
+from interpkit.core.discovery import _get_weight
 from interpkit.ops.patch import _get_module
 
 if TYPE_CHECKING:
@@ -81,14 +82,14 @@ def run_dla(
 
     # Get unembedding direction for the target token
     unembed_mod = _get_module(model._model, arch.unembedding_name)
-    unembed_weight = unembed_mod.weight.float()  # (vocab, embed_dim)
+    unembed_weight = _get_weight(unembed_mod).float()  # (vocab, embed_dim)
 
     # Handle models where embed_dim != hidden_size (e.g. OPT-350m)
     project_out_weight = None
     if arch.project_out_path:
         try:
             po_mod = _get_module(model._model, arch.project_out_path)
-            project_out_weight = po_mod.weight.float()  # (embed_dim, hidden_size)
+            project_out_weight = _get_weight(po_mod).float()  # (embed_dim, hidden_size)
         except AttributeError:
             import warnings
             warnings.warn(
@@ -105,7 +106,7 @@ def run_dla(
             last_logits = logits[0, position, :]
         else:
             last_logits = logits[0]
-        target_id = last_logits.argmax().item()
+        target_id = int(last_logits.argmax().item())
     elif isinstance(token, str):
         ids = model._tokenizer.encode(token, add_special_tokens=False)
         if not ids:
@@ -136,7 +137,7 @@ def run_dla(
 
     # Capture outputs of each attention output-projection and each MLP
     component_outputs: dict[str, torch.Tensor] = {}
-    hooks: list[torch.utils.hooks.RemovableHook] = []
+    hooks: list[torch.utils.hooks.RemovableHandle] = []
 
     for li in arch.layer_infos:
         comp_key_attn = f"{li.name}::attn"
@@ -171,8 +172,8 @@ def run_dla(
 
     model._forward(model_input)
 
-    for h in hooks:
-        h.remove()
+    for hook in hooks:
+        hook.remove()
 
     # Compute each component's contribution to the target logit
     contributions: list[dict[str, Any]] = []
@@ -222,7 +223,7 @@ def run_dla(
         pre_proj_captures[li.name] = []
 
     if proj_info:
-        capture_hooks: list[torch.utils.hooks.RemovableHook] = []
+        capture_hooks: list[torch.utils.hooks.RemovableHandle] = []
 
         def _make_capture_hook(store: list[torch.Tensor]):
             def hook_fn(_mod: torch.nn.Module, inp: Any, _output: Any) -> None:
@@ -253,10 +254,10 @@ def run_dla(
         head_dim = concat_heads.shape[-1] // num_heads
         per_head = concat_heads[0, position, :].view(num_heads, head_dim)
 
-        raw_w_o = proj_mod.weight.float()
+        raw_w_o = _get_weight(proj_mod).float()
         is_conv1d = type(proj_mod).__name__ == "Conv1D"
         w_o = raw_w_o.T if is_conv1d else raw_w_o
-        d_model = w_o.shape[0]
+        d_model = int(w_o.shape[0])
         w_o_heads = w_o.view(d_model, num_heads, head_dim)
 
         layer_match = re.search(r"\.(\d+)", layer_name)

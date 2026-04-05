@@ -47,7 +47,7 @@ def load(
     """
     from interpkit.core.model import Model
 
-    _dtype_map = {
+    _dtype_map: dict[str, torch.dtype | str] = {
         "float16": torch.float16,
         "fp16": torch.float16,
         "bfloat16": torch.bfloat16,
@@ -112,9 +112,9 @@ def load(
     registration = get_registration(model)
 
     if is_tl:
-        dummy = torch.tensor([[0]], device=device)
+        dummy: dict[str, torch.Tensor] | torch.Tensor | None = torch.tensor([[0]], device=device)
     else:
-        dummy = _make_dummy_input(model, tokenizer=tokenizer, image_processor=image_processor, device=device)
+        dummy = _make_dummy_input(model, tokenizer=tokenizer, image_processor=image_processor, device=device or "cpu")
     arch_info = discover(model, dummy_input=dummy)
     arch_info.is_tl_model = is_tl
 
@@ -137,7 +137,7 @@ def load(
         image_processor=image_processor,
         arch_info=arch_info,
         registration=registration,
-        device=device,
+        device=device or "cpu",
     )
 
 
@@ -184,9 +184,18 @@ def _load_from_hf(
     for keyword, cls_name in _TASK_HINTS:
         if keyword in arch_str:
             auto_order.append(cls_name)
+    is_enc_dec = getattr(config, "is_encoder_decoder", False)
+    if is_enc_dec:
+        auto_order.extend([
+            "AutoModelForSeq2SeqLM",
+            "AutoModelForCausalLM",
+        ])
+    else:
+        auto_order.extend([
+            "AutoModelForCausalLM",
+            "AutoModelForSeq2SeqLM",
+        ])
     auto_order.extend([
-        "AutoModelForCausalLM",
-        "AutoModelForSeq2SeqLM",
         "AutoModelForMaskedLM",
         "AutoModelForImageClassification",
         "AutoModel",

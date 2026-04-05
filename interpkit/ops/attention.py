@@ -146,25 +146,25 @@ def run_attention(
 
         # Use pre-resolved layer_infos when available
         if arch.layer_infos:
-            for li in arch.layer_infos:
-                if layer is not None and li.index != layer:
+            for layer_info in arch.layer_infos:
+                if layer is not None and layer_info.index != layer:
                     continue
-                if li.attn_path is None:
+                if layer_info.attn_path is None:
                     continue
-                attn_key = li.attn_path
-                if li.qkv_style == "fused" and li.qkv_proj_path:
-                    qkv_mod = _get_module(model._model, li.qkv_proj_path)
-                    child_name = li.qkv_proj_path.rsplit(".", 1)[-1]
+                attn_key = layer_info.attn_path
+                if layer_info.qkv_style == "fused" and layer_info.qkv_proj_path:
+                    qkv_mod = _get_module(model._model, layer_info.qkv_proj_path)
+                    child_name = layer_info.qkv_proj_path.rsplit(".", 1)[-1]
                     hooks.append(qkv_mod.register_forward_hook(_make_qk_hook(child_name, attn_key)))
-                elif li.qkv_style == "separate":
-                    if li.q_proj_path:
-                        q_mod = _get_module(model._model, li.q_proj_path)
+                elif layer_info.qkv_style == "separate":
+                    if layer_info.q_proj_path:
+                        q_mod = _get_module(model._model, layer_info.q_proj_path)
                         hooks.append(q_mod.register_forward_hook(
-                            _make_qk_hook(li.q_proj_path.rsplit(".", 1)[-1], attn_key)))
-                    if li.k_proj_path:
-                        k_mod = _get_module(model._model, li.k_proj_path)
+                            _make_qk_hook(layer_info.q_proj_path.rsplit(".", 1)[-1], attn_key)))
+                    if layer_info.k_proj_path:
+                        k_mod = _get_module(model._model, layer_info.k_proj_path)
                         hooks.append(k_mod.register_forward_hook(
-                            _make_qk_hook(li.k_proj_path.rsplit(".", 1)[-1], attn_key)))
+                            _make_qk_hook(layer_info.k_proj_path.rsplit(".", 1)[-1], attn_key)))
         else:
             for mod_info in attn_modules:
                 if layer is not None:

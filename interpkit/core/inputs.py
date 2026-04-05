@@ -38,9 +38,11 @@ def prepare_input(
         # .pt tensor file?
         if raw.endswith(".pt"):
             try:
-                return torch.load(raw, map_location=device, weights_only=True)
+                loaded: dict[str, torch.Tensor] | torch.Tensor = torch.load(raw, map_location=device, weights_only=True)
+                return loaded
             except TypeError:
-                return torch.load(raw, map_location=device)
+                loaded = torch.load(raw, map_location=device)
+                return loaded
 
         # Text
         if tokenizer is None:
@@ -67,11 +69,15 @@ def prepare_pair(
     For text inputs, both are tokenized together with padding so they
     have the same sequence length — required for activation patching.
     """
-    both_text = isinstance(raw_a, str) and isinstance(raw_b, str)
-    both_text = both_text and not _looks_like_image_path(raw_a) and not _looks_like_image_path(raw_b)
-    both_text = both_text and not raw_a.endswith(".pt") and not raw_b.endswith(".pt")
-
-    if both_text and tokenizer is not None:
+    if (
+        isinstance(raw_a, str)
+        and isinstance(raw_b, str)
+        and not _looks_like_image_path(raw_a)
+        and not _looks_like_image_path(raw_b)
+        and not raw_a.endswith(".pt")
+        and not raw_b.endswith(".pt")
+        and tokenizer is not None
+    ):
         encoded = tokenizer(
             [raw_a, raw_b],
             return_tensors="pt",
@@ -120,4 +126,5 @@ def _load_image(
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
-    return transform(img).unsqueeze(0).to(device)
+    result: torch.Tensor = transform(img).unsqueeze(0).to(device)
+    return result

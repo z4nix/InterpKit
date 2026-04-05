@@ -7,7 +7,7 @@ import re
 import warnings
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import torch
 import torch.nn as nn
@@ -116,7 +116,8 @@ class ModelArchInfo:
         if self.num_key_value_heads is not None and self.num_key_value_heads != self.num_attention_heads:
             lines.append(f"KV heads: {self.num_key_value_heads}")
 
-        lines.append(f"LM head: {'found (' + self.unembedding_name + ')' if self.has_lm_head else 'not found'}")
+        lm_head_str = f"found ({self.unembedding_name})" if self.has_lm_head and self.unembedding_name else "not found"
+        lines.append(f"LM head: {lm_head_str}")
         lines.append(f"Detected layers: {len(self.layer_names)}")
 
         if self.layer_infos:
@@ -294,7 +295,7 @@ def _find_unembedding(model: nn.Module) -> str | None:
     # Strict pass: unambiguous LM head names
     for name, module in model.named_modules():
         if _LM_HEAD_PATTERNS.search(name) and hasattr(module, "weight"):
-            return name
+            return cast(str, name)
 
     # Relaxed pass: allow generic head names only when the output
     # dimension matches vocab_size from the config.
@@ -305,7 +306,7 @@ def _find_unembedding(model: nn.Module) -> str | None:
             if base in _HEAD_BASE_NAMES and hasattr(module, "weight"):
                 out_features = getattr(module, "out_features", None)
                 if out_features == vocab_size:
-                    return name
+                    return cast(str, name)
 
     return None
 
@@ -349,6 +350,13 @@ def _get_mod_by_path(model: nn.Module, path: str) -> nn.Module:
     for part in path.split("."):
         mod = getattr(mod, part)
     return mod
+
+
+def _get_weight(mod: nn.Module) -> torch.Tensor:
+    """Extract ``mod.weight`` with a runtime assertion for mypy."""
+    w = mod.weight
+    assert isinstance(w, torch.Tensor)
+    return w
 
 
 def _find_submodule_recursive(
@@ -475,7 +483,12 @@ def _probe_for_mlp(
     """BFS for the shallowest submodule that looks like an MLP: contains 2+
     Linear-like weight modules, is not the attention module, and carries no
     Q/K/V projections.  Drills through intermediate containers like
-    ``nn.ModuleList``."""
+    ``nn.ModuleList``.
+
+    Fallback: if no container is found, detect "flat MLP" architectures
+    (e.g. OPT) where fc1/fc2 sit directly under the layer.  Returns the
+    last such Linear as the MLP anchor — hooking it captures the MLP output.
+    """
     queue: deque[tuple[str, nn.Module]] = deque()
     for name, mod in layer_mod.named_children():
         queue.append((f"{layer_path}.{name}", mod))
@@ -499,6 +512,26 @@ def _probe_for_mlp(
             return path, mod
         for cname, cmod in mod.named_children():
             queue.append((f"{path}.{cname}", cmod))
+
+    # Flat-MLP fallback: collect direct-child Linear modules that are not
+    # part of attention, not norms, and not QKV projections.
+    flat_fcs: list[tuple[str, nn.Module]] = []
+    for name, mod in layer_mod.named_children():
+        full_path = f"{layer_path}.{name}"
+        if attn_path and (full_path == attn_path or full_path.startswith(attn_path + ".")):
+            continue
+        if _is_norm_module(mod):
+            continue
+        if name in _ALL_QKV_NAMES:
+            continue
+        if not hasattr(mod, "weight"):
+            continue
+        if mod.weight.dim() < 2:
+            continue
+        flat_fcs.append((full_path, mod))
+    if len(flat_fcs) >= 2:
+        return flat_fcs[-1]
+
     return None
 
 
@@ -575,7 +608,7 @@ def _detect_project_out(model: nn.Module) -> str | None:
     """Find a ``project_out`` layer (OPT-style embed_dim != hidden_size)."""
     for name, mod in model.named_modules():
         if "project_out" in name and hasattr(mod, "weight"):
-            return name
+            return cast(str, name)
     return None
 
 
@@ -602,13 +635,13 @@ def extract_proj_weight(
         if path is None:
             return None
         mod = _get_mod_by_path(model, path)
-        w = mod.weight
+        w = _get_weight(mod)
         return w.T if type(mod).__name__ == "Conv1D" else w
 
     if layer_info.qkv_style == "fused" and layer_info.qkv_proj_path is not None:
         mod = _get_mod_by_path(model, layer_info.qkv_proj_path)
         return _split_fused_weight(
-            mod.weight, proj_type, num_heads, num_kv_heads,
+            _get_weight(mod), proj_type, num_heads, num_kv_heads,
             is_conv1d=(type(mod).__name__ == "Conv1D"),
             interleaved=(layer_info.qkv_layout == "interleaved"),
         )

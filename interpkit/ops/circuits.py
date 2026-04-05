@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 from rich.console import Console
 
-from interpkit.core.discovery import ModelArchInfo, _get_mod_by_path, extract_proj_weight
+from interpkit.core.discovery import ModelArchInfo, _get_mod_by_path, _get_weight, extract_proj_weight
 from interpkit.ops.patch import _get_module
 
 if TYPE_CHECKING:
@@ -86,7 +86,7 @@ def run_decompose(
     model_input = model._prepare(input_data)
 
     component_outputs: dict[str, torch.Tensor] = {}
-    hooks: list[torch.utils.hooks.RemovableHook] = []
+    hooks: list[torch.utils.hooks.RemovableHandle] = []
 
     for li in arch.layer_infos:
         if li.attn_path:
@@ -226,7 +226,7 @@ def run_ov_scores(
         raise ValueError(f"Could not find output projection weight in layer {layer}.")
 
     # Normalise W_O to (d_model, num_heads * head_dim)
-    raw_w_o = proj_mod.weight.float()
+    raw_w_o = _get_weight(proj_mod).float()
     is_conv1d = type(proj_mod).__name__ == "Conv1D"
     w_o = raw_w_o.T if is_conv1d else raw_w_o  # -> (d_model, H*D_h)
 
@@ -234,8 +234,7 @@ def run_ov_scores(
 
     # GQA: V may have fewer head slices than O
     num_kv_heads = arch.num_key_value_heads or num_heads
-    head_dim = w_o.shape[1] // num_heads
-    w_o.shape[0]
+    head_dim = int(w_o.shape[1]) // num_heads
 
     heads: list[dict[str, Any]] = []
     for h in range(num_heads):
@@ -386,11 +385,10 @@ def run_composition(
     if not hasattr(src_proj, "weight"):
         raise ValueError(f"No output projection in source layer {src_layer}.")
 
-    raw_w_o_src = src_proj.weight.float()
+    raw_w_o_src = _get_weight(src_proj).float()
     is_conv1d = type(src_proj).__name__ == "Conv1D"
     w_o_src = raw_w_o_src.T if is_conv1d else raw_w_o_src  # -> (d_model, H*D_h)
-    w_o_src.shape[0]
-    head_dim = w_o_src.shape[1] // num_heads
+    head_dim = int(w_o_src.shape[1]) // num_heads
 
     w_v_src = extract_proj_weight(
         model._model, src_li, "v", num_heads, num_kv_heads,

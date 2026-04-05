@@ -37,7 +37,9 @@ def run_probe(
     with Progress(console=console, transient=True) as progress:
         task = progress.add_task("Extracting activations", total=len(texts))
         for text in texts:
-            act = run_activations(model, text, at=at, print_stats=False)
+            act_result = run_activations(model, text, at=at, print_stats=False)
+            assert isinstance(act_result, torch.Tensor)
+            act = act_result
             if act.dim() == 3:
                 vec = act[0, -1, :]  # (hidden,)
             elif act.dim() == 2:

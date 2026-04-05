@@ -59,8 +59,12 @@ def run_diff(
         console.print("\n  [yellow]diff:[/yellow] no shared modules found between the two models.\n")
         return {"results": [], "skipped_a": len(only_in_a), "skipped_b": len(only_in_b)}
 
-    acts_a = run_activations(model_a, input_data, at=shared_layers, print_stats=False)
-    acts_b = run_activations(model_b, input_data, at=shared_layers, print_stats=False)
+    acts_a_raw = run_activations(model_a, input_data, at=shared_layers, print_stats=False)
+    acts_b_raw = run_activations(model_b, input_data, at=shared_layers, print_stats=False)
+    assert isinstance(acts_a_raw, dict)
+    assert isinstance(acts_b_raw, dict)
+    acts_a = acts_a_raw
+    acts_b = acts_b_raw
 
     results: list[dict[str, Any]] = []
     for name in shared_layers:

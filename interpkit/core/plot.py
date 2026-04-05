@@ -153,7 +153,7 @@ def plot_attention_multi(
             ax.spines[:].set_color(_PALETTE["grid"])
 
         fig.suptitle("Attention Patterns", fontsize=13, fontweight="bold", y=0.98)
-        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
         return _save_and_show(fig, save_path, "attention_grid.png")
 
 

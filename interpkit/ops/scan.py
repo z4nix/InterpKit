@@ -50,6 +50,7 @@ def run_scan(
     # 1. Model prediction
     # ------------------------------------------------------------------
     if is_lm and has_tokenizer and is_text:
+        assert model._tokenizer is not None
         model_input = model._prepare(input_data)
         with torch.no_grad():
             logits = model._forward(model_input)
