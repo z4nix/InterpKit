@@ -110,7 +110,8 @@ def _load_local_weights(path: Path) -> dict[str, torch.Tensor]:
         from safetensors.torch import load_file
         return load_file(str(path))
     elif path.suffix == ".pt":
-        return torch.load(str(path), map_location="cpu", weights_only=True)
+        result: dict[str, torch.Tensor] = torch.load(str(path), map_location="cpu", weights_only=True)
+        return result
     else:
         raise ValueError(
             f"Unsupported SAE weight file format: {path.suffix!r}. "
