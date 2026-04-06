@@ -348,13 +348,13 @@ def _show_extensive_help() -> None:
         "Sparse Autoencoder (SAE) feature decomposition. Takes a module's activation and projects"
         " it through a separately trained SAE to recover a sparse set of interpretable features."
         " Each feature typically corresponds to a human-readable concept. Requires a compatible"
-        " SAE checkpoint available on HuggingFace.\n\n"
+        " SAE checkpoint (HuggingFace repo or local .safetensors / .pt file).\n\n"
         "  [bold]Contrastive mode:[/bold] pass [bold green]--positive-file[/bold green] and"
         " [bold green]--negative-file[/bold green] (omit the input text argument) to find features that"
         " differentially activate between two groups of inputs.\n"
         "  [dim]interpkit features gpt2 --at transformer.h.8 --sae jbloom/... --positive-file pos.txt --negative-file neg.txt[/dim]\n\n"
         "  [bold green]--at[/bold green]   Which module's activations to decompose.\n"
-        "  [bold green]--sae[/bold green]  HuggingFace repo ID of the SAE weights.\n"
+        "  [bold green]--sae[/bold green]  HuggingFace repo ID or local file path of the SAE weights.\n"
         "  [bold green]--top-k[/bold green]  How many top features to display (default 20).\n"
         "  [bold green]--positive-file / --negative-file[/bold green]  Text files for contrastive feature analysis.",
         title="features",
@@ -780,7 +780,7 @@ def features(
     model_name: str = typer.Argument(..., help="HuggingFace model ID (e.g. gpt2)"),
     input_data: str | None = typer.Argument(None, help="Input text (omit when using --positive-file / --negative-file)"),
     at: str = typer.Option(..., "--at", help="Module name to decompose (e.g. transformer.h.8)"),
-    sae: str = typer.Option(..., "--sae", help="HuggingFace repo ID for the SAE weights"),
+    sae: str = typer.Option(..., "--sae", help="SAE source: HuggingFace repo ID or local file path (.safetensors / .pt)"),
     top_k: int = typer.Option(20, "--top-k", help="Number of top features to display"),
     positive_file: str | None = typer.Option(None, "--positive-file", help="Text file with positive examples for contrastive analysis, one per line"),
     negative_file: str | None = typer.Option(None, "--negative-file", help="Text file with negative examples for contrastive analysis, one per line"),
@@ -846,6 +846,8 @@ def dla(
     top_k: int = typer.Option(10, "--top-k", help="Number of top/bottom contributors to show"),
     save: str | None = typer.Option(None, "--save", help="Save bar chart to file (e.g. dla.png)"),
     html_path: str | None = typer.Option(None, "--html", help="Save interactive HTML to file"),
+    sae: str | None = typer.Option(None, "--sae", help="SAE source: HuggingFace repo ID or local file path (.safetensors / .pt)"),
+    sae_at: str | None = typer.Option(None, "--sae-at", help="Module to decompose through the SAE (e.g. transformer.h.11.attn)"),
     device: str | None = typer.Option(None, help="Device"),
     dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
     device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
@@ -859,7 +861,11 @@ def dla(
         except ValueError:
             parsed_token = token
     with console.status("  Running DLA..."):
-        result = m.dla(input_data, token=parsed_token, position=position, top_k=top_k, save=save, html=html_path)
+        result = m.dla(
+            input_data, token=parsed_token, position=position,
+            top_k=top_k, save=save, html=html_path,
+            sae=sae, sae_at=sae_at,
+        )
     if _output_format == "json":
         _json_dump(result)
 

@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+
+import pytest
 import torch
 
-from interpkit.ops.sae import SAE, load_sae_from_tensors, run_features
+from interpkit.ops.sae import SAE, load_sae, load_sae_from_path, load_sae_from_tensors, run_features
 
 
 def _make_synthetic_sae(d_in: int = 768, d_sae: int = 128) -> SAE:
@@ -113,3 +117,103 @@ def test_sae_sparsity():
 
     sparsity = (features == 0).float().mean().item()
     assert 0.0 <= sparsity <= 1.0
+
+
+# ── local file loading ──────────────────────────────────────────────────
+
+
+def _save_sae_pt(directory: Path, d_in: int = 64, d_sae: int = 32) -> Path:
+    """Save synthetic SAE weights as a .pt file and return the path."""
+    weights = {
+        "W_enc": torch.randn(d_in, d_sae) * 0.01,
+        "W_dec": torch.randn(d_sae, d_in) * 0.01,
+        "b_enc": torch.zeros(d_sae),
+        "b_dec": torch.zeros(d_in),
+    }
+    filepath = directory / "sae_weights.pt"
+    torch.save(weights, filepath)
+    return filepath
+
+
+def _save_sae_safetensors(directory: Path, d_in: int = 64, d_sae: int = 32) -> Path:
+    """Save synthetic SAE weights as a .safetensors file and return the path."""
+    from safetensors.torch import save_file
+
+    weights = {
+        "W_enc": torch.randn(d_in, d_sae) * 0.01,
+        "W_dec": torch.randn(d_sae, d_in) * 0.01,
+        "b_enc": torch.zeros(d_sae),
+        "b_dec": torch.zeros(d_in),
+    }
+    filepath = directory / "sae_weights.safetensors"
+    save_file(weights, str(filepath))
+    return filepath
+
+
+def test_load_sae_from_path_pt():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        filepath = _save_sae_pt(Path(tmpdir))
+        sae = load_sae_from_path(filepath)
+        assert sae.d_in == 64
+        assert sae.d_sae == 32
+        assert sae.W_enc.shape == (64, 32)
+
+
+def test_load_sae_from_path_safetensors():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        filepath = _save_sae_safetensors(Path(tmpdir))
+        sae = load_sae_from_path(filepath)
+        assert sae.d_in == 64
+        assert sae.d_sae == 32
+
+
+def test_load_sae_from_path_with_config():
+    import json
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        filepath = _save_sae_pt(Path(tmpdir))
+        cfg_path = Path(tmpdir) / "cfg.json"
+        cfg_path.write_text(json.dumps({"model": "gpt2", "layer": 8}))
+
+        sae = load_sae_from_path(filepath)
+        assert sae.metadata["model"] == "gpt2"
+        assert sae.metadata["layer"] == 8
+
+
+def test_load_sae_from_path_missing_file():
+    with pytest.raises(FileNotFoundError):
+        load_sae_from_path("/nonexistent/path/sae_weights.pt")
+
+
+def test_load_sae_from_path_missing_keys():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        filepath = Path(tmpdir) / "bad_sae.pt"
+        torch.save({"W_enc": torch.randn(64, 32)}, filepath)
+        with pytest.raises(KeyError, match="missing keys"):
+            load_sae_from_path(filepath)
+
+
+def test_load_sae_from_path_bad_extension():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        filepath = Path(tmpdir) / "weights.npz"
+        filepath.write_text("not real")
+        with pytest.raises(ValueError, match="Unsupported"):
+            load_sae_from_path(filepath)
+
+
+def test_load_sae_auto_detects_local_pt():
+    """load_sae() should auto-detect a local .pt path."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        filepath = _save_sae_pt(Path(tmpdir))
+        sae = load_sae(str(filepath))
+        assert sae.d_in == 64
+        assert sae.d_sae == 32
+
+
+def test_load_sae_auto_detects_local_safetensors():
+    """load_sae() should auto-detect a local .safetensors path."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        filepath = _save_sae_safetensors(Path(tmpdir))
+        sae = load_sae(str(filepath))
+        assert sae.d_in == 64
+        assert sae.d_sae == 32

@@ -70,7 +70,7 @@ model = interpkit.load("bert-base-uncased")
 | Operation | What it does | Works on |
 |-----------|-------------|----------|
 | **`scan`** | One-command model overview: runs DLA, lens, attention, attribution and surfaces key findings | LMs |
-| **`dla`** | Direct Logit Attribution — decompose output logits by head and MLP contribution | LMs |
+| **`dla`** | Direct Logit Attribution — decompose output logits by head and MLP contribution; optionally decompose through an SAE into per-feature attributions | LMs |
 | `inspect` | Module tree with types, param counts, shapes | Any model |
 | `patch` | Activation patching at a module, head, or position | Any model |
 | `trace` | Causal tracing — module-level or position-aware (Meng et al.) heatmap | Any model |
@@ -125,6 +125,16 @@ model.dla("The capital of France is", token="Paris")
 
 # Save a bar chart
 model.dla("The capital of France is", save="dla.png")
+
+# Feature-level DLA — decompose a component through an SAE
+# to see which individual features drive the prediction
+model.dla(
+    "The capital of France is",
+    sae="jbloom/GPT2-Small-SAEs-Reformatted",
+    sae_at="transformer.h.11.attn",
+)
+# result["feature_contributions"]["features"]
+#   — per-feature logit attributions at the specified component
 ```
 
 ## Causal Tracing
@@ -295,13 +305,21 @@ interpkit.diff(base, finetuned, "The capital of France is")
 
 ## SAE Features
 
-Decompose activations into interpretable features using pre-trained Sparse Autoencoders from HuggingFace:
+Decompose activations into interpretable features using pre-trained Sparse Autoencoders:
 
 ```python
+# From HuggingFace
 model.features(
     "The capital of France is",
     at="transformer.h.8",
     sae="jbloom/GPT2-Small-SAEs-Reformatted",
+)
+
+# From a local file (.safetensors or .pt)
+model.features(
+    "The capital of France is",
+    at="transformer.h.8",
+    sae="/path/to/sae_weights.safetensors",
 )
 ```
 
@@ -361,6 +379,8 @@ interpkit ablate gpt2 "The capital of France is" --at transformer.h.8.mlp
 interpkit decompose gpt2 "The capital of France is"
 interpkit diff gpt2 my-finetuned-gpt2 "The capital of France is" --save diff.png
 interpkit features gpt2 "The capital of France is" --at transformer.h.8 --sae jbloom/GPT2-Small-SAEs-Reformatted
+interpkit features gpt2 "The capital of France is" --at transformer.h.8 --sae ./my_sae.safetensors
+interpkit dla gpt2 "The capital of France is" --sae jbloom/GPT2-Small-SAEs-Reformatted --sae-at transformer.h.11.attn
 
 # Interactive HTML output
 interpkit attention gpt2 "hello world" --html attention.html

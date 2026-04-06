@@ -54,6 +54,67 @@ def test_dla_with_token(gpt2_model):
     assert result["target_token"] == "Paris"
 
 
+# ── dla + SAE feature decomposition ─────────────────────────────────────
+
+def _make_mock_sae(d_in: int = 768, d_sae: int = 128):
+    from interpkit.ops.sae import load_sae_from_tensors
+
+    return load_sae_from_tensors(
+        W_enc=torch.randn(d_in, d_sae) * 0.01,
+        W_dec=torch.randn(d_sae, d_in) * 0.01,
+        b_enc=torch.zeros(d_sae),
+        b_dec=torch.zeros(d_in),
+    )
+
+
+def test_dla_with_sae(gpt2_model):
+    sae = _make_mock_sae()
+    result = gpt2_model.dla(TEXT, sae=sae, sae_at="transformer.h.11.attn")
+    assert "feature_contributions" in result
+
+    fc = result["feature_contributions"]
+    assert "features" in fc
+    assert "sae_at" in fc
+    assert fc["sae_at"] == "transformer.h.11.attn"
+    assert fc["total_features"] == 128
+    assert isinstance(fc["features"], list)
+
+    for f in fc["features"]:
+        assert "feature_idx" in f
+        assert "activation" in f
+        assert "logit_contribution" in f
+
+
+def test_dla_sae_without_sae_at_raises(gpt2_model):
+    sae = _make_mock_sae()
+    with pytest.raises(ValueError, match="Both.*sae.*sae_at"):
+        gpt2_model.dla(TEXT, sae=sae)
+
+
+def test_dla_sae_at_without_sae_raises(gpt2_model):
+    with pytest.raises(ValueError, match="Both.*sae.*sae_at"):
+        gpt2_model.dla(TEXT, sae_at="transformer.h.0.attn")
+
+
+def test_dla_sae_bad_module_raises(gpt2_model):
+    sae = _make_mock_sae()
+    with pytest.raises(ValueError, match="did not match"):
+        gpt2_model.dla(TEXT, sae=sae, sae_at="nonexistent.module")
+
+
+def test_dla_sae_dim_mismatch_raises(gpt2_model):
+    sae = _make_mock_sae(d_in=64, d_sae=32)
+    with pytest.raises(ValueError, match="does not match"):
+        gpt2_model.dla(TEXT, sae=sae, sae_at="transformer.h.0.attn")
+
+
+def test_dla_sae_mlp_component(gpt2_model):
+    sae = _make_mock_sae()
+    result = gpt2_model.dla(TEXT, sae=sae, sae_at="transformer.h.0.mlp")
+    assert "feature_contributions" in result
+    assert result["feature_contributions"]["sae_at"] == "transformer.h.0.mlp"
+
+
 # ── decompose ────────────────────────────────────────────────────────────
 
 def test_decompose_returns_components(gpt2_model):

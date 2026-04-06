@@ -24,6 +24,8 @@ def run_dla(
     top_k: int = 10,
     save: str | None = None,
     html: str | None = None,
+    sae: Any | None = None,
+    sae_at: str | None = None,
 ) -> dict[str, Any]:
     """Direct Logit Attribution: decompose output logits by component.
 
@@ -52,6 +54,14 @@ def run_dla(
         Number of top/bottom contributors to highlight in the rendering.
     save:
         Path to save a bar-chart figure.
+    sae:
+        A pre-loaded :class:`interpkit.ops.sae.SAE` object.  When provided
+        together with *sae_at*, the contribution of the specified component
+        is further decomposed into per-feature logit attributions.
+    sae_at:
+        Module path of the component to decompose through the SAE (e.g.
+        ``"transformer.h.11.attn"``).  Must match a module captured by
+        DLA.  Required when *sae* is provided.
 
     Returns
     -------
@@ -60,8 +70,17 @@ def run_dla(
         ``contributions`` (list of ``{"component", "layer", "type", "logit_contribution"}``),
         ``total_logit`` (float),
         ``approximation_note`` (str) — explains the LayerNorm caveat.
+        Optionally ``feature_contributions`` when *sae* is provided.
     """
     from interpkit.core.render import render_dla
+
+    # Validate sae / sae_at pairing
+    if (sae is None) != (sae_at is None):
+        raise ValueError(
+            "Both 'sae' and 'sae_at' must be provided together. "
+            "Pass sae=<SAE object> and sae_at=<module path> to decompose "
+            "a component through the SAE."
+        )
 
     arch = model.arch_info
 
@@ -293,6 +312,11 @@ def run_dla(
         ),
     }
 
+    if sae is not None and sae_at is not None:
+        result["feature_contributions"] = _compute_dla_features(
+            sae, sae_at, component_outputs, unembed_dir, position, top_k,
+        )
+
     render_dla(result, top_k=top_k)
 
     if save is not None:
@@ -307,6 +331,127 @@ def run_dla(
         save_html(gen_html_dla(result), html)
 
     return result
+
+
+_ATTN_SUFFIXES = (".attn", ".self_attn", ".attention")
+_MLP_SUFFIXES = (".mlp", ".ffn", ".feed_forward")
+
+
+def _compute_dla_features(
+    sae: Any,
+    sae_at: str,
+    component_outputs: dict[str, torch.Tensor],
+    unembed_dir: torch.Tensor,
+    position: int,
+    top_k: int,
+) -> dict[str, Any]:
+    """Decompose a DLA component's contribution through an SAE into per-feature logit attributions."""
+    act_tensor: torch.Tensor | None = None
+    matched_key: str | None = None
+
+    # DLA stores keys as "{layer_name}::attn" / "{layer_name}::mlp" where
+    # layer_name is e.g. "transformer.h.0".  The user typically passes the
+    # full submodule path (e.g. "transformer.h.0.attn") or a layer path.
+    # Strategy: detect the component type from the suffix, strip it, and
+    # construct the canonical key.
+    comp_type: str | None = None
+    layer_name = sae_at
+    for sfx in _ATTN_SUFFIXES:
+        if sae_at.endswith(sfx):
+            comp_type = "attn"
+            layer_name = sae_at[: -len(sfx)]
+            break
+    if comp_type is None:
+        for sfx in _MLP_SUFFIXES:
+            if sae_at.endswith(sfx):
+                comp_type = "mlp"
+                layer_name = sae_at[: -len(sfx)]
+                break
+
+    if comp_type is not None:
+        key = f"{layer_name}::{comp_type}"
+        if key in component_outputs:
+            act_tensor = component_outputs[key]
+            matched_key = key
+
+    # Fall back: try sae_at as a layer name (match ::attn first, then ::mlp)
+    if act_tensor is None:
+        for suffix in ("::attn", "::mlp"):
+            key = sae_at + suffix
+            if key in component_outputs:
+                act_tensor = component_outputs[key]
+                matched_key = key
+                break
+
+    if act_tensor is None:
+        valid_modules = sorted({k.split("::")[0] for k in component_outputs})
+        valid_with_types = []
+        for m in valid_modules:
+            for suffix in ("::attn", "::mlp"):
+                if m + suffix in component_outputs:
+                    valid_with_types.append(m + suffix.replace("::", "."))
+        raise ValueError(
+            f"sae_at={sae_at!r} did not match any component captured by DLA. "
+            f"Valid module paths: {valid_with_types}"
+        )
+
+    # Extract the activation vector at the target position
+    if act_tensor.dim() == 3:
+        vec = act_tensor[0, position, :].float()
+    elif act_tensor.dim() == 2:
+        vec = act_tensor[position, :].float()
+    else:
+        vec = act_tensor.float()
+
+    if vec.shape[-1] != sae.d_in:
+        raise ValueError(
+            f"SAE input dimension ({sae.d_in}) does not match the activation "
+            f"dimension ({vec.shape[-1]}) at {sae_at!r}. Make sure the SAE was "
+            f"trained on the same layer/component."
+        )
+
+    # Encode through the SAE
+    features = sae.encode(vec.unsqueeze(0)).squeeze(0)  # (d_sae,)
+
+    active_mask = features > 0
+    if not active_mask.any():
+        return {
+            "sae_at": sae_at,
+            "matched_component": matched_key,
+            "features": [],
+            "num_active": 0,
+            "total_features": sae.d_sae,
+        }
+
+    active_idxs = active_mask.nonzero(as_tuple=True)[0]
+    active_acts = features[active_idxs]
+
+    # Per-feature logit contribution: feat_act * (W_dec[feat_idx] @ unembed_dir)
+    dec_rows = sae.W_dec[active_idxs].float()  # (n_active, d_model)
+    logit_dirs = dec_rows @ unembed_dir  # (n_active,)
+    logit_contribs = active_acts * logit_dirs
+
+    # Sort by absolute contribution and take top_k
+    abs_contribs = logit_contribs.abs()
+    k = min(top_k, len(active_idxs))
+    top_vals, top_local_idxs = abs_contribs.topk(k)
+
+    feat_list = []
+    for local_idx in top_local_idxs.tolist():
+        feat_idx = active_idxs[local_idx].item()
+        feat_list.append({
+            "feature_idx": feat_idx,
+            "activation": active_acts[local_idx].item(),
+            "logit_contribution": logit_contribs[local_idx].item(),
+        })
+
+    return {
+        "sae_at": sae_at,
+        "matched_component": matched_key,
+        "features": feat_list,
+        "num_active": int(active_mask.sum().item()),
+        "total_features": sae.d_sae,
+    }
 
 
 def _find_attn_submodule(

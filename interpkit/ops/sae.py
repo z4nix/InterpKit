@@ -44,16 +44,84 @@ class SAE:
         return features, x_hat
 
 
-def load_sae(hf_id: str, *, device: str | torch.device = "cpu") -> SAE:
-    """Download and load a Sparse Autoencoder from HuggingFace.
+def load_sae(source: str, *, device: str | torch.device = "cpu") -> SAE:
+    """Load a Sparse Autoencoder from a HuggingFace repo ID or a local file path.
 
-    Expects the repo to contain ``sae_weights.safetensors`` (or ``.pt``)
-    and optionally ``cfg.json`` with metadata.
+    *source* is interpreted as a **local path** when it points to an existing
+    file or ends with ``.safetensors`` / ``.pt``.  Otherwise it is treated as
+    a HuggingFace repo ID and weights are downloaded.
+
+    For HuggingFace repos the repo should contain
+    ``sae_weights.safetensors`` (or ``.pt``) and optionally ``cfg.json``.
     """
+    p = Path(source)
+    if p.is_file() or p.suffix in (".safetensors", ".pt"):
+        return load_sae_from_path(p, device=device)
 
+    return _load_sae_from_hf(source, device=device)
+
+
+def load_sae_from_path(
+    path: str | Path,
+    *,
+    device: str | torch.device = "cpu",
+) -> SAE:
+    """Load a Sparse Autoencoder from a local ``.safetensors`` or ``.pt`` file.
+
+    Optionally loads ``cfg.json`` from the same directory for metadata.
+    """
+    path = Path(path)
     device = torch.device(device)
 
-    # Try safetensors first, fall back to .pt
+    if not path.is_file():
+        raise FileNotFoundError(f"SAE weights file not found: {path}")
+
+    weights = _load_local_weights(path)
+
+    required_keys = {"W_enc", "W_dec", "b_enc", "b_dec"}
+    missing = required_keys - set(weights.keys())
+    if missing:
+        raise KeyError(
+            f"SAE weights from {path} are missing keys: {missing}. "
+            f"Found keys: {list(weights.keys())}. "
+            f"interpkit expects the SAELens format (W_enc, W_dec, b_enc, b_dec)."
+        )
+
+    W_enc = weights["W_enc"].to(device).float()
+    W_dec = weights["W_dec"].to(device).float()
+    b_enc = weights["b_enc"].to(device).float()
+    b_dec = weights["b_dec"].to(device).float()
+
+    cfg_path = path.parent / "cfg.json"
+    metadata: dict[str, Any] = {}
+    if cfg_path.is_file():
+        metadata = json.loads(cfg_path.read_text())
+
+    return SAE(
+        W_enc=W_enc, W_dec=W_dec, b_enc=b_enc, b_dec=b_dec,
+        d_in=W_enc.shape[0], d_sae=W_enc.shape[1],
+        metadata=metadata,
+    )
+
+
+def _load_local_weights(path: Path) -> dict[str, torch.Tensor]:
+    """Load weight tensors from a local .safetensors or .pt file."""
+    if path.suffix == ".safetensors":
+        from safetensors.torch import load_file
+        return load_file(str(path))
+    elif path.suffix == ".pt":
+        return torch.load(str(path), map_location="cpu", weights_only=True)
+    else:
+        raise ValueError(
+            f"Unsupported SAE weight file format: {path.suffix!r}. "
+            f"Expected .safetensors or .pt"
+        )
+
+
+def _load_sae_from_hf(hf_id: str, *, device: str | torch.device = "cpu") -> SAE:
+    """Download and load a Sparse Autoencoder from HuggingFace."""
+    device = torch.device(device)
+
     weights = _download_weights(hf_id)
 
     required_keys = {"W_enc", "W_dec", "b_enc", "b_dec"}
@@ -72,16 +140,9 @@ def load_sae(hf_id: str, *, device: str | torch.device = "cpu") -> SAE:
 
     metadata = _download_config(hf_id)
 
-    d_in = W_enc.shape[0]
-    d_sae = W_enc.shape[1]
-
     return SAE(
-        W_enc=W_enc,
-        W_dec=W_dec,
-        b_enc=b_enc,
-        b_dec=b_dec,
-        d_in=d_in,
-        d_sae=d_sae,
+        W_enc=W_enc, W_dec=W_dec, b_enc=b_enc, b_dec=b_dec,
+        d_in=W_enc.shape[0], d_sae=W_enc.shape[1],
         metadata=metadata,
     )
 

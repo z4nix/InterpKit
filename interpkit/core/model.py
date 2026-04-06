@@ -507,6 +507,8 @@ class Model:
         top_k: int = 10,
         save: str | None = None,
         html: str | None = None,
+        sae: str | Any | None = None,
+        sae_at: str | None = None,
     ) -> dict[str, Any]:
         """Direct Logit Attribution: decompose the output logit by component.
 
@@ -514,15 +516,41 @@ class Model:
         contribute to the logit of *token* by projecting their outputs
         through the unembedding matrix.  Also provides a per-head breakdown.
 
+        Parameters
+        ----------
+        sae:
+            Either a HuggingFace repo ID (``"jbloom/GPT2-Small-SAEs-Reformatted"``)
+            or a pre-loaded :class:`interpkit.ops.sae.SAE` object.  When
+            provided with *sae_at*, the specified component's contribution
+            is further decomposed into per-feature logit attributions.
+        sae_at:
+            Module path of the component to decompose through the SAE
+            (e.g. ``"transformer.h.11.attn"``).  Required when *sae* is
+            provided.
+
         Returns a dict with ``target_token``, ``target_id``,
         ``contributions`` (list sorted by magnitude),
-        ``head_contributions`` (per-head breakdown), and ``total_logit``.
+        ``head_contributions`` (per-head breakdown), ``total_logit``,
+        and optionally ``feature_contributions`` when *sae* is provided.
         """
         from interpkit.ops.dla import run_dla
+
+        loaded_sae = None
+        if sae is not None:
+            from interpkit.ops.sae import SAE as SAEClass
+            from interpkit.ops.sae import load_sae
+
+            if isinstance(sae, str):
+                loaded_sae = load_sae(sae, device=self._device)
+            elif isinstance(sae, SAEClass):
+                loaded_sae = sae
+            else:
+                raise TypeError(f"Expected SAE or HF repo ID string, got {type(sae).__name__}")
 
         return run_dla(
             self, input_data, token=token, position=position,
             top_k=top_k, save=save, html=html,
+            sae=loaded_sae, sae_at=sae_at,
         )
 
     # ------------------------------------------------------------------

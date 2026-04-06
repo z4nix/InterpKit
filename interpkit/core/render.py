@@ -756,4 +756,37 @@ def render_dla(result: dict[str, Any], *, top_k: int = 10) -> None:
 
         console.print(htable)
 
+    feat_info = result.get("feature_contributions")
+    if feat_info and feat_info.get("features"):
+        feats = feat_info["features"]
+        sae_at = feat_info.get("sae_at", "?")
+        n_active = feat_info.get("num_active", 0)
+        n_total = feat_info.get("total_features", 0)
+
+        console.print()
+        console.print(
+            f"  [bold]Feature-Level Breakdown[/bold]  [dim]({sae_at} via SAE — "
+            f"{n_active}/{n_total} active)[/dim]"
+        )
+
+        max_abs_f = max((abs(f["logit_contribution"]) for f in feats), default=1.0) or 1.0
+
+        ftable = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
+        ftable.add_column("Feature", style="#a3b5d1", justify="right")
+        ftable.add_column("Activation", justify="right")
+        ftable.add_column("Logit Contrib", justify="right")
+        ftable.add_column("", min_width=_BAR_WIDTH + 2, no_wrap=True)
+
+        for f in feats:
+            val = f["logit_contribution"]
+            bar = _bar(val, max_abs_f, positive=val >= 0)
+            ftable.add_row(
+                str(f["feature_idx"]),
+                f"{f['activation']:.4f}",
+                f"{val:+.4f}",
+                bar,
+            )
+
+        console.print(ftable)
+
     console.print()
