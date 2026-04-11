@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json as _json
+from importlib.metadata import version as _pkg_version
 
 import typer
 from rich.console import Console
@@ -24,7 +25,7 @@ console = Console()
 
 _output_format: str = "rich"
 
-_VERSION = "0.2.0"
+_VERSION = _pkg_version("interpkit")
 
 
 def _json_dump(result: dict) -> None:
