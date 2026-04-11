@@ -26,8 +26,3 @@ SECTION_STYLE: dict[str, str] = {
     "attention": "bold white on #6b7d9e",
     "attribution": "bold black on yellow",
 }
-
-# Feedback colours.
-POSITIVE: str = "green"
-NEGATIVE: str = "red"
-WARNING: str = "yellow"

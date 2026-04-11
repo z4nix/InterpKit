@@ -6,6 +6,7 @@ import json as _json
 from importlib.metadata import version as _pkg_version
 
 import typer
+import typer.rich_utils as _ru
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -13,6 +14,18 @@ from rich_gradient import Rule as GradientRule
 from rich_gradient import Text as GradientText
 
 from interpkit.core.theme import ACCENT, ACCENT_DIM, BRAND_COLORS
+
+_ru.STYLE_OPTION = f"bold {ACCENT}"
+_ru.STYLE_SWITCH = f"bold {ACCENT}"
+_ru.STYLE_METAVAR = f"bold {ACCENT}"
+_ru.STYLE_USAGE = ACCENT
+_ru.STYLE_USAGE_COMMAND = "bold"
+_ru.STYLE_COMMANDS_TABLE_FIRST_COLUMN = f"bold {ACCENT}"
+_ru.STYLE_OPTIONS_PANEL_BORDER = ACCENT_DIM
+_ru.STYLE_COMMANDS_PANEL_BORDER = ACCENT_DIM
+_ru.STYLE_REQUIRED_SHORT = ACCENT
+_ru.STYLE_REQUIRED_LONG = ACCENT_DIM
+_ru.STYLE_NEGATIVE_OPTION = f"bold {ACCENT}"
 
 app = typer.Typer(
     name="interpkit",
