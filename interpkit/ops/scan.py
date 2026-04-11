@@ -10,7 +10,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich_gradient import Rule as GradientRule
 
-_BRAND_COLORS = ["#ebf4f5", "#a3b5d1"]
+from interpkit.core.theme import ACCENT, BRAND_COLORS, SECTION_STYLE
 
 if TYPE_CHECKING:
     from interpkit.core.model import Model
@@ -81,7 +81,7 @@ def run_scan(
     # ------------------------------------------------------------------
     # 2. Direct Logit Attribution
     # ------------------------------------------------------------------
-    console.print("  [#a3b5d1]\u25b8[/#a3b5d1] Running DLA...")
+    console.print(f"  [{ACCENT}]\u25b8[/{ACCENT}] Running DLA...")
     if is_lm and has_tokenizer and arch.num_attention_heads:
         try:
             from interpkit.ops.dla import run_dla
@@ -122,7 +122,7 @@ def run_scan(
     # ------------------------------------------------------------------
     # 3. Logit lens
     # ------------------------------------------------------------------
-    console.print("  [#a3b5d1]\u25b8[/#a3b5d1] Running logit lens...")
+    console.print(f"  [{ACCENT}]\u25b8[/{ACCENT}] Running logit lens...")
     if is_lm and has_tokenizer:
         try:
             from interpkit.ops.lens import run_lens
@@ -155,7 +155,7 @@ def run_scan(
     # ------------------------------------------------------------------
     # 4. Attention patterns
     # ------------------------------------------------------------------
-    console.print("  [#a3b5d1]\u25b8[/#a3b5d1] Running attention analysis...")
+    console.print(f"  [{ACCENT}]\u25b8[/{ACCENT}] Running attention analysis...")
     attn_modules = [m for m in arch.modules if m.role == "attention"]
     if attn_modules and is_text:
         try:
@@ -200,7 +200,7 @@ def run_scan(
     # ------------------------------------------------------------------
     # 5. Attribution
     # ------------------------------------------------------------------
-    console.print("  [#a3b5d1]\u25b8[/#a3b5d1] Running attribution...")
+    console.print(f"  [{ACCENT}]\u25b8[/{ACCENT}] Running attribution...")
     if is_text and has_tokenizer:
         try:
             from interpkit.ops.attribute import run_attribute
@@ -245,7 +245,7 @@ def _render_scan(results: dict[str, Any]) -> None:
         input_str = input_str[:57] + "..."
 
     console.print()
-    console.print(GradientRule("Scan Summary", colors=_BRAND_COLORS, align="left"))
+    console.print(GradientRule("Scan Summary", colors=BRAND_COLORS, align="left"))
 
     if "prediction" in results:
         pred = results["prediction"]
@@ -257,14 +257,6 @@ def _render_scan(results: dict[str, Any]) -> None:
 
     if findings:
         console.print()
-        _SECTION_STYLE = {
-            "prediction": "bold white on grey23",
-            "dla": "bold white on purple4",
-            "lens": "bold white on dark_blue",
-            "attention": "bold white on #6b7d9e",
-            "attribution": "bold black on yellow",
-        }
-
         table = Table(show_header=False, box=None, pad_edge=False, padding=(0, 1))
         table.add_column("N", justify="right", style="dim", width=4)
         table.add_column("Tag", width=14)
@@ -272,7 +264,7 @@ def _render_scan(results: dict[str, Any]) -> None:
 
         for i, f in enumerate(findings[:8], 1):
             section = f["section"]
-            style = _SECTION_STYLE.get(section, "dim")
+            style = SECTION_STYLE.get(section, "dim")
             tag = f"[{style}] {section} [/{style}]"
             table.add_row(str(i), tag, f["text"])
 
@@ -283,7 +275,7 @@ def _render_scan(results: dict[str, Any]) -> None:
         console.print(Panel(
             f"{top_finding['text']}",
             title="[bold]Top finding[/bold]",
-            border_style="#a3b5d1",
+            border_style=ACCENT,
             padding=(0, 2),
             expand=False,
         ))

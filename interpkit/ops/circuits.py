@@ -10,6 +10,7 @@ import torch
 from rich.console import Console
 
 from interpkit.core.discovery import ModelArchInfo, _get_mod_by_path, _get_weight, extract_proj_weight
+from interpkit.core.theme import ACCENT
 from interpkit.ops.patch import _get_module
 
 if TYPE_CHECKING:
@@ -472,7 +473,7 @@ def _render_ov_qk(result: dict[str, Any], matrix_type: str) -> None:
     console.print(f"\n[bold]{matrix_type} Analysis — Layer {layer}[/bold]")
 
     table = Table(show_header=True, header_style="bold", show_lines=False)
-    table.add_column("Head", style="cyan", justify="right")
+    table.add_column("Head", style=ACCENT, justify="right")
     table.add_column("Frobenius Norm", justify="right")
     table.add_column("Approx Rank", justify="right")
     table.add_column("Top Singular Values", style="dim")
@@ -510,8 +511,8 @@ def _render_composition(result: dict[str, Any]) -> None:
     top_vals, top_idxs = flat.topk(top_k)
 
     table = Table(show_header=True, header_style="bold", show_lines=False)
-    table.add_column("Dst Head", style="cyan", justify="right")
-    table.add_column("Src Head", style="cyan", justify="right")
+    table.add_column("Dst Head", style=ACCENT, justify="right")
+    table.add_column("Src Head", style=ACCENT, justify="right")
     table.add_column("Score", justify="right")
 
     for val, idx in zip(top_vals.tolist(), top_idxs.tolist()):

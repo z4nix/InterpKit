@@ -11,7 +11,7 @@ from rich.table import Table
 from rich_gradient import Rule as GradientRule
 from rich_gradient import Text as GradientText
 
-_BRAND_COLORS = ["#ebf4f5", "#a3b5d1"]
+from interpkit.core.theme import ACCENT, ACCENT_DIM, BRAND_COLORS
 
 app = typer.Typer(
     name="interpkit",
@@ -51,7 +51,7 @@ def _load_model(
 
     with console.status(f"  Loading [bold]{model_name}[/bold]..."):
         m = load(model_name, device=device, dtype=dtype, device_map=device_map)
-    console.print(f"  [bold green]Loaded[/bold green] [#a3b5d1]{model_name}[/#a3b5d1] on [bold]{m._device}[/bold]")
+    console.print(f"  [bold green]Loaded[/bold green] [{ACCENT}]{model_name}[/{ACCENT}] on [bold]{m._device}[/bold]")
     return m
 
 
@@ -67,7 +67,7 @@ def _show_extensive_help() -> None:
     console.print()
     console.print(Panel(
         "[bold]All commands share this basic shape:[/bold]\n\n"
-        "  [bold #a3b5d1]interpkit[/bold #a3b5d1] [bold]<command>[/bold] [bold yellow]<model>[/bold yellow]"
+        f"  [bold {ACCENT}]interpkit[/bold {ACCENT}] [bold]<command>[/bold] [bold yellow]<model>[/bold yellow]"
         " [dim]'your text'[/dim] [dim][options][/dim]\n\n"
         "  [bold yellow]<model>[/bold yellow] is any HuggingFace model ID —"
         " e.g. [dim]gpt2[/dim], [dim]EleutherAI/pythia-70m[/dim], [dim]meta-llama/Llama-3-8B[/dim]\n\n"
@@ -75,43 +75,43 @@ def _show_extensive_help() -> None:
         " and [bold green]--html path.html[/bold green] for an interactive version.\n"
         "  Use [bold green]--device cpu|cuda|mps[/bold green] and [bold green]--dtype float16|bfloat16|float32|auto"
         "[/bold green] to control how the model loads.",
-        title="[bold #a3b5d1]InterpKit — Beginner's Command Guide[/bold #a3b5d1]",
-        border_style="#a3b5d1",
+        title=f"[bold {ACCENT}]InterpKit — Beginner's Command Guide[/bold {ACCENT}]",
+        border_style=ACCENT,
         padding=(1, 2),
     ))
 
     # ── Quick Start ───────────────────────────────────────────────
     console.print()
-    console.print(Rule("[bold]Quick Start[/bold]", style="#a3b5d1"))
+    console.print(Rule("[bold]Quick Start[/bold]", style=ACCENT))
     console.print()
 
     console.print(Panel(
-        "[bold #a3b5d1]scan[/bold #a3b5d1]  [dim]interpkit scan gpt2 'The capital of France is'[/dim]\n\n"
+        f"[bold {ACCENT}]scan[/bold {ACCENT}]  [dim]interpkit scan gpt2 'The capital of France is'[/dim]\n\n"
         "The best place to start. Runs four analyses in a single pass — DLA, logit lens, attention,"
         " and gradient attribution — and prints a combined overview. Think of it as a model health"
         " check that gives you a broad picture before you zoom in on anything specific.\n\n"
         "  [bold green]--save prefix[/bold green]  writes each sub-figure to [dim]prefix_dla.png[/dim],"
         " [dim]prefix_lens.png[/dim], etc.",
         title="scan",
-        border_style="dim #a3b5d1",
+        border_style=ACCENT_DIM,
         padding=(0, 2),
     ))
 
     console.print()
     console.print(Panel(
-        "[bold #a3b5d1]report[/bold #a3b5d1]  [dim]interpkit report gpt2 'The capital of France is'[/dim]\n\n"
-        "Like [bold #a3b5d1]scan[/bold #a3b5d1], but bundles everything into a self-contained, interactive"
+        f"[bold {ACCENT}]report[/bold {ACCENT}]  [dim]interpkit report gpt2 'The capital of France is'[/dim]\n\n"
+        f"Like [bold {ACCENT}]scan[/bold {ACCENT}], but bundles everything into a self-contained, interactive"
         " HTML file instead of printing to the terminal. Hand it to a colleague or open it in a"
         " browser for a polished, shareable analysis.\n\n"
         "  [bold green]--save report.html[/bold green]  output path (default: [dim]report.html[/dim])",
         title="report",
-        border_style="dim #a3b5d1",
+        border_style=ACCENT_DIM,
         padding=(0, 2),
     ))
 
     # ── Core Operations ───────────────────────────────────────────
     console.print()
-    console.print(Rule("[bold]Core Operations[/bold]", style="#a3b5d1"))
+    console.print(Rule("[bold]Core Operations[/bold]", style=ACCENT))
     console.print()
 
     entries = [
@@ -189,10 +189,10 @@ def _show_extensive_help() -> None:
             " being used.\n"
             "  [bold]If it doesn't:[/bold] the information isn't stored there; look elsewhere.\n\n"
             "  Think of it as a targeted transplant: you're isolating one component and asking"
-            " 'is the fix inside here?' Use [bold #a3b5d1]trace[/bold #a3b5d1] first to rank candidates,"
-            " then [bold #a3b5d1]patch[/bold #a3b5d1] to confirm.",
+            f" 'is the fix inside here?' Use [bold {ACCENT}]trace[/bold {ACCENT}] first to rank candidates,"
+            f" then [bold {ACCENT}]patch[/bold {ACCENT}] to confirm.",
             [
-                ("--at", "Module to patch — get exact names from [bold #a3b5d1]inspect[/bold #a3b5d1]."),
+                ("--at", f"Module to patch — get exact names from [bold {ACCENT}]inspect[/bold {ACCENT}]."),
                 ("--head", "Patch only a specific attention head within the module."),
                 ("--positions", "Restrict the patch to certain token positions (e.g. 3,4,5)."),
                 ("--metric", "How to measure recovery: logit_diff · kl_div · target_prob · l2_prob"),
@@ -207,15 +207,15 @@ def _show_extensive_help() -> None:
                 f"    [bold green]{k}[/bold green]  {v}" for k, v in opts
             )
         console.print(Panel(
-            f"[bold #a3b5d1]{name}[/bold #a3b5d1]  [dim]{example}[/dim]\n\n{description}{opt_lines}",
+            f"[bold {ACCENT}]{name}[/bold {ACCENT}]  [dim]{example}[/dim]\n\n{description}{opt_lines}",
             title=name,
-            border_style="dim #a3b5d1",
+            border_style=ACCENT_DIM,
             padding=(0, 2),
         ))
         console.print()
 
     # ── Analysis Operations ───────────────────────────────────────
-    console.print(Rule("[bold]Analysis Operations[/bold]", style="#a3b5d1"))
+    console.print(Rule("[bold]Analysis Operations[/bold]", style=ACCENT))
     console.print()
 
     analysis_entries = [
@@ -225,7 +225,7 @@ def _show_extensive_help() -> None:
             "Extracts the raw activation tensor at one or more named modules and prints summary"
             " statistics (shape, mean, std, min/max). Use this when you want to inspect or export"
             " internal representations directly — for instance, to feed them into your own analysis.",
-            [("--at", "Module name(s), comma-separated. Find names with [bold #a3b5d1]inspect[/bold #a3b5d1].")],
+            [("--at", f"Module name(s), comma-separated. Find names with [bold {ACCENT}]inspect[/bold {ACCENT}].")],
         ),
         (
             "ablate",
@@ -307,19 +307,19 @@ def _show_extensive_help() -> None:
                 f"    [bold green]{k}[/bold green]  {v}" for k, v in opts
             )
         console.print(Panel(
-            f"[bold #a3b5d1]{name}[/bold #a3b5d1]  [dim]{example}[/dim]\n\n{description}{opt_lines}",
+            f"[bold {ACCENT}]{name}[/bold {ACCENT}]  [dim]{example}[/dim]\n\n{description}{opt_lines}",
             title=name,
-            border_style="dim #a3b5d1",
+            border_style=ACCENT_DIM,
             padding=(0, 2),
         ))
         console.print()
 
     # ── Circuit Analysis ──────────────────────────────────────────
-    console.print(Rule("[bold]Circuit Analysis[/bold]", style="#a3b5d1"))
+    console.print(Rule("[bold]Circuit Analysis[/bold]", style=ACCENT))
     console.print()
 
     console.print(Panel(
-        "[bold #a3b5d1]find-circuit[/bold #a3b5d1]  "
+        f"[bold {ACCENT}]find-circuit[/bold {ACCENT}]  "
         "[dim]interpkit find-circuit gpt2 --clean '...' --corrupted '...'[/dim]\n\n"
         "Automated circuit discovery. Iteratively ablates every module and keeps only those whose"
         " removal meaningfully changes the output (above [bold green]--threshold[/bold green])."
@@ -337,13 +337,13 @@ def _show_extensive_help() -> None:
         "    [bold green]--method[/bold green]  Ablation method: mean (default), zero, resample.\n"
         "    [bold green]--metric[/bold green]  logit_diff · kl_div · target_prob · l2_prob",
         title="find-circuit",
-        border_style="dim #a3b5d1",
+        border_style=ACCENT_DIM,
         padding=(0, 2),
     ))
     console.print()
 
     console.print(Panel(
-        "[bold #a3b5d1]features[/bold #a3b5d1]  "
+        f"[bold {ACCENT}]features[/bold {ACCENT}]  "
         "[dim]interpkit features gpt2 '...' --at transformer.h.8 --sae jbloom/GPT2-Small-SAEs[/dim]\n\n"
         "Sparse Autoencoder (SAE) feature decomposition. Takes a module's activation and projects"
         " it through a separately trained SAE to recover a sparse set of interpretable features."
@@ -358,13 +358,13 @@ def _show_extensive_help() -> None:
         "  [bold green]--top-k[/bold green]  How many top features to display (default 20).\n"
         "  [bold green]--positive-file / --negative-file[/bold green]  Text files for contrastive feature analysis.",
         title="features",
-        border_style="dim #a3b5d1",
+        border_style=ACCENT_DIM,
         padding=(0, 2),
     ))
 
     console.print()
     console.print(
-        "  Run [bold #a3b5d1]interpkit <command> --help[/bold #a3b5d1] for the full option list of any command.\n"
+        f"  Run [bold {ACCENT}]interpkit <command> --help[/bold {ACCENT}] for the full option list of any command.\n"
     )
 
 
@@ -399,11 +399,11 @@ def main(
         "\u255a\u2550\u255d\u255a\u2550\u255d  \u255a\u2550\u2550\u2550\u255d   \u255a\u2550\u255d   \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u255d\u255a\u2550\u255d  \u255a\u2550\u255d\u255a\u2550\u255d     \u255a\u2550\u255d  \u255a\u2550\u255d\u255a\u2550\u255d   \u255a\u2550\u255d"
     )
     console.print()
-    console.print(GradientText(_LOGO_STR, colors=_BRAND_COLORS, style="bold"), highlight=False)
+    console.print(GradientText(_LOGO_STR, colors=BRAND_COLORS, style="bold"), highlight=False)
     console.print(
         GradientText(
             f"  Mech interp for any HuggingFace model  v{_VERSION}",
-            colors=_BRAND_COLORS,
+            colors=BRAND_COLORS,
         )
     )
 
@@ -412,7 +412,7 @@ def main(
             show_header=False, box=None, pad_edge=False,
             padding=(0, 2), expand=True,
         )
-        table.add_column("Command", style="bold #a3b5d1", no_wrap=True, min_width=16)
+        table.add_column("Command", style=f"bold {ACCENT}", no_wrap=True, min_width=16)
         table.add_column("Description")
         for cmd, desc in commands:
             table.add_row(cmd, desc)
@@ -450,16 +450,16 @@ def main(
     layout = Table(show_header=False, box=None, pad_edge=False, padding=0, expand=True)
     layout.add_column(ratio=1)
 
-    layout.add_row(GradientRule("Quick Start", colors=_BRAND_COLORS, align="left"))
+    layout.add_row(GradientRule("Quick Start", colors=BRAND_COLORS, align="left"))
     layout.add_row(quick_start)
     layout.add_row("")
-    layout.add_row(GradientRule("Core Operations", colors=_BRAND_COLORS, align="left"))
+    layout.add_row(GradientRule("Core Operations", colors=BRAND_COLORS, align="left"))
     layout.add_row(core_ops)
     layout.add_row("")
-    layout.add_row(GradientRule("Analysis", colors=_BRAND_COLORS, align="left"))
+    layout.add_row(GradientRule("Analysis", colors=BRAND_COLORS, align="left"))
     layout.add_row(analysis_ops)
     layout.add_row("")
-    layout.add_row(GradientRule("Circuit Analysis", colors=_BRAND_COLORS, align="left"))
+    layout.add_row(GradientRule("Circuit Analysis", colors=BRAND_COLORS, align="left"))
     layout.add_row(circuit_ops)
 
     console.print()
@@ -467,8 +467,8 @@ def main(
 
     console.print()
     console.print("  [dim]\u25b8[/dim] Most commands accept [bold green]--save[/bold green] and [bold green]--html[/bold green] for exports.")
-    console.print("  [dim]\u25b8[/dim] Run [bold #a3b5d1]interpkit <command> --help[/bold #a3b5d1] for detailed usage.")
-    console.print("  [dim]\u25b8[/dim] New here? Try [bold #a3b5d1]interpkit --extensive[/bold #a3b5d1] for a plain-English walkthrough.")
+    console.print(f"  [dim]\u25b8[/dim] Run [bold {ACCENT}]interpkit <command> --help[/bold {ACCENT}] for detailed usage.")
+    console.print(f"  [dim]\u25b8[/dim] New here? Try [bold {ACCENT}]interpkit --extensive[/bold {ACCENT}] for a plain-English walkthrough.")
     console.print()
 
 
@@ -515,7 +515,7 @@ def patch(
         pos_list = [int(p.strip()) for p in positions.split(",")]
     with console.status("  Patching activations..."):
         result = m.patch(clean, corrupted, at=at, head=head, positions=pos_list, metric=metric)
-    console.print(f"  [bold green]Patched[/bold green] [#a3b5d1]{at}[/#a3b5d1]")
+    console.print(f"  [bold green]Patched[/bold green] [{ACCENT}]{at}[/{ACCENT}]")
     if _output_format == "json":
         _json_dump(result)
 
@@ -641,7 +641,7 @@ def ablate(
     m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
     with console.status("  Running ablation..."):
         result = m.ablate(input_data, at=at, method=method, reference=reference)
-    console.print(f"  [bold green]Ablated[/bold green] [#a3b5d1]{at}[/#a3b5d1] ({method})")
+    console.print(f"  [bold green]Ablated[/bold green] [{ACCENT}]{at}[/{ACCENT}] ({method})")
     if _output_format == "json":
         _json_dump(result)
 

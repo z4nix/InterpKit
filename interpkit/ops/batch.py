@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any
 from rich.console import Console
 from rich.progress import Progress
 
+from interpkit.core.theme import ACCENT
+
 if TYPE_CHECKING:
     from interpkit.core.model import Model
 
@@ -217,7 +219,7 @@ def _render_summary(output: dict[str, Any], operation: str) -> None:
 
     if "ranked_modules" in summary:
         table = Table(show_header=True, header_style="bold", show_lines=False)
-        table.add_column("Module", style="cyan")
+        table.add_column("Module", style=ACCENT)
         table.add_column("Mean Effect", justify="right")
         table.add_column("Max", justify="right", style="dim")
         table.add_column("Count", justify="right", style="dim")
@@ -240,7 +242,7 @@ def _render_summary(output: dict[str, Any], operation: str) -> None:
 
     elif "ranked_components" in summary:
         table = Table(show_header=True, header_style="bold", show_lines=False)
-        table.add_column("Component", style="cyan")
+        table.add_column("Component", style=ACCENT)
         table.add_column("Mean Contribution", justify="right")
         table.add_column("Count", justify="right", style="dim")
 

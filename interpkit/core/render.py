@@ -12,22 +12,12 @@ from rich.table import Table
 from rich.text import Text
 from rich_gradient import Rule as GradientRule
 
-_BRAND_COLORS = ["#ebf4f5", "#a3b5d1"]
+from interpkit.core.theme import ACCENT, BRAND_COLORS, ROLE_PILL
 
 if TYPE_CHECKING:
     from interpkit.core.discovery import ModelArchInfo
 
 console = Console()
-
-# ── Design tokens ────────────────────────────────────────────────
-
-_ROLE_PILL: dict[str, tuple[str, str]] = {
-    "attention": ("attn", "bold white on #6b7d9e"),
-    "mlp": ("mlp", "bold white on purple4"),
-    "head": ("head", "bold white on dark_blue"),
-    "norm": ("norm", "bold black on yellow"),
-    "embed": ("embed", "bold white on dark_green"),
-}
 
 _BAR_WIDTH = 24
 _TABLE_BOX = box.SIMPLE_HEAD
@@ -42,7 +32,7 @@ def _section(title: str, subtitle: str = "") -> None:
     if subtitle:
         label += f"  [dim]{subtitle}[/dim]"
     console.print()
-    console.print(GradientRule(label, colors=_BRAND_COLORS, align="left"))
+    console.print(GradientRule(label, colors=BRAND_COLORS, align="left"))
 
 
 def _bar(
@@ -77,11 +67,11 @@ def _role_tag(role: str | None) -> str:
     """Format a module role as a pill-style tag with background."""
     if not role:
         return ""
-    label, style = _ROLE_PILL.get(role, (role, "dim"))
+    label, style = ROLE_PILL.get(role, (role, "dim"))
     return f"[{style}] {label} [/{style}]"
 
 
-def _callout(label: str, value: str, style: str = "#a3b5d1") -> None:
+def _callout(label: str, value: str, style: str = ACCENT) -> None:
     """Print a highlighted callout line with a marker."""
     console.print(f"  [{style}]\u25b8[/{style}] {label}: [bold]{value}[/bold]")
 
@@ -129,7 +119,7 @@ def render_inspect(arch_info: ModelArchInfo, nn_model: torch.nn.Module | None = 
     console.print(f"  [dim]{details}[/dim]")
 
     table = Table(show_header=True, header_style="bold", box=_TABLE_BOX, pad_edge=False)
-    table.add_column("Module", style="#a3b5d1", no_wrap=True)
+    table.add_column("Module", style=ACCENT, no_wrap=True)
     table.add_column("Type", style="dim")
     table.add_column("Params", justify="right")
     table.add_column("Output Shape", style="dim")
@@ -171,7 +161,7 @@ def render_trace(
     max_effect = max(r["effect"] for r in results) if results else 1.0
 
     table = Table(show_header=False, box=None, pad_edge=False, padding=(0, 1))
-    table.add_column("Module", style="#a3b5d1", no_wrap=True, min_width=35)
+    table.add_column("Module", style=ACCENT, no_wrap=True, min_width=35)
     table.add_column("Role", min_width=8)
     table.add_column("Bar", no_wrap=True, min_width=_BAR_WIDTH + 2)
     table.add_column("Effect", justify="right", style="bold")
@@ -187,9 +177,9 @@ def render_trace(
         best = results[0]
         console.print()
         console.print(Panel(
-            f"[bold #a3b5d1]{best['module']}[/bold #a3b5d1]  effect [bold]{best['effect']:.3f}[/bold]",
+            f"[bold {ACCENT}]{best['module']}[/bold {ACCENT}]  effect [bold]{best['effect']:.3f}[/bold]",
             title="[bold]Top component[/bold]",
-            border_style="#a3b5d1",
+            border_style=ACCENT,
             padding=(0, 2),
             expand=False,
         ))
@@ -218,7 +208,7 @@ def render_position_trace(result: dict[str, Any]) -> None:
 
     table = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
     table.add_column("Rank", justify="right", style="dim")
-    table.add_column("Layer", style="#a3b5d1")
+    table.add_column("Layer", style=ACCENT)
     table.add_column("Position", justify="right")
     table.add_column("Token", style="yellow")
     table.add_column("Effect", justify="right", style="bold")
@@ -249,7 +239,7 @@ def render_lens(
     _section(f"Logit Lens \u2014 {model_name}")
 
     table = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
-    table.add_column("Layer", style="#a3b5d1")
+    table.add_column("Layer", style=ACCENT)
     table.add_column("Top-1 Token", style="bold")
     table.add_column("Prob", justify="right")
     table.add_column("", no_wrap=True, min_width=12)
@@ -371,7 +361,7 @@ def render_activations(cache: dict[str, torch.Tensor]) -> None:
     _section("Activations")
 
     table = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
-    table.add_column("Module", style="#a3b5d1", no_wrap=True)
+    table.add_column("Module", style=ACCENT, no_wrap=True)
     table.add_column("Shape", style="dim")
     table.add_column("Norm", justify="right")
     table.add_column("Mean", justify="right")
@@ -429,8 +419,8 @@ def render_attention(
         return
 
     table = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
-    table.add_column("Layer", style="#a3b5d1")
-    table.add_column("Head", style="#a3b5d1", justify="right")
+    table.add_column("Layer", style=ACCENT)
+    table.add_column("Head", style=ACCENT, justify="right")
     table.add_column("Top Attention Pairs")
     table.add_column("Entropy", justify="right", style="dim")
 
@@ -467,7 +457,7 @@ def render_steer(
 
     table = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
     table.add_column("Rank", justify="right", style="dim")
-    table.add_column("Original Token", style="#a3b5d1")
+    table.add_column("Original Token", style=ACCENT)
     table.add_column("Prob", justify="right")
     table.add_column("", justify="center", style="dim", width=3)
     table.add_column("Steered Token", style="green")
@@ -530,7 +520,7 @@ def render_probe(result: dict[str, Any]) -> None:
         max_weight = abs(result["top_features"][0][1]) if result["top_features"][0][1] != 0 else 1.0
         for idx, weight in result["top_features"][:10]:
             bar = _bar(weight, max_weight, width=16)
-            console.print(f"    dim [#a3b5d1]{idx:>5d}[/#a3b5d1]  {bar}  {weight:.4f}")
+            console.print(f"    dim [{ACCENT}]{idx:>5d}[/{ACCENT}]  {bar}  {weight:.4f}")
 
     console.print()
 
@@ -555,7 +545,7 @@ def render_diff(
     max_dist = max(r["distance"] for r in results) if results else 1.0
 
     table = Table(show_header=False, box=None, pad_edge=False, padding=(0, 1))
-    table.add_column("Module", style="#a3b5d1", no_wrap=True, min_width=35)
+    table.add_column("Module", style=ACCENT, no_wrap=True, min_width=35)
     table.add_column("Bar", no_wrap=True, min_width=_BAR_WIDTH + 2)
     table.add_column("Cosine Dist", justify="right", style="bold")
 
@@ -569,9 +559,9 @@ def render_diff(
         best = results[0]
         console.print()
         console.print(Panel(
-            f"[bold #a3b5d1]{best['module']}[/bold #a3b5d1]  distance [bold]{best['distance']:.4f}[/bold]",
+            f"[bold {ACCENT}]{best['module']}[/bold {ACCENT}]  distance [bold]{best['distance']:.4f}[/bold]",
             title="[bold]Most changed[/bold]",
-            border_style="#a3b5d1",
+            border_style=ACCENT,
             padding=(0, 2),
             expand=False,
         ))
@@ -604,7 +594,7 @@ def render_features(result: dict[str, Any]) -> None:
 
     table = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
     table.add_column("Rank", justify="right", style="dim")
-    table.add_column("Feature", style="#a3b5d1", justify="right")
+    table.add_column("Feature", style=ACCENT, justify="right")
     table.add_column("Activation", justify="right")
     table.add_column("", no_wrap=True, min_width=_BAR_WIDTH + 2)
 
@@ -616,9 +606,9 @@ def render_features(result: dict[str, Any]) -> None:
 
     top_feat = top[0]
     console.print(Panel(
-        f"Feature [bold #a3b5d1]{top_feat[0]}[/bold #a3b5d1]  activation [bold]{top_feat[1]:.4f}[/bold]",
+        f"Feature [bold {ACCENT}]{top_feat[0]}[/bold {ACCENT}]  activation [bold]{top_feat[1]:.4f}[/bold]",
         title="[bold]Top feature[/bold]",
-        border_style="#a3b5d1",
+        border_style=ACCENT,
         padding=(0, 2),
         expand=False,
     ))
@@ -645,7 +635,7 @@ def render_contrastive_features(result: dict[str, Any]) -> None:
 
     table = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
     table.add_column("Rank", justify="right", style="dim")
-    table.add_column("Feature", style="#a3b5d1", justify="right")
+    table.add_column("Feature", style=ACCENT, justify="right")
     table.add_column("Pos Mean", justify="right")
     table.add_column("Neg Mean", justify="right")
     table.add_column("Diff", justify="right", style="bold")
@@ -683,7 +673,7 @@ def render_decompose(result: dict[str, Any]) -> None:
     max_norm = max((c["norm"] for c in components), default=1.0) or 1.0
 
     table = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
-    table.add_column("Component", style="#a3b5d1")
+    table.add_column("Component", style=ACCENT)
     table.add_column("Type", style="dim")
     table.add_column("Norm", justify="right")
     table.add_column("", min_width=_BAR_WIDTH + 2, no_wrap=True)
@@ -709,7 +699,7 @@ def render_dla(result: dict[str, Any], *, top_k: int = 10) -> None:
 
     console.print(Panel(
         f'Target token: [bold]"{target}"[/bold]  |  Total logit sum: [bold]{result["total_logit"]:.3f}[/bold]',
-        border_style="#a3b5d1",
+        border_style=ACCENT,
         padding=(0, 2),
         expand=False,
     ))
@@ -717,7 +707,7 @@ def render_dla(result: dict[str, Any], *, top_k: int = 10) -> None:
     max_abs = max((abs(c["logit_contribution"]) for c in contributions), default=1.0) or 1.0
 
     table = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
-    table.add_column("Component", style="#a3b5d1")
+    table.add_column("Component", style=ACCENT)
     table.add_column("Type", style="dim")
     table.add_column("Contribution", justify="right")
     table.add_column("", min_width=_BAR_WIDTH + 2, no_wrap=True)
@@ -741,7 +731,7 @@ def render_dla(result: dict[str, Any], *, top_k: int = 10) -> None:
         seen: set[str] = set()
 
         htable = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
-        htable.add_column("Head", style="#a3b5d1")
+        htable.add_column("Head", style=ACCENT)
         htable.add_column("Contribution", justify="right")
         htable.add_column("", min_width=_BAR_WIDTH + 2, no_wrap=True)
 
@@ -772,7 +762,7 @@ def render_dla(result: dict[str, Any], *, top_k: int = 10) -> None:
         max_abs_f = max((abs(f["logit_contribution"]) for f in feats), default=1.0) or 1.0
 
         ftable = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
-        ftable.add_column("Feature", style="#a3b5d1", justify="right")
+        ftable.add_column("Feature", style=ACCENT, justify="right")
         ftable.add_column("Activation", justify="right")
         ftable.add_column("Logit Contrib", justify="right")
         ftable.add_column("", min_width=_BAR_WIDTH + 2, no_wrap=True)

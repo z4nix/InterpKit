@@ -8,6 +8,7 @@ import torch
 from rich.console import Console
 from rich.progress import Progress
 
+from interpkit.core.theme import ACCENT
 from interpkit.ops.patch import _compute_effect, _get_module
 
 if TYPE_CHECKING:
@@ -333,7 +334,7 @@ def _render_circuit(result: dict[str, Any]) -> None:
 
     if circuit:
         table = Table(show_header=True, header_style="bold", show_lines=False)
-        table.add_column("Component", style="cyan")
+        table.add_column("Component", style=ACCENT)
         table.add_column("Type", style="dim")
         table.add_column("Effect", justify="right", style="bold")
         table.add_column("", min_width=15)
