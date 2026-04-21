@@ -123,6 +123,27 @@ def _show_extensive_help() -> None:
         padding=(0, 2),
     ))
 
+    console.print()
+    console.print(Panel(
+        f"[bold {ACCENT}]chat[/bold {ACCENT}]  "
+        "[dim]interpkit chat HuggingFaceTB/SmolLM2-360M-Instruct 'Write a haiku.'[/dim]\n\n"
+        "Send a message to an instruction-tuned chat model and print its reply. The message is"
+        " routed through the tokenizer's chat template (e.g. ChatML, Llama-2 Inst, Qwen, Gemma)"
+        " with [dim]add_generation_prompt=True[/dim] before generation, so any HF chat model that"
+        " ships a template just works.\n\n"
+        "  Errors clearly when the model has no chat template (i.e. a base/non-instruct model) —"
+        " in that case load an instruct variant or call any other command with a plain string.\n\n"
+        "  [bold]Key options:[/bold]\n"
+        "    [bold green]--system 'be brief'[/bold green]  Optional system prompt prepended to the conversation.\n"
+        "    [bold green]--max-new-tokens N[/bold green]  Generation budget (default 128).\n"
+        "    [bold green]--sample / --no-sample[/bold green]  Sampling vs greedy decoding (default greedy).\n"
+        "    [bold green]--temperature / --top-p[/bold green]  Standard sampling controls (used when --sample).\n"
+        "    [bold green]--show-prompt[/bold green]  Print the chat-templated prompt before generating.",
+        title="chat",
+        border_style=ACCENT_DIM,
+        padding=(0, 2),
+    ))
+
     # ── Core Operations ───────────────────────────────────────────
     console.print()
     console.print(Rule("[bold]Core Operations[/bold]", style=ACCENT))
@@ -274,7 +295,7 @@ def _show_extensive_help() -> None:
         ),
         (
             "steer",
-            "interpkit steer gpt2 'The sky is' --positive Love --negative Hate --at transformer.h.8",
+            "interpkit steer gpt2 'The sky is' --positive ' love' --negative ' hate' --at transformer.h.8",
             "Activation steering. Computes a 'steering vector' as the mean-difference between"
             " activations for contrasting concepts ([bold green]--positive[/bold green] vs"
             " [bold green]--negative[/bold green]), then adds a scaled copy of it to the activations"
@@ -435,6 +456,7 @@ def main(
     quick_start = _cmd_table([
         ("scan", "One-command overview \u2014 DLA, lens, attention, attribution"),
         ("report", "Generate an interactive HTML report"),
+        ("chat", "Send a message to a chat / instruct model"),
     ])
 
     core_ops = _cmd_table([
@@ -482,6 +504,10 @@ def main(
     console.print()
     console.print("  [dim]\u25b8[/dim] Most commands accept [bold green]--save[/bold green] and [bold green]--html[/bold green] for exports.")
     console.print(f"  [dim]\u25b8[/dim] Run [bold {ACCENT}]interpkit <command> --help[/bold {ACCENT}] for detailed usage.")
+    console.print(
+        f"  [dim]\u25b8[/dim] No console script on PATH? [bold {ACCENT}]python -m interpkit[/bold {ACCENT}]"
+        " works the same everywhere."
+    )
     console.print(f"  [dim]\u25b8[/dim] New here? Try [bold {ACCENT}]interpkit --extensive[/bold {ACCENT}] for a plain-English walkthrough.")
     console.print()
 
@@ -794,7 +820,8 @@ def features(
     model_name: str = typer.Argument(..., help="HuggingFace model ID (e.g. gpt2)"),
     input_data: str | None = typer.Argument(None, help="Input text (omit when using --positive-file / --negative-file)"),
     at: str = typer.Option(..., "--at", help="Module name to decompose (e.g. transformer.h.8)"),
-    sae: str = typer.Option(..., "--sae", help="SAE source: HuggingFace repo ID or local file path (.safetensors / .pt)"),
+    sae: str = typer.Option(..., "--sae", help="SAE source: HuggingFace repo ID, local file path (.safetensors / .pt), or 'org/repo/subfolder' shorthand"),
+    sae_subfolder: str | None = typer.Option(None, "--sae-subfolder", help="Subfolder inside the SAE repo (e.g. 'blocks.8.hook_resid_pre'). Equivalent to appending it to --sae."),
     top_k: int = typer.Option(20, "--top-k", help="Number of top features to display"),
     positive_file: str | None = typer.Option(None, "--positive-file", help="Text file with positive examples for contrastive analysis, one per line"),
     negative_file: str | None = typer.Option(None, "--negative-file", help="Text file with negative examples for contrastive analysis, one per line"),
@@ -813,13 +840,19 @@ def features(
         pos_inputs = read_examples_file(positive_file)
         neg_inputs = read_examples_file(negative_file)
         m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
-        result = m.contrastive_features(pos_inputs, neg_inputs, at=at, sae=sae, top_k=top_k)
+        result = m.contrastive_features(
+            pos_inputs, neg_inputs, at=at, sae=sae, top_k=top_k,
+            sae_subfolder=sae_subfolder,
+        )
     else:
         if input_data is None:
             raise typer.BadParameter("Provide input text or use --positive-file / --negative-file for contrastive mode")
         m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
         with console.status("  Decomposing features..."):
-            result = m.features(input_data, at=at, sae=sae, top_k=top_k)
+            result = m.features(
+                input_data, at=at, sae=sae, top_k=top_k,
+                sae_subfolder=sae_subfolder,
+            )
 
     if _output_format == "json":
         _json_dump(result)
@@ -860,8 +893,9 @@ def dla(
     top_k: int = typer.Option(10, "--top-k", help="Number of top/bottom contributors to show"),
     save: str | None = typer.Option(None, "--save", help="Save bar chart to file (e.g. dla.png)"),
     html_path: str | None = typer.Option(None, "--html", help="Save interactive HTML to file"),
-    sae: str | None = typer.Option(None, "--sae", help="SAE source: HuggingFace repo ID or local file path (.safetensors / .pt)"),
+    sae: str | None = typer.Option(None, "--sae", help="SAE source: HuggingFace repo ID, local file path (.safetensors / .pt), or 'org/repo/subfolder' shorthand"),
     sae_at: str | None = typer.Option(None, "--sae-at", help="Module to decompose through the SAE (e.g. transformer.h.11.attn)"),
+    sae_subfolder: str | None = typer.Option(None, "--sae-subfolder", help="Subfolder inside the SAE repo (e.g. 'blocks.8.hook_resid_pre'). Equivalent to appending it to --sae."),
     device: str | None = typer.Option(None, help="Device"),
     dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
     device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
@@ -878,7 +912,7 @@ def dla(
         result = m.dla(
             input_data, token=parsed_token, position=position,
             top_k=top_k, save=save, html=html_path,
-            sae=sae, sae_at=sae_at,
+            sae=sae, sae_at=sae_at, sae_subfolder=sae_subfolder,
         )
     if _output_format == "json":
         _json_dump(result)
@@ -970,6 +1004,63 @@ def report(
     result = m.report(input_data, save=save)
     if _output_format == "json":
         _json_dump(result)
+
+
+# ══════════════════════════════════════════════════════════════════
+# chat
+# ══════════════════════════════════════════════════════════════════
+
+
+@app.command()
+def chat(
+    model_name: str = typer.Argument(..., help="HuggingFace chat/instruct model ID (e.g. HuggingFaceTB/SmolLM2-360M-Instruct)"),
+    message: str = typer.Argument(..., help="User message to send"),
+    system: str | None = typer.Option(None, "--system", help="Optional system prompt"),
+    max_new_tokens: int = typer.Option(128, "--max-new-tokens", help="Max generation length"),
+    sample: bool = typer.Option(False, "--sample/--no-sample", help="Sample (True) or use greedy decoding (False, default)"),
+    temperature: float = typer.Option(1.0, "--temperature", help="Sampling temperature (used when --sample)"),
+    top_p: float = typer.Option(1.0, "--top-p", help="Nucleus sampling cutoff (used when --sample)"),
+    show_prompt: bool = typer.Option(False, "--show-prompt", help="Print the chat-templated prompt before generating"),
+    device: str | None = typer.Option(None, help="Device"),
+    dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
+) -> None:
+    """Send a chat message and print the model's response.
+
+    Routes the message through the tokenizer's chat template
+    (``apply_chat_template`` with ``add_generation_prompt=True``) and
+    calls ``model.generate``.  Errors clearly when the loaded model has
+    no chat template (i.e. is a base/non-instruct model).
+    """
+    m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
+    with console.status("  Generating response..."):
+        result = m.chat(
+            message,
+            system=system,
+            max_new_tokens=max_new_tokens,
+            do_sample=sample,
+            temperature=temperature,
+            top_p=top_p,
+        )
+
+    if show_prompt:
+        console.print(Panel(
+            result["prompt"],
+            title="[bold]Prompt[/bold]",
+            border_style=ACCENT_DIM,
+            padding=(0, 1),
+        ))
+
+    console.print()
+    console.print(Panel(
+        result["response"],
+        title=f"[bold]{model_name}[/bold]",
+        border_style=ACCENT,
+        padding=(0, 2),
+    ))
+
+    if _output_format == "json":
+        _json_dump({k: v for k, v in result.items() if k not in {"input_ids", "output_ids"}})
 
 
 if __name__ == "__main__":

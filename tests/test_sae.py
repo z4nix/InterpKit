@@ -217,3 +217,158 @@ def test_load_sae_auto_detects_local_safetensors():
         sae = load_sae(str(filepath))
         assert sae.d_in == 64
         assert sae.d_sae == 32
+
+
+# ── subfolder shorthand parsing ──────────────────────────────────────────
+
+
+def test_split_repo_and_subfolder_basic():
+    from interpkit.ops.sae import _split_repo_and_subfolder
+
+    repo, sub = _split_repo_and_subfolder("jbloom/GPT2-SAEs/blocks.8.hook_resid_pre")
+    assert repo == "jbloom/GPT2-SAEs"
+    assert sub == "blocks.8.hook_resid_pre"
+
+
+def test_split_repo_and_subfolder_nested_subfolder():
+    from interpkit.ops.sae import _split_repo_and_subfolder
+
+    repo, sub = _split_repo_and_subfolder("org/name/dir1/dir2")
+    assert repo == "org/name"
+    assert sub == "dir1/dir2"
+
+
+def test_split_repo_and_subfolder_two_segments_unchanged():
+    from interpkit.ops.sae import _split_repo_and_subfolder
+
+    repo, sub = _split_repo_and_subfolder("gpt2/sae")
+    assert repo == "gpt2/sae"
+    assert sub is None
+
+
+def test_split_repo_and_subfolder_local_relative_path_unchanged():
+    from interpkit.ops.sae import _split_repo_and_subfolder
+
+    repo, sub = _split_repo_and_subfolder("./local/dir/file")
+    assert repo == "./local/dir/file"
+    assert sub is None
+
+
+def test_split_repo_and_subfolder_absolute_path_unchanged():
+    from interpkit.ops.sae import _split_repo_and_subfolder
+
+    repo, sub = _split_repo_and_subfolder("/abs/path/to/file")
+    assert repo == "/abs/path/to/file"
+    assert sub is None
+
+
+def test_split_repo_and_subfolder_existing_local_unchanged():
+    from interpkit.ops.sae import _split_repo_and_subfolder
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        nested = Path(tmpdir) / "a" / "b"
+        nested.mkdir(parents=True)
+        target = nested / "c.txt"
+        target.write_text("data")
+        s = str(target)
+        repo, sub = _split_repo_and_subfolder(s)
+        assert repo == s
+        assert sub is None
+
+
+def test_load_sae_explicit_subfolder_kw_forwarded():
+    """When subfolder= is passed, _download_weights must receive it."""
+    import interpkit.ops.sae as sae_mod
+
+    captured: dict[str, str | None] = {}
+
+    def fake_download(hf_id: str, *, subfolder: str | None = None):
+        captured["hf_id"] = hf_id
+        captured["subfolder"] = subfolder
+        return {
+            "W_enc": torch.randn(64, 32),
+            "W_dec": torch.randn(32, 64),
+            "b_enc": torch.zeros(32),
+            "b_dec": torch.zeros(64),
+        }
+
+    def fake_config(hf_id: str, *, subfolder: str | None = None):
+        return {}
+
+    orig_w = sae_mod._download_weights
+    orig_c = sae_mod._download_config
+    sae_mod._download_weights = fake_download
+    sae_mod._download_config = fake_config
+    try:
+        load_sae("org/name", subfolder="blocks.8.hook_resid_pre")
+    finally:
+        sae_mod._download_weights = orig_w
+        sae_mod._download_config = orig_c
+
+    assert captured == {"hf_id": "org/name", "subfolder": "blocks.8.hook_resid_pre"}
+
+
+def test_load_sae_shorthand_routes_to_subfolder():
+    """The 'org/name/sub' shorthand must call into _download_weights with subfolder set."""
+    import interpkit.ops.sae as sae_mod
+
+    captured: dict[str, str | None] = {}
+
+    def fake_download(hf_id: str, *, subfolder: str | None = None):
+        captured["hf_id"] = hf_id
+        captured["subfolder"] = subfolder
+        return {
+            "W_enc": torch.randn(64, 32),
+            "W_dec": torch.randn(32, 64),
+            "b_enc": torch.zeros(32),
+            "b_dec": torch.zeros(64),
+        }
+
+    def fake_config(hf_id: str, *, subfolder: str | None = None):
+        return {}
+
+    orig_w = sae_mod._download_weights
+    orig_c = sae_mod._download_config
+    sae_mod._download_weights = fake_download
+    sae_mod._download_config = fake_config
+    try:
+        load_sae("jbloom/GPT2-Small-SAEs-Reformatted/blocks.8.hook_resid_pre")
+    finally:
+        sae_mod._download_weights = orig_w
+        sae_mod._download_config = orig_c
+
+    assert captured["hf_id"] == "jbloom/GPT2-Small-SAEs-Reformatted"
+    assert captured["subfolder"] == "blocks.8.hook_resid_pre"
+
+
+def test_load_sae_conflicting_shorthand_and_kw_raises():
+    with pytest.raises(ValueError, match="Conflicting subfolder"):
+        load_sae("org/name/sub_a", subfolder="sub_b")
+
+
+def test_load_sae_matching_shorthand_and_kw_ok():
+    """Passing the same subfolder via both syntaxes should not error."""
+    import interpkit.ops.sae as sae_mod
+
+    def fake_download(hf_id: str, *, subfolder: str | None = None):
+        return {
+            "W_enc": torch.randn(64, 32),
+            "W_dec": torch.randn(32, 64),
+            "b_enc": torch.zeros(32),
+            "b_dec": torch.zeros(64),
+        }
+
+    def fake_config(hf_id: str, *, subfolder: str | None = None):
+        return {}
+
+    orig_w = sae_mod._download_weights
+    orig_c = sae_mod._download_config
+    sae_mod._download_weights = fake_download
+    sae_mod._download_config = fake_config
+    try:
+        sae = load_sae("org/name/sub", subfolder="sub")
+    finally:
+        sae_mod._download_weights = orig_w
+        sae_mod._download_config = orig_c
+
+    assert sae.d_in == 64

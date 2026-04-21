@@ -63,6 +63,25 @@ model = interpkit.load("google/vit-base-patch16-224")
 model = interpkit.load("bert-base-uncased")
 ```
 
+### Chat models
+
+Instruction-tuned models work too — interpkit applies the tokenizer's chat template automatically.
+
+```python
+chat = interpkit.load("HuggingFaceTB/SmolLM2-360M-Instruct")
+
+result = chat.chat("Write a haiku about cats.", max_new_tokens=64)
+print(result["response"])
+
+# Run any other op on the templated prompt
+chat.dla(result["prompt"])
+
+# Or pass a message list directly to any op
+chat.dla([{"role": "user", "content": "Capital of France?"}])
+```
+
+See [examples/10_chat_models.ipynb](examples/10_chat_models.ipynb) for a full walkthrough including chat-style steering.
+
 ---
 
 ## Operations
@@ -70,6 +89,7 @@ model = interpkit.load("bert-base-uncased")
 | Operation | What it does | Works on |
 |-----------|-------------|----------|
 | **`scan`** | One-command model overview: runs DLA, lens, attention, attribution and surfaces key findings | LMs |
+| **`chat`** | Send a message through the tokenizer's chat template and generate a reply | Chat / instruct LMs |
 | **`dla`** | Direct Logit Attribution — decompose output logits by head and MLP contribution; optionally decompose through an SAE into per-feature attributions | LMs |
 | `inspect` | Module tree with types, param counts, shapes | Any model |
 | `patch` | Activation patching at a module, head, or position | Any model |
@@ -280,9 +300,11 @@ results = model.dla_batch(["The capital of France is", "The CEO of Apple is"])
 ## Steering
 
 ```python
-vector = model.steer_vector("Love", "Hate", at="transformer.h.8")
+vector = model.steer_vector(" love", " hate", at="transformer.h.8")
 model.steer("The weather today is", vector=vector, at="transformer.h.8", scale=2.0)
 ```
+
+> Note the leading spaces. BPE tokenizers (GPT-2, Llama, ...) treat `" love"` and `"love"` as different tokens, and the leading-space variant is the one the model actually sees in normal text. interpkit prints a warning if you forget.
 
 ## Linear Probe
 
@@ -374,13 +396,17 @@ interpkit lens gpt2 "The capital of France is"
 interpkit lens gpt2 "The capital of France is" --position -1
 interpkit attention gpt2 "The capital of France is" --layer 8 --save attention.png
 interpkit attribute gpt2 "The capital of France is"
-interpkit steer gpt2 "The weather is" --positive Love --negative Hate --at transformer.h.8
+interpkit steer gpt2 "The weather is" --positive " love" --negative " hate" --at transformer.h.8
 interpkit ablate gpt2 "The capital of France is" --at transformer.h.8.mlp
 interpkit decompose gpt2 "The capital of France is"
 interpkit diff gpt2 my-finetuned-gpt2 "The capital of France is" --save diff.png
 interpkit features gpt2 "The capital of France is" --at transformer.h.8 --sae jbloom/GPT2-Small-SAEs-Reformatted
 interpkit features gpt2 "The capital of France is" --at transformer.h.8 --sae ./my_sae.safetensors
 interpkit dla gpt2 "The capital of France is" --sae jbloom/GPT2-Small-SAEs-Reformatted --sae-at transformer.h.11.attn
+
+# Chat / instruct models — applies the tokenizer's chat template automatically
+interpkit chat HuggingFaceTB/SmolLM2-360M-Instruct "Write a haiku about cats." --max-new-tokens 64
+interpkit chat HuggingFaceTB/SmolLM2-360M-Instruct "What is 2+2?" --system "You are terse." --show-prompt
 
 # Interactive HTML output
 interpkit attention gpt2 "hello world" --html attention.html
@@ -391,7 +417,17 @@ interpkit attribute gpt2 "The capital of France is" --html attribution.html
 interpkit attribute microsoft/resnet-50 cat.jpg --target 281
 ```
 
-Run `interpkit` with no arguments for a full command reference.
+Run `interpkit` with no arguments for a full command reference, or
+`interpkit --extensive` for a beginner-friendly walkthrough of every command.
+
+If the `interpkit` console script isn't on your `PATH` (e.g. fresh
+environments, sandboxed installs, or running from a checkout without
+re-installing), every command also works as `python -m interpkit ...`:
+
+```bash
+python -m interpkit scan gpt2 "The capital of France is"
+python -m interpkit chat HuggingFaceTB/SmolLM2-360M-Instruct "Hello!"
+```
 
 ---
 
@@ -453,6 +489,7 @@ See the [`examples/`](examples/) directory for Jupyter notebooks:
 | `07_vision_models` | ResNet/ViT attribution, ablation, activations |
 | `08_dla_and_circuits` | DLA, head activations, residual decomposition, OV/QK analysis, composition, circuit discovery |
 | `09_scan_and_batch` | Auto-scan, batch operations, dataset workflows |
+| `10_chat_models` | Chat-template handling, `model.chat()`, message-list inputs, chat-style steering |
 
 ---
 

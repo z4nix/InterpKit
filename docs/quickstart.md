@@ -14,6 +14,22 @@ Any HuggingFace model ID works. For vision models:
 model = interpkit.load("google/vit-base-patch16-224")
 ```
 
+For chat / instruction-tuned models, every op accepts message lists in addition
+to plain strings; the tokenizer's chat template is applied automatically:
+
+```python
+chat = interpkit.load("HuggingFaceTB/SmolLM2-360M-Instruct")
+
+result = chat.chat("Write a haiku about cats.", max_new_tokens=64)
+print(result["response"])
+
+# Pass a chat-message list to any op
+chat.dla([{"role": "user", "content": "Capital of France?"}])
+```
+
+See [`examples/10_chat_models.ipynb`](https://github.com/z4nix/interpkit/blob/main/examples/10_chat_models.ipynb)
+for a full walkthrough including chat-style steering.
+
 ## Core operations
 
 ### Causal tracing

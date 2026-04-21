@@ -102,9 +102,13 @@ def run_find_circuit(
     if not arch.layer_names:
         raise ValueError("Circuit discovery requires detected layer structure.")
 
-    # Normalise to lists of pairs
-    cleans = clean if isinstance(clean, list) else [clean]
-    corrupteds = corrupted if isinstance(corrupted, list) else [corrupted]
+    # Normalise to lists of pairs.  Use normalize_input_group so a chat-message
+    # list (also a Python list) is treated as a single example, not as
+    # "one example per message dict".
+    from interpkit.core.inputs import normalize_input_group
+
+    cleans = normalize_input_group(clean)
+    corrupteds = normalize_input_group(corrupted)
     if len(cleans) != len(corrupteds):
         raise ValueError(
             f"clean ({len(cleans)} examples) and corrupted ({len(corrupteds)} examples) "

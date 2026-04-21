@@ -133,9 +133,27 @@ def run_dla(
         if len(ids) > 1:
             import warnings
             decoded_first = model._tokenizer.decode([ids[0]])
+
+            tip = ""
+            if not token.startswith((" ", "\t", "\n")):
+                try:
+                    spaced_ids = model._tokenizer.encode(
+                        " " + token, add_special_tokens=False,
+                    )
+                except (TypeError, ValueError, RuntimeError):
+                    spaced_ids = []
+                if len(spaced_ids) == 1:
+                    tip = (
+                        f" Tip: pass token={(' ' + token)!r} (with a leading "
+                        f"space) — that is a single token in this vocabulary "
+                        f"(id={spaced_ids[0]}) and matches what the model "
+                        f"actually predicts mid-sentence."
+                    )
+
             warnings.warn(
                 f"Token {token!r} encodes to {len(ids)} subwords; "
-                f"using only the first subword ({decoded_first!r}, id={ids[0]}).",
+                f"using only the first subword ({decoded_first!r}, id={ids[0]})."
+                + tip,
                 stacklevel=2,
             )
         target_id = ids[0]
@@ -410,7 +428,10 @@ def _compute_dla_features(
             f"trained on the same layer/component."
         )
 
-    # Encode through the SAE
+    from interpkit.ops.sae import _ensure_sae_on_device
+
+    sae = _ensure_sae_on_device(sae, vec.device)
+
     features = sae.encode(vec.unsqueeze(0)).squeeze(0)  # (d_sae,)
 
     active_mask = features > 0

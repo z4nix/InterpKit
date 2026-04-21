@@ -39,13 +39,22 @@ def run_attribute(
     For image inputs: returns ``{"grad", "target"}`` with the pixel-gradient tensor.
     For tensor inputs: returns ``{"labels", "scores", "target"}``.
     """
-    from interpkit.core.inputs import _looks_like_image_path
+    from interpkit.core.inputs import _is_message_list, _looks_like_image_path
 
     is_text = isinstance(input_data, str) and not _looks_like_image_path(input_data)
     is_image = isinstance(input_data, str) and _looks_like_image_path(input_data)
+    is_messages = _is_message_list(input_data)
 
     if is_text:
-        return _attribute_text(model, input_data, target=target, method=method, n_steps=n_steps, save=save, html=html)
+        return _attribute_text(
+            model, input_data, target=target, method=method,
+            n_steps=n_steps, save=save, html=html,
+        )
+    elif is_messages:
+        return _attribute_messages(
+            model, input_data, target=target, method=method,
+            n_steps=n_steps, save=save, html=html,
+        )
     elif is_image:
         return _attribute_image(model, input_data, target=target, save=save)
     else:
@@ -62,13 +71,73 @@ def _attribute_text(
     save: str | None = None,
     html: str | None = None,
 ) -> dict[str, Any]:
-    from interpkit.core.render import render_attribution_tokens
-
     if model._tokenizer is None:
         raise ValueError("No tokenizer available for text attribution.")
 
     encoded = model._tokenizer(text, return_tensors="pt")
+    return _attribute_from_encoded(
+        model, encoded,
+        target=target, method=method, n_steps=n_steps,
+        save=save, html=html,
+    )
+
+
+def _attribute_messages(
+    model: Model,
+    messages: list[dict[str, Any]],
+    *,
+    target: int | None,
+    method: str = "integrated_gradients",
+    n_steps: int = 50,
+    save: str | None = None,
+    html: str | None = None,
+) -> dict[str, Any]:
+    """Attribute over chat-template-formatted messages.
+
+    Routes through the tokenizer's chat template so models like
+    Llama-3-Instruct, SmolLM2-Instruct, or Qwen-Chat receive the
+    expected role/turn markers before gradient attribution runs.
+    """
+    from interpkit.core.inputs import _apply_chat_template
+
+    if model._tokenizer is None:
+        raise ValueError("No tokenizer available for chat-message attribution.")
+
+    encoded = _apply_chat_template(
+        messages,
+        tokenizer=model._tokenizer,
+        device="cpu",
+    )
+    return _attribute_from_encoded(
+        model, encoded,
+        target=target, method=method, n_steps=n_steps,
+        save=save, html=html,
+    )
+
+
+def _attribute_from_encoded(
+    model: Model,
+    encoded: dict[str, torch.Tensor],
+    *,
+    target: int | None,
+    method: str = "integrated_gradients",
+    n_steps: int = 50,
+    save: str | None = None,
+    html: str | None = None,
+) -> dict[str, Any]:
+    """Run gradient attribution over an already-tokenized input dict.
+
+    Shared backend for :func:`_attribute_text` and
+    :func:`_attribute_messages`.  Expects ``encoded`` to contain at least
+    ``input_ids``; ``attention_mask`` and other keys are forwarded to the
+    underlying model.
+    """
+    from interpkit.core.render import render_attribution_tokens
+
+    assert model._tokenizer is not None
+    encoded = dict(encoded)
     input_ids = encoded["input_ids"].to(model._device)
+    encoded["input_ids"] = input_ids
 
     config = getattr(model._model, "config", None)
     if getattr(config, "is_encoder_decoder", False) and "decoder_input_ids" not in encoded:

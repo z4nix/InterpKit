@@ -36,12 +36,22 @@ def run_scan(
         If provided, used as a prefix for exported figures
         (e.g. ``"scan"`` → ``scan_dla.png``, ``scan_lens.png``, etc.).
     """
+    from interpkit.core.inputs import _is_message_list
+
     arch = model.arch_info
     is_lm = arch.is_language_model and arch.unembedding_name is not None
     has_tokenizer = model._tokenizer is not None
-    is_text = isinstance(input_data, str)
+    is_str_input = isinstance(input_data, str)
+    is_msgs_input = _is_message_list(input_data)
+    is_text = is_str_input or is_msgs_input
 
-    results: dict[str, Any] = {"input": input_data if is_text else "<tensor>"}
+    results: dict[str, Any]
+    if is_str_input:
+        results = {"input": input_data}
+    elif is_msgs_input:
+        results = {"input": input_data, "input_type": "messages"}
+    else:
+        results = {"input": "<tensor>"}
     findings: list[dict[str, Any]] = []
 
     # Determine save paths
@@ -179,7 +189,7 @@ def run_scan(
                     })
 
                     top_pairs = best.get("top_pairs", [])
-                    if top_pairs and model._tokenizer and is_text:
+                    if top_pairs and model._tokenizer and is_str_input:
                         enc = model._tokenizer(input_data, return_tensors="pt")
                         toks = model._tokenizer.convert_ids_to_tokens(
                             enc["input_ids"][0].tolist()
@@ -240,8 +250,20 @@ def _render_scan(results: dict[str, Any]) -> None:
     findings = results.get("findings", [])
     findings.sort(key=lambda f: f.get("importance", 0), reverse=True)
 
-    input_str = results.get("input", "")
-    if isinstance(input_str, str) and len(input_str) > 60:
+    input_value = results.get("input", "")
+    if isinstance(input_value, str):
+        input_str = input_value
+    elif isinstance(input_value, list):
+        parts = []
+        for msg in input_value:
+            if isinstance(msg, dict):
+                role = msg.get("role", "?")
+                content = str(msg.get("content", ""))
+                parts.append(f"[{role}] {content}")
+        input_str = " | ".join(parts)
+    else:
+        input_str = str(input_value)
+    if len(input_str) > 60:
         input_str = input_str[:57] + "..."
 
     console.print()

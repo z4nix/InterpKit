@@ -8,12 +8,50 @@ import torch
 from rich.console import Console
 from rich.progress import Progress
 
+from interpkit.core.inputs import (
+    MAX_LEADING_SPACE_WARNINGS as _MAX_TOKEN_WARNINGS,
+)
+from interpkit.core.inputs import (
+    warn_if_leading_space_better,
+)
 from interpkit.ops.patch import _get_module
 
 if TYPE_CHECKING:
     from interpkit.core.model import Model
 
 console = Console()
+
+
+__all__ = [
+    "_MAX_TOKEN_WARNINGS",
+    "_warn_if_token_mismatch",
+    "run_steer",
+    "run_steer_vector",
+]
+
+
+def _warn_if_token_mismatch(
+    model: Model,
+    text: Any,
+    *,
+    role: str,
+    warned_count: list[int],
+) -> None:
+    """Backwards-compatible wrapper around :func:`warn_if_leading_space_better`.
+
+    Kept so existing tests and external callers that imported the
+    private helper from :mod:`interpkit.ops.steer` continue to work.
+    Routes through this module's :data:`console` so test fixtures that
+    monkeypatch ``steer.console.print`` keep observing the warning.
+    """
+    warn_if_leading_space_better(
+        getattr(model, "_tokenizer", None),
+        text,
+        op_label="steer",
+        role=role,
+        warned_count=warned_count,
+        console=console,
+    )
 
 
 def _activation_mean(model: Model, text: Any, *, at: str) -> torch.Tensor:
@@ -50,13 +88,21 @@ def run_steer_vector(
     all examples before computing the difference, producing a more robust
     direction (Contrastive Activation Addition).
     """
-    positives = positive if isinstance(positive, list) else [positive]
-    negatives = negative if isinstance(negative, list) else [negative]
+    from interpkit.core.inputs import normalize_input_group
+
+    positives = normalize_input_group(positive)
+    negatives = normalize_input_group(negative)
 
     if not positives:
         raise ValueError("At least one positive example is required.")
     if not negatives:
         raise ValueError("At least one negative example is required.")
+
+    warned: list[int] = [0]
+    for p in positives:
+        _warn_if_token_mismatch(model, p, role="positive", warned_count=warned)
+    for n in negatives:
+        _warn_if_token_mismatch(model, n, role="negative", warned_count=warned)
 
     total = len(positives) + len(negatives)
     use_progress = total > 2

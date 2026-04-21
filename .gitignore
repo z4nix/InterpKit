@@ -35,6 +35,11 @@ FAILURES.md
 # Jupyter
 .ipynb_checkpoints/
 
+# Notebook-generated artifacts (kept local; not committed)
+examples/*.png
+examples/*.html
+examples/*.svg
+
 # Docs
 site/
 

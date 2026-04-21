@@ -421,6 +421,7 @@ class Model:
         sae: str | Any,
         top_k: int = 20,
         attribute: bool = False,
+        sae_subfolder: str | None = None,
     ) -> dict[str, Any]:
         """Decompose activations at *at* through a Sparse Autoencoder.
 
@@ -428,16 +429,21 @@ class Model:
         ----------
         sae:
             Either a HuggingFace repo ID (``"jbloom/GPT2-Small-SAEs-Reformatted"``)
-            or a pre-loaded :class:`interpkit.ops.sae.SAE` object.
+            or a pre-loaded :class:`interpkit.ops.sae.SAE` object.  The
+            shorthand ``"<org>/<repo>/<subfolder>"`` is also accepted for
+            repos that store weights in per-layer subdirectories.
         attribute:
             When ``True``, compute each top feature's logit contribution
             through the decoder → unembedding path.
+        sae_subfolder:
+            Explicit subfolder within the SAE repo (alternative to the
+            shorthand).  Ignored when *sae* is already an :class:`SAE`.
         """
         from interpkit.ops.sae import SAE as SAEClass
         from interpkit.ops.sae import load_sae, run_features
 
         if isinstance(sae, str):
-            sae = load_sae(sae, device=self._device)
+            sae = load_sae(sae, device=self._device, subfolder=sae_subfolder)
         elif not isinstance(sae, SAEClass):
             raise TypeError(f"Expected SAE or HF repo ID string, got {type(sae).__name__}")
 
@@ -451,6 +457,7 @@ class Model:
         at: str,
         sae: str | Any,
         top_k: int = 20,
+        sae_subfolder: str | None = None,
     ) -> dict[str, Any]:
         """Compare SAE feature activations between positive and negative groups.
 
@@ -461,7 +468,7 @@ class Model:
         from interpkit.ops.sae import load_sae, run_contrastive_features
 
         if isinstance(sae, str):
-            sae = load_sae(sae, device=self._device)
+            sae = load_sae(sae, device=self._device, subfolder=sae_subfolder)
         elif not isinstance(sae, SAEClass):
             raise TypeError(f"Expected SAE or HF repo ID string, got {type(sae).__name__}")
 
@@ -509,6 +516,7 @@ class Model:
         html: str | None = None,
         sae: str | Any | None = None,
         sae_at: str | None = None,
+        sae_subfolder: str | None = None,
     ) -> dict[str, Any]:
         """Direct Logit Attribution: decompose the output logit by component.
 
@@ -523,10 +531,14 @@ class Model:
             or a pre-loaded :class:`interpkit.ops.sae.SAE` object.  When
             provided with *sae_at*, the specified component's contribution
             is further decomposed into per-feature logit attributions.
+            The ``"<org>/<repo>/<subfolder>"`` shorthand is also accepted.
         sae_at:
             Module path of the component to decompose through the SAE
             (e.g. ``"transformer.h.11.attn"``).  Required when *sae* is
             provided.
+        sae_subfolder:
+            Explicit subfolder within the SAE repo (alternative to the
+            shorthand).  Ignored when *sae* is already an :class:`SAE`.
 
         Returns a dict with ``target_token``, ``target_id``,
         ``contributions`` (list sorted by magnitude),
@@ -541,7 +553,7 @@ class Model:
             from interpkit.ops.sae import load_sae
 
             if isinstance(sae, str):
-                loaded_sae = load_sae(sae, device=self._device)
+                loaded_sae = load_sae(sae, device=self._device, subfolder=sae_subfolder)
             elif isinstance(sae, SAEClass):
                 loaded_sae = sae
             else:
@@ -731,6 +743,139 @@ class Model:
         return run_find_circuit(
             self, clean, corrupted, threshold=threshold, method=method, metric=metric,
         )
+
+    def chat(
+        self,
+        message: str | list[dict[str, str]],
+        *,
+        max_new_tokens: int = 128,
+        system: str | None = None,
+        do_sample: bool = False,
+        temperature: float = 1.0,
+        top_p: float = 1.0,
+    ) -> dict[str, Any]:
+        """Generate a chat response from the model.
+
+        Builds a chat-templated prompt, runs ``model.generate``, and
+        returns both the templated prompt (so it can be fed back into
+        any other interpkit op like :meth:`dla` or :meth:`scan`) and
+        the decoded response.
+
+        Parameters
+        ----------
+        message:
+            Either a plain user-message string (auto-wrapped as
+            ``[{"role": "user", "content": message}]``), or a full
+            list of message dicts.
+        max_new_tokens:
+            Maximum new tokens to generate (default 128).
+        system:
+            Optional system prompt.  Only valid when *message* is a
+            string; for full conversations include the system role in
+            the message list.
+        do_sample, temperature, top_p:
+            Standard HuggingFace ``generate`` sampling controls.  Default
+            is greedy (``do_sample=False``).
+
+        Returns
+        -------
+        dict
+            ``{"prompt": str, "response": str, "messages": list,
+            "input_ids": Tensor, "output_ids": Tensor}``.
+
+        Raises
+        ------
+        ValueError
+            If *system* is passed alongside a message list, or the
+            message format is invalid.
+        RuntimeError
+            If the tokenizer is missing or has no chat template, or
+            the underlying model lacks a ``generate`` method.
+        """
+        from interpkit.core.inputs import (
+            NO_CHAT_TEMPLATE_MSG,
+            _is_message_list,
+            prepare_input,
+        )
+
+        if self._tokenizer is None:
+            raise RuntimeError(
+                "Model has no tokenizer — cannot run chat(). "
+                "Pass tokenizer=... when loading the model."
+            )
+
+        template = getattr(self._tokenizer, "chat_template", None)
+        if template is None and not getattr(self._tokenizer, "default_chat_template", None):
+            raise RuntimeError(NO_CHAT_TEMPLATE_MSG)
+
+        if not hasattr(self._model, "generate"):
+            raise RuntimeError(
+                f"Underlying model {type(self._model).__name__} has no "
+                "generate() method — cannot run chat()."
+            )
+
+        if isinstance(message, str):
+            messages: list[dict[str, str]] = []
+            if system is not None:
+                messages.append({"role": "system", "content": system})
+            messages.append({"role": "user", "content": message})
+        elif _is_message_list(message):
+            if system is not None:
+                raise ValueError(
+                    "Pass `system` only with a string `message`; for a full "
+                    "conversation include the system role in the list."
+                )
+            messages = list(message)
+        else:
+            raise ValueError(
+                "chat(message=...) must be a string or a list of "
+                "{'role', 'content'} dicts."
+            )
+
+        encoded = prepare_input(messages, tokenizer=self._tokenizer, device=self._device)
+        if not isinstance(encoded, dict):
+            raise RuntimeError("Chat template did not produce a dict input.")
+        input_ids = encoded["input_ids"]
+        attention_mask = encoded.get("attention_mask")
+
+        prompt_text = self._tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=False,
+        )
+
+        pad_id = (
+            getattr(self._tokenizer, "pad_token_id", None)
+            or getattr(self._tokenizer, "eos_token_id", None)
+        )
+
+        gen_kwargs: dict[str, Any] = {
+            "max_new_tokens": int(max_new_tokens),
+            "do_sample": bool(do_sample),
+        }
+        if do_sample:
+            gen_kwargs["temperature"] = float(temperature)
+            gen_kwargs["top_p"] = float(top_p)
+        if pad_id is not None:
+            gen_kwargs["pad_token_id"] = pad_id
+        if attention_mask is not None:
+            gen_kwargs["attention_mask"] = attention_mask
+
+        generate_fn: Any = self._model.generate
+        with torch.no_grad():
+            output_ids = generate_fn(input_ids=input_ids, **gen_kwargs)
+
+        input_len = input_ids.shape[-1]
+        new_tokens = output_ids[0, input_len:]
+        response = self._tokenizer.decode(new_tokens, skip_special_tokens=True)
+
+        return {
+            "prompt": prompt_text,
+            "response": response,
+            "messages": messages,
+            "input_ids": input_ids,
+            "output_ids": output_ids,
+        }
 
     def report(
         self,

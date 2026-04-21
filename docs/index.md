@@ -8,7 +8,8 @@ InterpKit provides a single, consistent interface for mechanistic interpretabili
 
 - **Universal model support** — works with any HuggingFace model via automatic architecture discovery
 - **Complete operation set** — causal tracing, activation patching, logit lens, DLA, attribution, SAE features, circuit finding, and more
-- **Rich CLI** — run any operation from the command line with `interpkit`
+- **Chat-model aware** — pass message lists (`[{"role": "user", "content": "..."}]`) to any op; the tokenizer's chat template is applied automatically
+- **Rich CLI** — run any operation from the command line with `interpkit` (or `python -m interpkit`)
 - **Interactive output** — HTML reports, matplotlib plots, and Rich console tables
 
 ## Install

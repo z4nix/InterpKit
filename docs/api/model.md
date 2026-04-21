@@ -37,6 +37,7 @@ Create one via `interpkit.load()`.
         - trace_batch
         - dla_batch
         - report
+        - chat
         - cache
         - clear_cache
         - cached

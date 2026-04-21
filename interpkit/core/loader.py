@@ -223,8 +223,28 @@ def _load_from_hf(
     if tokenizer is None:
         try:
             tokenizer = AutoTokenizer.from_pretrained(name)
-        except Exception:
-            pass
+        except (OSError, KeyError, ValueError):
+            tokenizer = None
+        except ImportError as exc:
+            from rich.console import Console
+
+            Console().print(
+                "  [yellow]load:[/yellow] tokenizer for "
+                f"[bold]{name}[/bold] requires an optional dependency "
+                f"that is not installed ({exc}). Some text-input ops will "
+                "be unavailable."
+            )
+            tokenizer = None
+        except Exception as exc:
+            from rich.console import Console
+
+            Console().print(
+                "  [yellow]load:[/yellow] AutoTokenizer raised an unexpected "
+                f"error for [bold]{name}[/bold] "
+                f"({type(exc).__name__}: {exc}). Continuing without a "
+                "tokenizer; pass one explicitly via tokenizer=... if needed."
+            )
+            tokenizer = None
 
     if tokenizer is not None and tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -234,8 +254,18 @@ def _load_from_hf(
             from transformers import AutoImageProcessor
 
             image_processor = AutoImageProcessor.from_pretrained(name)
-        except (OSError, KeyError, ImportError):
+        except (OSError, KeyError):
             pass
+        except ImportError as exc:
+            if "torchvision" in str(exc):
+                from rich.console import Console
+
+                Console().print(
+                    "  [yellow]load:[/yellow] HF image processor for "
+                    f"[bold]{name}[/bold] requires torchvision but it is not "
+                    "installed. Install with 'pip install interpkit[vision]' "
+                    "if you plan to feed raw images to this model."
+                )
 
     return model, tokenizer, image_processor
 
@@ -260,7 +290,7 @@ def _make_dummy_input(
                     [[decoder_start]], dtype=torch.long, device=device,
                 )
             return result
-        except Exception:
+        except (TypeError, ValueError, RuntimeError):
             pass
 
     if image_processor is not None:
@@ -270,7 +300,7 @@ def _make_dummy_input(
             dummy_img = Image.new("RGB", (224, 224), color=(128, 128, 128))
             processed = image_processor(images=dummy_img, return_tensors="pt")
             return {k: v.to(device) for k, v in processed.items()}
-        except Exception:
+        except (ImportError, TypeError, ValueError, RuntimeError):
             pass
 
     config = getattr(model, "config", None)

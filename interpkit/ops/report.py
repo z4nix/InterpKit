@@ -40,6 +40,7 @@ def run_report(
     )
 
     sections: dict[str, Any] = {}
+    section_errors: dict[str, str] = {}
 
     # 1. Prediction
     console.print("  [dim]Running prediction...[/dim]")
@@ -63,8 +64,11 @@ def run_report(
         for tid, p in zip(top5_ids.tolist(), top5_vals.tolist()):
             tok_str = model._tokenizer.decode([tid]) if model._tokenizer else str(tid)
             predictions.append({"token": tok_str, "token_id": tid, "probability": round(p, 4)})
-    except Exception:
-        pass
+    except Exception as exc:
+        section_errors["prediction"] = f"{type(exc).__name__}: {exc}"
+        console.print(
+            f"    [dim yellow]\u2022 prediction skipped ({type(exc).__name__}: {exc})[/dim yellow]"
+        )
     sections["prediction"] = predictions
 
     # 2. DLA
@@ -72,36 +76,60 @@ def run_report(
     try:
         dla_result = model.dla(input_data)
         sections["dla"] = dla_result
-    except Exception:
+    except Exception as exc:
         sections["dla"] = None
+        section_errors["dla"] = f"{type(exc).__name__}: {exc}"
+        console.print(
+            f"    [dim yellow]\u2022 DLA skipped ({type(exc).__name__}: {exc})[/dim yellow]"
+        )
 
     # 3. Logit Lens
     console.print("  [dim]Running logit lens...[/dim]")
     try:
         lens_result = model.lens(input_data)
         sections["lens"] = lens_result
-    except Exception:
+    except Exception as exc:
         sections["lens"] = None
+        section_errors["lens"] = f"{type(exc).__name__}: {exc}"
+        console.print(
+            f"    [dim yellow]\u2022 lens skipped ({type(exc).__name__}: {exc})[/dim yellow]"
+        )
 
     # 4. Attention
     console.print("  [dim]Running attention analysis...[/dim]")
     try:
         attn_result = model.attention(input_data)
         sections["attention"] = attn_result
-    except Exception:
+    except Exception as exc:
         sections["attention"] = None
+        section_errors["attention"] = f"{type(exc).__name__}: {exc}"
+        console.print(
+            f"    [dim yellow]\u2022 attention skipped ({type(exc).__name__}: {exc})[/dim yellow]"
+        )
 
     # 5. Attribution
     console.print("  [dim]Running attribution...[/dim]")
     try:
         attr_result = model.attribute(input_data, method="integrated_gradients")
         sections["attribution"] = attr_result
-    except Exception:
+    except Exception as exc:
         sections["attribution"] = None
+        section_errors["attribution"] = f"{type(exc).__name__}: {exc}"
+        console.print(
+            f"    [dim yellow]\u2022 attribution skipped ({type(exc).__name__}: {exc})[/dim yellow]"
+        )
+
+    sections["errors"] = section_errors
 
     # Build combined HTML
     model_name = type(model._model).__name__
-    input_preview = str(input_data)[:200]
+    if isinstance(input_data, list):
+        input_preview = " | ".join(
+            f"[{m.get('role', '?')}] {m.get('content', '')}"
+            for m in input_data if isinstance(m, dict)
+        )[:200]
+    else:
+        input_preview = str(input_data)[:200]
 
     nav_items = [
         ("prediction", "Prediction"),
@@ -147,10 +175,27 @@ def run_report(
 
     # Lens section
     if sections["lens"]:
+        from interpkit.core.inputs import _is_message_list
+
         input_tokens = None
-        if model._tokenizer and isinstance(input_data, str):
-            enc = model._tokenizer(input_data, return_tensors="pt")
-            input_tokens = model._tokenizer.convert_ids_to_tokens(enc["input_ids"][0].tolist())
+        if model._tokenizer is not None:
+            try:
+                if isinstance(input_data, str):
+                    enc = model._tokenizer(input_data, return_tensors="pt")
+                    input_tokens = model._tokenizer.convert_ids_to_tokens(
+                        enc["input_ids"][0].tolist()
+                    )
+                elif _is_message_list(input_data):
+                    from interpkit.core.inputs import _apply_chat_template
+
+                    enc = _apply_chat_template(
+                        input_data, tokenizer=model._tokenizer, device="cpu",
+                    )
+                    input_tokens = model._tokenizer.convert_ids_to_tokens(
+                        enc["input_ids"][0].tolist()
+                    )
+            except (ValueError, TypeError, RuntimeError):
+                input_tokens = None
 
         flat_preds = []
         for pred in sections["lens"]:

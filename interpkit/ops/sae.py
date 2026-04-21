@@ -44,7 +44,35 @@ class SAE:
         return features, x_hat
 
 
-def load_sae(source: str, *, device: str | torch.device = "cpu") -> SAE:
+def _ensure_sae_on_device(sae: SAE, target_device: torch.device) -> SAE:
+    """Return *sae* with its tensors on *target_device*.
+
+    If the SAE's weights already live on the target device the original
+    object is returned unchanged.  Otherwise a new :class:`SAE` instance
+    is constructed with all four weight tensors moved to the device, so
+    that callers can safely run ``sae.encode`` / ``sae.forward`` against
+    activations produced on a different device (e.g. SAE loaded on CPU
+    but model running on MPS).
+    """
+    if sae.W_enc.device == target_device:
+        return sae
+    return SAE(
+        W_enc=sae.W_enc.to(target_device),
+        W_dec=sae.W_dec.to(target_device),
+        b_enc=sae.b_enc.to(target_device),
+        b_dec=sae.b_dec.to(target_device),
+        d_in=sae.d_in,
+        d_sae=sae.d_sae,
+        metadata=sae.metadata,
+    )
+
+
+def load_sae(
+    source: str,
+    *,
+    device: str | torch.device = "cpu",
+    subfolder: str | None = None,
+) -> SAE:
     """Load a Sparse Autoencoder from a HuggingFace repo ID or a local file path.
 
     *source* is interpreted as a **local path** when it points to an existing
@@ -53,12 +81,83 @@ def load_sae(source: str, *, device: str | torch.device = "cpu") -> SAE:
 
     For HuggingFace repos the repo should contain
     ``sae_weights.safetensors`` (or ``.pt``) and optionally ``cfg.json``.
+
+    Parameters
+    ----------
+    source:
+        Either a local path or a HuggingFace repo ID.  A shorthand is
+        supported: ``"<org>/<repo>/<subfolder>"`` is parsed as repo
+        ``"<org>/<repo>"`` with subfolder ``"<subfolder>"`` (used by
+        repos like ``jbloom/GPT2-Small-SAEs-Reformatted`` that store
+        per-layer weights in subdirectories).
+    device:
+        Device the resulting SAE tensors are placed on.
+    subfolder:
+        Explicit subfolder within a HuggingFace repo.  Mutually
+        exclusive with the shorthand syntax above; passing both raises
+        :class:`ValueError`.
+
+    Raises
+    ------
+    ValueError
+        If both ``subfolder=`` and the shorthand syntax are used.
+    FileNotFoundError
+        If the weights cannot be found in the repo / subfolder.
     """
     p = Path(source)
     if p.is_file() or p.suffix in (".safetensors", ".pt"):
         return load_sae_from_path(p, device=device)
 
-    return _load_sae_from_hf(source, device=device)
+    repo_id, parsed_subfolder = _split_repo_and_subfolder(source)
+    if parsed_subfolder is not None:
+        if subfolder is not None and subfolder != parsed_subfolder:
+            raise ValueError(
+                f"Conflicting subfolder: source shorthand specifies "
+                f"{parsed_subfolder!r} but explicit subfolder= is "
+                f"{subfolder!r}. Pass only one."
+            )
+        subfolder = parsed_subfolder
+
+    return _load_sae_from_hf(repo_id, device=device, subfolder=subfolder)
+
+
+def _split_repo_and_subfolder(source: str) -> tuple[str, str | None]:
+    """Parse ``"<org>/<repo>/<subfolder>"`` shorthand into ``(repo_id, subfolder)``.
+
+    The shorthand is accepted only when *source*:
+
+    - Has 3+ slash-separated segments;
+    - Is not an existing local path (file or directory);
+    - Does not start with ``"./"``, ``"../"``, ``"~"``, or ``"/"``;
+    - The first two segments look like a HuggingFace ``org/name`` (no
+      whitespace, no path separators within either segment).
+
+    Otherwise the original *source* is returned with ``subfolder=None``.
+    """
+    if not source or "/" not in source:
+        return source, None
+
+    if source.startswith(("/", "./", "../", "~")):
+        return source, None
+
+    if Path(source).exists():
+        return source, None
+
+    parts = source.split("/")
+    if len(parts) < 3:
+        return source, None
+
+    org, repo, *rest = parts
+    if not org or not repo:
+        return source, None
+    if any(ch.isspace() for ch in org) or any(ch.isspace() for ch in repo):
+        return source, None
+
+    subfolder = "/".join(rest)
+    if not subfolder:
+        return source, None
+
+    return f"{org}/{repo}", subfolder
 
 
 def load_sae_from_path(
@@ -119,17 +218,23 @@ def _load_local_weights(path: Path) -> dict[str, torch.Tensor]:
         )
 
 
-def _load_sae_from_hf(hf_id: str, *, device: str | torch.device = "cpu") -> SAE:
+def _load_sae_from_hf(
+    hf_id: str,
+    *,
+    device: str | torch.device = "cpu",
+    subfolder: str | None = None,
+) -> SAE:
     """Download and load a Sparse Autoencoder from HuggingFace."""
     device = torch.device(device)
 
-    weights = _download_weights(hf_id)
+    weights = _download_weights(hf_id, subfolder=subfolder)
 
     required_keys = {"W_enc", "W_dec", "b_enc", "b_dec"}
     missing = required_keys - set(weights.keys())
     if missing:
+        location = f"{hf_id!r}" + (f" (subfolder={subfolder!r})" if subfolder else "")
         raise KeyError(
-            f"SAE weights from {hf_id!r} are missing keys: {missing}. "
+            f"SAE weights from {location} are missing keys: {missing}. "
             f"Found keys: {list(weights.keys())}. "
             f"interpkit expects the SAELens format (W_enc, W_dec, b_enc, b_dec)."
         )
@@ -139,7 +244,7 @@ def _load_sae_from_hf(hf_id: str, *, device: str | torch.device = "cpu") -> SAE:
     b_enc = weights["b_enc"].to(device).float()
     b_dec = weights["b_dec"].to(device).float()
 
-    metadata = _download_config(hf_id)
+    metadata = _download_config(hf_id, subfolder=subfolder)
 
     return SAE(
         W_enc=W_enc, W_dec=W_dec, b_enc=b_enc, b_dec=b_dec,
@@ -207,6 +312,8 @@ def run_features(
             f"Make sure the SAE was trained on the same layer."
         )
 
+    sae = _ensure_sae_on_device(sae, flat.device)
+
     features, x_hat = sae.forward(flat)
 
     recon_error = (flat - x_hat).norm(dim=-1).mean().item()
@@ -266,19 +373,54 @@ def run_contrastive_features(
     if not negative_inputs:
         raise ValueError("At least one negative input is required for contrastive features.")
 
+    from interpkit.core.inputs import (
+        normalize_input_group,
+        warn_if_leading_space_better,
+    )
+
+    # Treat a bare chat-message list as a single example rather than as a
+    # batch of message dicts (which would crash in run_activations with
+    # ``ValueError: You must specify exactly one of input_ids or inputs_embeds``).
+    positive_inputs = normalize_input_group(positive_inputs)
+    negative_inputs = normalize_input_group(negative_inputs)
+
+    warned: list[int] = [0]
+    for p in positive_inputs:
+        warn_if_leading_space_better(
+            getattr(model, "_tokenizer", None),
+            p,
+            op_label="features",
+            role="positive",
+            warned_count=warned,
+            console=console,
+        )
+    for n in negative_inputs:
+        warn_if_leading_space_better(
+            getattr(model, "_tokenizer", None),
+            n,
+            op_label="features",
+            role="negative",
+            warned_count=warned,
+            console=console,
+        )
+
+    sae_local = sae
+
     def _group_features(inputs: list[Any], progress: Progress, task) -> torch.Tensor:
+        nonlocal sae_local
         feat_sum: torch.Tensor | None = None
         for inp in inputs:
             act = run_activations(model, inp, at=at, print_stats=False)
             if not isinstance(act, torch.Tensor):
                 raise TypeError(f"Expected tensor, got {type(act).__name__}")
             flat = act.view(-1, act.shape[-1]).float() if act.dim() > 1 else act.unsqueeze(0).float()
-            if flat.shape[-1] != sae.d_in:
+            if flat.shape[-1] != sae_local.d_in:
                 raise ValueError(
-                    f"Activation dim ({flat.shape[-1]}) != SAE input dim ({sae.d_in}). "
+                    f"Activation dim ({flat.shape[-1]}) != SAE input dim ({sae_local.d_in}). "
                     f"Make sure the SAE was trained on the same layer."
                 )
-            feats, _ = sae.forward(flat)
+            sae_local = _ensure_sae_on_device(sae_local, flat.device)
+            feats, _ = sae_local.forward(flat)
             mean_feats = feats.mean(dim=0)
             feat_sum = mean_feats if feat_sum is None else feat_sum + mean_feats
             progress.advance(task)
@@ -389,14 +531,22 @@ def _compute_feature_attribution(
     return attributions
 
 
-def _download_weights(hf_id: str) -> dict[str, torch.Tensor]:
-    """Download SAE weights from HuggingFace."""
+def _download_weights(
+    hf_id: str,
+    *,
+    subfolder: str | None = None,
+) -> dict[str, torch.Tensor]:
+    """Download SAE weights from HuggingFace, optionally from a subfolder."""
     from huggingface_hub import hf_hub_download
     from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
 
+    extra: dict[str, Any] = {}
+    if subfolder is not None:
+        extra["subfolder"] = subfolder
+
     # Try safetensors first
     try:
-        path = hf_hub_download(hf_id, filename="sae_weights.safetensors")
+        path = hf_hub_download(hf_id, filename="sae_weights.safetensors", **extra)
         from safetensors.torch import load_file
 
         return load_file(path)
@@ -410,7 +560,7 @@ def _download_weights(hf_id: str) -> dict[str, torch.Tensor]:
 
     # Fall back to .pt
     try:
-        path = hf_hub_download(hf_id, filename="sae_weights.pt")
+        path = hf_hub_download(hf_id, filename="sae_weights.pt", **extra)
         weights: dict[str, torch.Tensor] = torch.load(path, map_location="cpu", weights_only=True)
         return weights
     except (EntryNotFoundError, FileNotFoundError):
@@ -421,19 +571,49 @@ def _download_weights(hf_id: str) -> dict[str, torch.Tensor]:
             f"Check the repo ID and your network/auth settings."
         ) from None
 
+    location = f"{hf_id!r}" + (f" (subfolder={subfolder!r})" if subfolder else "")
+    hint = (
+        " If the repo organises weights into per-layer subdirectories "
+        "(e.g. 'blocks.8.hook_resid_pre/sae_weights.safetensors'), pass "
+        "the subfolder either via subfolder=... or as part of the source "
+        "string: 'org/repo/subfolder'."
+    )
     raise FileNotFoundError(
-        f"Could not find sae_weights.safetensors or sae_weights.pt in {hf_id!r}. "
-        f"The HF repo should contain one of these files."
+        f"Could not find sae_weights.safetensors or sae_weights.pt in {location}. "
+        f"The HF repo should contain one of these files." + (hint if subfolder is None else "")
     )
 
 
-def _download_config(hf_id: str) -> dict[str, Any]:
-    """Download SAE config from HuggingFace (optional)."""
+def _download_config(
+    hf_id: str,
+    *,
+    subfolder: str | None = None,
+) -> dict[str, Any]:
+    """Download SAE config from HuggingFace (optional).
+
+    Missing ``cfg.json`` files are common for community SAE uploads, so a
+    not-found result is silently swallowed.  Other failures (auth /
+    network / corrupt JSON) print a one-line warning and still return
+    an empty dict so weight loading can proceed.
+    """
     from huggingface_hub import hf_hub_download
+    from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
+
+    extra: dict[str, Any] = {}
+    if subfolder is not None:
+        extra["subfolder"] = subfolder
 
     try:
-        path = hf_hub_download(hf_id, filename="cfg.json")
+        path = hf_hub_download(hf_id, filename="cfg.json", **extra)
         cfg: dict[str, Any] = json.loads(Path(path).read_text())
         return cfg
-    except Exception:
+    except (EntryNotFoundError, FileNotFoundError, RepositoryNotFoundError):
+        return {}
+    except (json.JSONDecodeError, OSError) as exc:
+        console.print(
+            f"  [yellow]sae:[/yellow] could not parse cfg.json for "
+            f"{hf_id!r} ({type(exc).__name__}: {exc}). "
+            "Continuing with empty config — d_in / d_sae will be inferred "
+            "from weight shapes."
+        )
         return {}
