@@ -10,7 +10,7 @@ import torch
 from rich.console import Console
 
 from interpkit.core.discovery import ModelArchInfo, _get_mod_by_path, _get_weight, extract_proj_weight
-from interpkit.core.theme import ACCENT
+from interpkit.core.theme import ACCENT, MUTED
 from interpkit.ops.patch import _get_module
 
 if TYPE_CHECKING:
@@ -476,7 +476,7 @@ def _render_ov_qk(result: dict[str, Any], matrix_type: str) -> None:
     table.add_column("Head", style=ACCENT, justify="right")
     table.add_column("Frobenius Norm", justify="right")
     table.add_column("Approx Rank", justify="right")
-    table.add_column("Top Singular Values", style="dim")
+    table.add_column("Top Singular Values", style=MUTED)
 
     for h in heads:
         svs = ", ".join(f"{v:.2f}" for v in h["top_singular_values"][:3])

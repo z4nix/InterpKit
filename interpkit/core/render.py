@@ -12,7 +12,7 @@ from rich.table import Table
 from rich.text import Text
 from rich_gradient import Rule as GradientRule
 
-from interpkit.core.theme import ACCENT, BRAND_COLORS, ROLE_PILL
+from interpkit.core.theme import ACCENT, BRAND_COLORS, MUTED, ROLE_PILL
 
 if TYPE_CHECKING:
     from interpkit.core.discovery import ModelArchInfo
@@ -30,7 +30,7 @@ def _section(title: str, subtitle: str = "") -> None:
     """Print a styled section header using a gradient Rule."""
     label = title
     if subtitle:
-        label += f"  [dim]{subtitle}[/dim]"
+        label += f"  [{MUTED}]{subtitle}[/{MUTED}]"
     console.print()
     console.print(GradientRule(label, colors=BRAND_COLORS, align="left"))
 
@@ -116,13 +116,13 @@ def render_inspect(arch_info: ModelArchInfo, nn_model: torch.nn.Module | None = 
 
     _section("Model Architecture")
     details = " \u00b7 ".join(header_parts)
-    console.print(f"  [dim]{details}[/dim]")
+    console.print(f"  [{MUTED}]{details}[/{MUTED}]")
 
     table = Table(show_header=True, header_style="bold", box=_TABLE_BOX, pad_edge=False)
     table.add_column("Module", style=ACCENT, no_wrap=True)
-    table.add_column("Type", style="dim")
+    table.add_column("Type", style=MUTED)
     table.add_column("Params", justify="right")
-    table.add_column("Output Shape", style="dim")
+    table.add_column("Output Shape", style=MUTED)
     table.add_column("Role")
 
     for m in arch_info.modules:
@@ -243,7 +243,7 @@ def render_lens(
     table.add_column("Top-1 Token", style="bold")
     table.add_column("Prob", justify="right")
     table.add_column("", no_wrap=True, min_width=12)
-    table.add_column("Top-5 Tokens", style="dim")
+    table.add_column("Top-5 Tokens", style=MUTED)
 
     for pred in predictions:
         prob = pred["top1_prob"]
@@ -300,7 +300,7 @@ def render_attribution_tokens(
     table = Table(show_header=False, box=None, pad_edge=False, padding=(0, 1))
     table.add_column("Token", justify="right", style="bold", min_width=15)
     table.add_column("Bar", no_wrap=True, min_width=_BAR_WIDTH + 2)
-    table.add_column("Score", justify="right", style="dim")
+    table.add_column("Score", justify="right", style=MUTED)
 
     for tok, score in ranked[:10]:
         bar = _bar(score, max_score, positive=score >= 0)
@@ -362,7 +362,7 @@ def render_activations(cache: dict[str, torch.Tensor]) -> None:
 
     table = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
     table.add_column("Module", style=ACCENT, no_wrap=True)
-    table.add_column("Shape", style="dim")
+    table.add_column("Shape", style=MUTED)
     table.add_column("Norm", justify="right")
     table.add_column("Mean", justify="right")
     table.add_column("Std", justify="right")
@@ -422,7 +422,7 @@ def render_attention(
     table.add_column("Layer", style=ACCENT)
     table.add_column("Head", style=ACCENT, justify="right")
     table.add_column("Top Attention Pairs")
-    table.add_column("Entropy", justify="right", style="dim")
+    table.add_column("Entropy", justify="right", style=MUTED)
 
     for entry in attention_data:
         top_attn_parts = []
@@ -674,7 +674,7 @@ def render_decompose(result: dict[str, Any]) -> None:
 
     table = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
     table.add_column("Component", style=ACCENT)
-    table.add_column("Type", style="dim")
+    table.add_column("Type", style=MUTED)
     table.add_column("Norm", justify="right")
     table.add_column("", min_width=_BAR_WIDTH + 2, no_wrap=True)
 
@@ -708,7 +708,7 @@ def render_dla(result: dict[str, Any], *, top_k: int = 10) -> None:
 
     table = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
     table.add_column("Component", style=ACCENT)
-    table.add_column("Type", style="dim")
+    table.add_column("Type", style=MUTED)
     table.add_column("Contribution", justify="right")
     table.add_column("", min_width=_BAR_WIDTH + 2, no_wrap=True)
 
