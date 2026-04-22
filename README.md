@@ -18,20 +18,48 @@ InterpKit provides a single, consistent interface for mech interp operations acr
 
 ## Install
 
+We strongly recommend installing into an isolated environment so InterpKit's pinned dependencies (e.g. `typer`, `rich`, `transformers`) don't clash with whatever you already have installed globally
+
+Using [uv](https://docs.astral.sh/uv/) (recommended — fast, handles Python versions for you):
+
 ```bash
+uv venv --python 3.11
+source .venv/bin/activate
+uv pip install interpkit
+
+# For linear probe support:
+uv pip install "interpkit[probe]"
+```
+
+Or with plain `venv` + `pip`:
+
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
 pip install interpkit
 
 # For linear probe support:
-pip install interpkit[probe]
+pip install "interpkit[probe]"
 ```
 
-Or install from source for development:
+Or with `conda`:
+
+```bash
+conda create -n interpkit python=3.11 -y
+conda activate interpkit
+pip install interpkit
+```
+
+Installing from source for development:
 
 ```bash
 git clone https://github.com/z4nix/interpkit.git
 cd interpkit
-pip install -e ".[dev]"
+uv venv --python 3.11 && source .venv/bin/activate
+uv pip install -e ".[dev]"
 ```
+
+> Python 3.10+ is required. If you must install into your system Python, use `pip install --user interpkit` and be aware that conflicting versions of `typer`, `rich`, or `transformers` already on your machine can break the CLI.
 
 ---
 
