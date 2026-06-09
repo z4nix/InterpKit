@@ -173,6 +173,13 @@ def discover(
                     model(*dummy_input)
                 else:
                     model(dummy_input)
+        except Exception:  # noqa: BLE001
+            # Output shapes are best-effort (used only by inspect / scan).
+            # A forward failure here — e.g. a seq2seq model fed a dummy input
+            # without proper decoder_input_ids (MarianMT, T5, BART) — must NOT
+            # abort discovery; layer detection and role assignment below do
+            # not depend on captured shapes.
+            pass
         finally:
             for h in hooks:
                 h.remove()

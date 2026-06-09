@@ -37,6 +37,10 @@ dependencies = [
     "Pillow>=10.0",
     "matplotlib>=3.8",
     "huggingface-hub>=0.20",
+    # Required for models whose only tokenizer is SentencePiece-based and has
+    # no fast variant (Marian / opus-mt, XLM, some T5/ALBERT checkpoints).
+    # Without it those models load tokenizer-less and string-input ops fail.
+    "sentencepiece>=0.1.99",
 ]
 
 [project.optional-dependencies]
