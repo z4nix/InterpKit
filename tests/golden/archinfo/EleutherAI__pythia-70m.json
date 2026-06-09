@@ -7,31 +7,24 @@
     "attention",
     "attention"
   ],
-  "blocks": [
-    "gpt_neox.layers.0",
-    "gpt_neox.layers.1",
-    "gpt_neox.layers.2",
-    "gpt_neox.layers.3",
-    "gpt_neox.layers.4",
-    "gpt_neox.layers.5"
-  ],
   "capabilities": {
     "has_attention": true,
     "has_residual_stream": true,
     "has_unembedding": true,
     "is_generative": true
   },
-  "decoder_blocks": [],
-  "embed_path": "gpt_neox.embed_in",
   "family": "causal_lm",
   "has_cls_token": false,
   "has_disentangled_attention": false,
-  "head_path": "embed_out",
+  "has_embed": true,
+  "has_head": true,
+  "has_mlm_head": false,
+  "has_pre_head": true,
+  "has_project_out": false,
   "is_encoder_decoder": false,
   "is_shared_layers": false,
-  "mlm_head_path": null,
-  "pre_head_path": "gpt_neox.final_layer_norm",
-  "project_out_path": null,
+  "n_blocks": 6,
+  "n_decoder_blocks": 0,
   "residual_topology": "pre_ln",
   "spatial": false
 }

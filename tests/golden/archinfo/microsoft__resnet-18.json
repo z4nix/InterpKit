@@ -9,33 +9,24 @@
     "conv",
     "conv"
   ],
-  "blocks": [
-    "resnet.encoder.stages.0.layers.0",
-    "resnet.encoder.stages.0.layers.1",
-    "resnet.encoder.stages.1.layers.0",
-    "resnet.encoder.stages.1.layers.1",
-    "resnet.encoder.stages.2.layers.0",
-    "resnet.encoder.stages.2.layers.1",
-    "resnet.encoder.stages.3.layers.0",
-    "resnet.encoder.stages.3.layers.1"
-  ],
   "capabilities": {
     "has_attention": false,
     "has_residual_stream": true,
     "has_unembedding": true,
     "is_generative": false
   },
-  "decoder_blocks": [],
-  "embed_path": "resnet.embedder.embedder.convolution",
   "family": "cnn_residual",
   "has_cls_token": false,
   "has_disentangled_attention": false,
-  "head_path": "classifier",
+  "has_embed": true,
+  "has_head": true,
+  "has_mlm_head": false,
+  "has_pre_head": true,
+  "has_project_out": false,
   "is_encoder_decoder": false,
   "is_shared_layers": false,
-  "mlm_head_path": null,
-  "pre_head_path": "resnet.pooler",
-  "project_out_path": null,
+  "n_blocks": 8,
+  "n_decoder_blocks": 0,
   "residual_topology": "pre_ln",
   "spatial": true
 }

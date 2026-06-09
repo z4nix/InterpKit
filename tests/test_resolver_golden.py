@@ -41,10 +41,19 @@ def _safe_id(model_id: str) -> str:
 
 
 def _snapshot(arch) -> dict:
-    """Stable, JSON-serialisable view of the resolved architecture."""
-    def _paths(blocks):
-        return [b.path for b in (blocks or [])]
+    """Version-stable, JSON-serialisable view of the resolved architecture.
 
+    Records *structural facts* — family, counts, capabilities, per-block
+    mechanism, flags, and whether each role resolved — rather than exact
+    module-path strings. transformers renames its internal module paths
+    between versions (e.g. ViT ``vit.encoder.layer.N`` → ``vit.layers.N``),
+    so pinning exact paths makes the golden a moving target across the
+    supported transformers range (4.36–5.x) and produces false-positive
+    diffs that aren't interpkit regressions. The facts below are what the
+    resolver is actually responsible for and are stable across versions; the
+    lens-pipeline-validation contract (a separate test) covers head-path
+    correctness at load time.
+    """
     family = arch.family.value if hasattr(arch.family, "value") else str(arch.family)
     return {
         "family": family,
@@ -54,17 +63,17 @@ def _snapshot(arch) -> dict:
         "has_disentangled_attention": bool(getattr(arch, "has_disentangled_attention", False)),
         "has_cls_token": bool(getattr(arch, "has_cls_token", False)),
         "residual_topology": arch.residual_topology,
-        "embed_path": arch.embed_path,
-        "head_path": arch.head_path,
-        "pre_head_path": arch.pre_head_path,
-        "project_out_path": arch.project_out_path,
-        "mlm_head_path": getattr(arch, "mlm_head_path", None),
-        "blocks": _paths(arch.blocks),
-        "decoder_blocks": _paths(getattr(arch, "decoder_blocks", None)),
-        # Capability-based op gating + structural mechanism taxonomy: pin the
-        # detected capabilities and per-block mechanism so a detection change
-        # (e.g. a model that stops resolving an attention layer, or whose
-        # blocks get re-labelled) shows up as a loud golden diff.
+        # Resolution recorded as booleans (version-stable), not exact paths.
+        "has_embed": arch.embed_path is not None,
+        "has_head": arch.head_path is not None,
+        "has_pre_head": arch.pre_head_path is not None,
+        "has_project_out": arch.project_out_path is not None,
+        "has_mlm_head": getattr(arch, "mlm_head_path", None) is not None,
+        "n_blocks": len(arch.blocks),
+        "n_decoder_blocks": len(getattr(arch, "decoder_blocks", None) or []),
+        # Capability-based gating + structural mechanism taxonomy: a detection
+        # change (a model that stops resolving attention, or whose blocks get
+        # re-labelled) shows up as a loud diff.
         "capabilities": {
             "has_unembedding": bool(arch.has_unembedding),
             "has_residual_stream": bool(arch.has_residual_stream),
