@@ -48,7 +48,10 @@ def warn_if_leading_space_better(
     This helper detects single-token leading-space variants and surfaces
     a yellow tip; it is a no-op for tensor / list inputs, missing
     tokenizers, empty strings, or strings that already begin with
-    whitespace.
+    whitespace. When the plain input splits into *multiple* subword tokens
+    (e.g. ``"Hate"`` -> ``['H', 'ate']``) the warning is escalated to a red
+    message, because averaging activations over the fragments produces a
+    direction that does not represent the word at all.
 
     Parameters
     ----------
@@ -104,13 +107,28 @@ def warn_if_leading_space_better(
 
         console = _Console()
 
-    console.print(
-        f"  [yellow]{op_label}:[/yellow] {role} input {text!r} tokenizes to "
-        f"{len(ids_plain)} token(s) {ids_plain}, but "
-        f"{(' ' + text)!r} is a single token {ids_spaced}. "
-        f"Consider using {(' ' + text)!r} for a stronger contrast "
-        f"(BPE leading-space convention)."
-    )
+    spaced = " " + text
+    if len(ids_plain) > 1:
+        # Egregious case: a single-word steering/contrast term that splits
+        # into multiple subword tokens (e.g. "Hate" -> ['H', 'ate']). The op
+        # averages activations across those fragments, so the resulting
+        # direction does not represent the word at all — almost always a
+        # mistake. Escalate from a tip to a red warning so it can't be missed.
+        console.print(
+            f"  [bold red]{op_label}:[/bold red] {role} input {text!r} splits into "
+            f"{len(ids_plain)} subword tokens {ids_plain} — {op_label} will average "
+            f"meaningless fragments, so the result will not reflect {text!r}. "
+            f"{spaced!r} is a single token {ids_spaced}; use it instead "
+            f"(BPE leading-space convention)."
+        )
+    else:
+        console.print(
+            f"  [yellow]{op_label}:[/yellow] {role} input {text!r} tokenizes to "
+            f"{len(ids_plain)} token(s) {ids_plain}, but "
+            f"{spaced!r} is a single token {ids_spaced}. "
+            f"Consider using {spaced!r} for a stronger contrast "
+            f"(BPE leading-space convention)."
+        )
     warned_count[0] += 1
 
 
