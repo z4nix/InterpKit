@@ -6,15 +6,17 @@ manually specify the model's structure.
 
 ## Auto-discovery
 
-::: interpkit.core.discovery.discover
+::: interpkit.core.arch.discover
+
+::: interpkit.core.arch.resolve_arch
 
 ## Data classes
 
-::: interpkit.core.discovery.ModelArchInfo
+::: interpkit.core.arch.ArchInfo
 
-::: interpkit.core.discovery.LayerInfo
+::: interpkit.core.arch.LayerInfo
 
-::: interpkit.core.discovery.ModuleInfo
+::: interpkit.core.arch.ModuleInfo
 
 ## Manual registration
 

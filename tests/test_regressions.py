@@ -51,9 +51,12 @@ def test_r_discovery_summary_no_crash(gpt2_model):
 
 
 def test_r_arch_info_repr(gpt2_model):
-    """ModelArchInfo __repr__ should return a useful string."""
+    """ArchInfo __repr__ should return a useful string with key fields."""
     r = repr(gpt2_model.arch_info)
-    assert "ModelArchInfo" in r
+    # Renamed from ModelArchInfo → ArchInfo in the resolver rewrite.
+    assert "ArchInfo" in r
+    assert "family=" in r
+    assert "blocks=" in r
     assert "GPT2" in r
 
 

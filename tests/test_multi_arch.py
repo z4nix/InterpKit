@@ -89,8 +89,10 @@ class TestDiscoveryPythia:
             "The Eiffel Tower is in Rome",
             top_k=5,
         )
-        assert isinstance(result, list)
-        assert len(result) > 0
+        # Module-mode trace returns {"results": [...], "meta": {...}} (F-015).
+        assert isinstance(result, dict)
+        assert "results" in result and "meta" in result
+        assert len(result["results"]) > 0
 
     def test_lens_runs(self, pythia_model):
         result = pythia_model.lens(TEXT)
@@ -131,10 +133,15 @@ class TestDiscoverySummary:
 
     def test_gpt2_summary(self, gpt2_model):
         summary = gpt2_model.arch_info.discovery_summary()
-        assert "Architecture:" in summary
+        # discovery_summary() emits the resolution outcomes as labelled lines.
+        assert "Architecture class:" in summary
+        assert "Family:" in summary
         assert "Layers:" in summary
-        assert "Attention resolved:" in summary
+        assert "Head:" in summary
+        assert "Blocks:" in summary
 
     def test_resnet_summary(self, resnet_model):
         summary = resnet_model.arch_info.discovery_summary()
-        assert "Architecture:" in summary
+        assert "Architecture class:" in summary
+        assert "Family:" in summary
+        assert "Head:" in summary

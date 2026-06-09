@@ -6,6 +6,8 @@ import os
 import tempfile
 from dataclasses import dataclass, field
 from io import StringIO
+from types import SimpleNamespace
+from typing import Any
 
 import torch
 from rich.console import Console
@@ -74,6 +76,18 @@ class _FakeArchInfo:
     is_tl_model: bool = False
     is_encoder_decoder: bool = False
     project_out_path: str | None = None
+    # Capability + mechanism contract consumed by render_inspect's provenance
+    # line (mirrors the real ArchInfo properties).
+    family: Any = field(default_factory=lambda: SimpleNamespace(value="causal_lm"))
+    has_unembedding: bool = True
+    has_residual_stream: bool = True
+    has_attention: bool = True
+    is_generative: bool = True
+    attention_layer_indices: list = field(default_factory=lambda: [0, 1])
+    lm_blocks: list = field(default_factory=lambda: [
+        SimpleNamespace(mechanism="attention"), SimpleNamespace(mechanism="attention"),
+    ])
+    block_mechanisms: list = field(default_factory=lambda: ["attention", "attention"])
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -545,7 +559,10 @@ def test_render_features_basic():
         "module": "layer.8",
         "num_active_features": 50,
         "total_features": 1000,
-        "sparsity": 0.95,
+        # F-014: unambiguous fields replacing the ambiguous "sparsity".
+        "active_fraction": 0.05,
+        "dead_fraction": 0.95,
+        "loss_ratio": 0.1,
         "reconstruction_error": 0.01,
         "top_features": [(42, 3.5), (99, 2.1), (7, 1.0)],
     }
@@ -561,7 +578,9 @@ def test_render_features_no_active():
         "module": "layer.0",
         "num_active_features": 0,
         "total_features": 100,
-        "sparsity": 1.0,
+        "active_fraction": 0.0,
+        "dead_fraction": 1.0,
+        "loss_ratio": 0.0,
         "reconstruction_error": 0.0,
         "top_features": [],
     }
@@ -619,7 +638,10 @@ def test_render_decompose_all_zero_norms():
 def test_render_dla_basic():
     result = {
         "target_token": "Paris",
-        "total_logit": 5.5,
+        # F-006: three explicit fields replace the misleading total_logit.
+        "total_logit_pre_ln": 5.5,
+        "model_logit": 6.0,
+        "ln_error": 0.5,
         "contributions": [
             {"component": "layer.0.attn", "type": "attention", "logit_contribution": 2.0},
             {"component": "layer.0.mlp", "type": "mlp", "logit_contribution": -1.0},
@@ -634,7 +656,9 @@ def test_render_dla_basic():
 def test_render_dla_with_heads():
     result = {
         "target_token": "x",
-        "total_logit": 1.0,
+        "total_logit_pre_ln": 1.0,
+        "model_logit": 1.2,
+        "ln_error": 0.2,
         "contributions": [
             {"component": "c", "type": "t", "logit_contribution": 0.5},
         ],
@@ -652,7 +676,9 @@ def test_render_dla_many_heads_deduplication():
     heads = [{"component": f"L0H{i}", "logit_contribution": 0.1 * i} for i in range(30)]
     result = {
         "target_token": "tok",
-        "total_logit": 3.0,
+        "total_logit_pre_ln": 3.0,
+        "model_logit": 3.1,
+        "ln_error": 0.1,
         "contributions": [{"component": "c", "type": "t", "logit_contribution": 3.0}],
         "head_contributions": heads,
     }
@@ -663,7 +689,9 @@ def test_render_dla_many_heads_deduplication():
 def test_render_dla_negative_contributions():
     result = {
         "target_token": "neg",
-        "total_logit": -1.0,
+        "total_logit_pre_ln": -1.0,
+        "model_logit": -0.8,
+        "ln_error": 0.2,
         "contributions": [
             {"component": "c1", "type": "t", "logit_contribution": -2.0},
             {"component": "c2", "type": "t", "logit_contribution": 1.0},

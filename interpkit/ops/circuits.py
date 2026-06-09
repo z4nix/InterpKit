@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import re
 import warnings
 from typing import TYPE_CHECKING, Any
 
 import torch
 from rich.console import Console
 
-from interpkit.core.discovery import ModelArchInfo, _get_mod_by_path, _get_weight, extract_proj_weight
+from interpkit.core.arch import ArchInfo, extract_proj_weight, get_weight, module_at_path
+from interpkit.core.inputs import input_seq_len
+from interpkit.core.paths import validate_position
 from interpkit.core.theme import ACCENT, MUTED
-from interpkit.ops.patch import _get_module
 
 if TYPE_CHECKING:
     from interpkit.core.model import Model
@@ -19,8 +19,38 @@ if TYPE_CHECKING:
 console = Console()
 
 
-def _nearest_attention_layer(arch: ModelArchInfo, layer: int) -> int | None:
-    """Return the nearest attention layer index, preferring forward."""
+def _require_attention_layer(arch: ArchInfo, layer: int, op_name: str) -> int:
+    """Validate that *layer* exists and has attention. Raise loud on failure (F-020).
+
+    Pre-1.0 ``circuits`` ops silently redirected out-of-range layers to
+    the nearest attention layer (sometimes with a UserWarning, sometimes
+    completely silent for ``composition``). In notebook sweeps this
+    produced misleading data: a user iterating ``layer=0..31`` on a
+    12-layer model got layer-11 data for layers 12-31 with no clear signal.
+
+    The 1.0 fix is to fail loud on out-of-range or non-attention layers.
+    No silent redirects, no fallbacks.
+    """
+    n_layers = len(arch.layer_infos)
+    if layer < 0 or layer >= n_layers:
+        raise IndexError(
+            f"{op_name}: layer {layer} out of range. "
+            f"This model has {n_layers} layers (valid: 0 to {n_layers - 1})."
+        )
+    li = arch.layer_infos[layer]
+    if li.attn_path is None:
+        raise ValueError(
+            f"{op_name}: layer {layer} has no attention submodule "
+            f"(layer_type={li.layer_type!r}). "
+            f"Attention-bearing layers: {arch.attention_layer_indices}."
+        )
+    return layer
+
+
+# Backwards-compat name used by older code paths in this module.
+def _nearest_attention_layer(arch: ArchInfo, layer: int) -> int | None:
+    """Return the nearest attention layer index. Retained only for legacy callers
+    inside this module; new code should use :func:`_require_attention_layer`."""
     indices = arch.attention_layer_indices
     if not indices:
         return None
@@ -30,9 +60,12 @@ def _nearest_attention_layer(arch: ModelArchInfo, layer: int) -> int | None:
     return indices[-1]
 
 
-def _redirect_to_attention(arch: ModelArchInfo, layer: int, op_name: str) -> int:
-    """Validate that *layer* has attention; if not, redirect with a warning."""
-    li = arch.layer_infos[layer] if layer < len(arch.layer_infos) else None
+def _redirect_to_attention(arch: ArchInfo, layer: int, op_name: str) -> int:
+    """Deprecated alias for :func:`_require_attention_layer` — kept so any
+    forgotten internal call sites get the new fail-loud behaviour rather
+    than the pre-1.0 silent redirect (F-020).
+    """
+    li = arch.layer_infos[layer] if 0 <= layer < len(arch.layer_infos) else None
     if li is not None and li.attn_path is not None:
         return layer
 
@@ -59,124 +92,196 @@ def _redirect_to_attention(arch: ModelArchInfo, layer: int, op_name: str) -> int
 # ------------------------------------------------------------------
 
 
+# Post-LN architectures: each block applies sublayer + residual + LN, so the
+# block's output is LN'd. The clean ``Σ components = residual`` invariant
+# does NOT hold for these families because of the per-layer LN
+# non-linearity — Σ-of-deltas ≈ pre-LN residual instead. Pre-LN families
+# (everything else) get the exact invariant. Detection is by HF
+# ``config.model_type`` so it stays robust across HF version bumps.
+_POST_LN_MODEL_TYPES = frozenset({
+    "bert", "roberta", "distilbert", "electra", "albert",
+    "deberta", "deberta-v2", "deberta-v3",
+    "xlm-roberta", "camembert", "mobilebert", "convbert",
+    "bigbird", "ernie", "luke", "rembert",
+})
+
+
+def _is_post_ln(model: Model) -> bool:
+    """Return True iff this model uses BERT-style post-LN blocks."""
+    config = getattr(model._model, "config", None)
+    if config is None:
+        return False
+    model_type = getattr(config, "model_type", None)
+    return model_type in _POST_LN_MODEL_TYPES
+
+
 def run_decompose(
     model: Model,
     input_data: Any,
     *,
     position: int = -1,
+    exact: bool = False,
 ) -> dict[str, Any]:
     """Decompose the residual stream into per-component contributions.
 
-    For each layer, captures the output of the attention block and MLP
-    block (which are added to the residual stream).  Returns the
-    contribution of each component at the specified token position.
+    Uses the residual-schema dispatch from
+    :mod:`interpkit.core.arch.residual` — components and their summation
+    invariant are determined by ``(arch.residual_topology,
+    arch.is_shared_layers)``.
+
+    API contract per topology:
+
+    - Pre-LN models (GPT-2, Llama, Qwen, Pythia, OPT-125m, BLOOM):
+      ``c["type"] in {"embed", "attn", "mlp"}``. BLOOM uses a hook-
+      target adjustment (subtract block input from each submodule
+      output before treating it as a delta) so its components match
+      the pre-LN shape.
+    - Post-LN models (BERT, RoBERTa, DistilBERT, ELECTRA, ALBERT,
+      OPT-350m): ``c["type"] in {"embed", "block_delta"}`` — one
+      block-level delta per layer. Loses the ``attn``/``mlp`` split
+      because the per-block LayerNorm prevents a clean algebraic
+      decomposition (explicit tradeoff documented in
+      :mod:`interpkit.core.arch.residual`).
+    - Seq2seq (T5, Flan-T5, BART): Pre-LN shape rooted at the
+      decoder stack only — encoder blocks are not on the residual
+      path to ``lm_head``.
+
+    For every supported topology, ``Σ components ≈ residual`` to fp32
+    epsilon by construction.
+
+    Parameters
+    ----------
+    position:
+        Token position to analyse. Default ``-1`` (last token).
+    exact:
+        When ``True`` and the model is non-fp32, briefly cast the
+        model to fp32 for the decomposition forward pass. Eliminates
+        accumulation error at attention-sink positions but doubles
+        peak memory.
 
     Returns
     -------
     dict with:
-        ``components`` — list of ``{"name", "layer", "type", "vector", "norm"}``
-        ``residual`` — the final residual stream vector at the given position
-        ``position`` — the analysed position index
+        ``components`` — list of
+        ``{"name", "layer", "type", "vector", "norm"}`` starting with
+        ``L-1.embed``, then per-layer entries whose ``type`` follows
+        the per-topology contract above.
+        ``residual`` — final residual stream vector at ``position``.
+        ``position`` — analysed position index.
+        ``precision_note`` — string describing the precision regime.
+        ``post_ln`` — convenience bool: ``arch.residual_topology ==
+        "post_ln"``.
     """
+    from interpkit.core.arch import residual_schema_for
     from interpkit.core.render import render_decompose
+    from interpkit.core.support_matrix import check_op_supported
 
     arch = model.arch_info
-    if not arch.layer_names:
-        raise ValueError("Decomposition requires detected layer structure.")
+    # Gate DeBERTa-v3 (DisentangledSelfAttention) before any forward
+    # hook fires — they trigger an unfixable HF transformers broadcast bug.
+    check_op_supported("decompose", arch)
+
+    schema = residual_schema_for(arch)
+    if schema is None:
+        from interpkit.core.exceptions import OperationNotSupportedForArchitecture
+        raise OperationNotSupportedForArchitecture(
+            f"`decompose` is unsupported for "
+            f"(family={arch.family.value}, topology={arch.residual_topology}, "
+            f"is_shared_layers={arch.is_shared_layers}). The residual schema "
+            f"selector did not find a matching implementation."
+        )
 
     model_input = model._prepare(input_data)
 
-    component_outputs: dict[str, torch.Tensor] = {}
-    hooks: list[torch.utils.hooks.RemovableHandle] = []
+    _seq_len = input_seq_len(model_input)
+    if _seq_len is not None:
+        position = validate_position(position, _seq_len, op="decompose")
 
-    for li in arch.layer_infos:
-        if li.attn_path:
-            attn_mod = _get_module(model._model, li.attn_path)
-            key = f"{li.name}::attn"
+    model_dtype = next(model._model.parameters()).dtype if any(
+        True for _ in model._model.parameters()
+    ) else torch.float32
 
-            def _make_hook(k: str):
-                def hook_fn(_mod, _inp, output):
-                    t = output if isinstance(output, torch.Tensor) else (
-                        output[0] if isinstance(output, (tuple, list)) and isinstance(output[0], torch.Tensor) else None
-                    )
-                    if t is not None:
-                        component_outputs[k] = t.detach().float()
-                return hook_fn
+    used_exact = False
+    original_dtype: torch.dtype | None = None
+    if exact and model_dtype != torch.float32:
+        original_dtype = model_dtype
+        model._model.to(dtype=torch.float32)
+        used_exact = True
 
-            hooks.append(attn_mod.register_forward_hook(_make_hook(key)))
-
-        if li.mlp_path:
-            mlp_mod = _get_module(model._model, li.mlp_path)
-            key = f"{li.name}::mlp"
-
-            def _make_mlp_hook(k: str):
-                def hook_fn(_mod, _inp, output):
-                    t = output if isinstance(output, torch.Tensor) else (
-                        output[0] if isinstance(output, (tuple, list)) and isinstance(output[0], torch.Tensor) else None
-                    )
-                    if t is not None:
-                        component_outputs[k] = t.detach().float()
-                return hook_fn
-
-            hooks.append(mlp_mod.register_forward_hook(_make_mlp_hook(key)))
-
-    # Also capture the final residual (output of last layer)
-    last_layer = arch.layer_names[-1]
-    residual_output: list[torch.Tensor] = []
-
-    def _residual_hook(_mod, _inp, output):
-        t = output if isinstance(output, torch.Tensor) else (
-            output[0] if isinstance(output, (tuple, list)) and isinstance(output[0], torch.Tensor) else None
+    try:
+        embed_vec, schema_components, residual_vec = schema.decompose(
+            model, model_input, position=position,
         )
-        if t is not None:
-            residual_output.append(t.detach().float())
+    finally:
+        if used_exact and original_dtype is not None:
+            model._model.to(dtype=original_dtype)
 
-    last_mod = _get_module(model._model, last_layer)
-    hooks.append(last_mod.register_forward_hook(_residual_hook))
+    # Translate Component dataclass entries into the dict shape the
+    # rest of the codebase (render_decompose, tests, audit2) expects.
+    components: list[dict[str, Any]] = [{
+        "name": "L-1.embed",
+        "layer": -1,
+        "type": "embed",
+        "vector": embed_vec,
+        "norm": embed_vec.norm().item(),
+    }]
+    for comp in schema_components:
+        components.append(comp.to_dict())
 
-    with torch.no_grad():
-        model._forward(model_input)
+    components.sort(
+        key=lambda c: (
+            c["layer"],
+            0 if c["type"] == "embed"
+            else 1 if c["type"] == "attn"
+            else 2 if c["type"] == "mlp"
+            else 3,  # block_delta
+        ),
+    )
 
-    for h in hooks:
-        h.remove()
+    post_ln = arch.residual_topology == "post_ln"
 
-    components: list[dict[str, Any]] = []
-    for key, tensor in component_outputs.items():
-        layer_name, comp_type = key.rsplit("::", 1)
-        layer_match = re.search(r"\.(\d+)", layer_name)
-        layer_idx = int(layer_match.group(1)) if layer_match else 0
+    if post_ln:
+        ln_note = (
+            " Σ components = residual (telescoping block deltas; "
+            "post-LN architectures collapse attn/mlp into a single "
+            "per-block delta)."
+        )
+    elif arch.residual_topology == "seq2seq":
+        ln_note = (
+            " Σ components = residual rooted at the decoder stack "
+            "(encoder hidden states enter via cross-attention; not on "
+            "the residual path to lm_head)."
+        )
+    else:
+        ln_note = (
+            " Σ components = residual (embed + Σ_l attn_l + mlp_l) "
+            "within fp32 epsilon."
+        )
 
-        if tensor.dim() == 3:
-            vec = tensor[0, position, :]
-        elif tensor.dim() == 2:
-            vec = tensor[position, :]
-        else:
-            vec = tensor
-
-        components.append({
-            "name": f"L{layer_idx}.{'attn' if comp_type == 'attn' else 'mlp'}",
-            "layer": layer_idx,
-            "type": comp_type,
-            "vector": vec,
-            "norm": vec.norm().item(),
-        })
-
-    components.sort(key=lambda c: (c["layer"], 0 if c["type"] == "attn" else 1))
-
-    residual = None
-    if residual_output:
-        r = residual_output[0]
-        if r.dim() == 3:
-            residual = r[0, position, :]
-        elif r.dim() == 2:
-            residual = r[position, :]
-        else:
-            residual = r
+    if used_exact:
+        precision_note = (
+            f"forward re-run in float32 (model native dtype: {original_dtype}); "
+            "decomposition is exact within fp32 epsilon." + ln_note
+        )
+    elif model_dtype == torch.float32:
+        precision_note = (
+            "fp32 forward — decomposition exact within fp32 epsilon." + ln_note
+        )
+    else:
+        precision_note = (
+            f"forward in {model_dtype} — per-component contributions cast to "
+            f"fp32 but the residual stream itself accumulated in {model_dtype}. "
+            "Expect ~10% relative drift at attention-sink positions (e.g. pos=0). "
+            "Pass exact=True for an exact (slower, higher memory) reconstruction."
+            + ln_note
+        )
 
     result = {
         "components": components,
-        "residual": residual,
+        "residual": residual_vec,
         "position": position,
+        "precision_note": precision_note,
+        "post_ln": post_ln,
     }
 
     render_decompose(result)
@@ -203,11 +308,14 @@ def run_ov_scores(
     -------
     dict with ``heads`` (list per head) and ``layer``.
     """
+    from interpkit.core.support_matrix import check_op_supported
+
     arch = model.arch_info
+    check_op_supported("ov_scores", arch)
     if not arch.layer_names or not arch.num_attention_heads:
         raise ValueError("OV analysis requires detected layer structure and head count.")
 
-    layer = _redirect_to_attention(arch, layer, "ov_scores")
+    layer = _require_attention_layer(arch, layer, "ov_scores")
     num_heads = arch.num_attention_heads
     li = arch.layer_infos[layer]
 
@@ -219,7 +327,7 @@ def run_ov_scores(
     # Find O projection weight
     if li.o_proj_path is None:
         raise ValueError(f"Could not find output projection weight in layer {layer}.")
-    proj_mod = _get_mod_by_path(model._model, li.o_proj_path)
+    proj_mod = module_at_path(model._model, li.o_proj_path)
 
     if w_v is None:
         raise ValueError(f"Could not find V projection weight in layer {layer}.")
@@ -227,7 +335,7 @@ def run_ov_scores(
         raise ValueError(f"Could not find output projection weight in layer {layer}.")
 
     # Normalise W_O to (d_model, num_heads * head_dim)
-    raw_w_o = _get_weight(proj_mod).float()
+    raw_w_o = get_weight(proj_mod).float()
     is_conv1d = type(proj_mod).__name__ == "Conv1D"
     w_o = raw_w_o.T if is_conv1d else raw_w_o  # -> (d_model, H*D_h)
 
@@ -279,11 +387,14 @@ def run_qk_scores(
 
     Computes the effective QK matrix ``W_QK = W_Q^T @ W_K`` for each head.
     """
+    from interpkit.core.support_matrix import check_op_supported
+
     arch = model.arch_info
+    check_op_supported("qk_scores", arch)
     if not arch.layer_names or not arch.num_attention_heads:
         raise ValueError("QK analysis requires detected layer structure and head count.")
 
-    layer = _redirect_to_attention(arch, layer, "qk_scores")
+    layer = _require_attention_layer(arch, layer, "qk_scores")
     num_heads = arch.num_attention_heads
     li = arch.layer_infos[layer]
 
@@ -371,8 +482,8 @@ def run_composition(
     if not arch.layer_names or not arch.num_attention_heads:
         raise ValueError("Composition analysis requires layer structure and head count.")
 
-    src_layer = _redirect_to_attention(arch, src_layer, "composition (src)")
-    dst_layer = _redirect_to_attention(arch, dst_layer, "composition (dst)")
+    src_layer = _require_attention_layer(arch, src_layer, "composition (src)")
+    dst_layer = _require_attention_layer(arch, dst_layer, "composition (dst)")
 
     num_heads = arch.num_attention_heads
     num_kv_heads = arch.num_key_value_heads or num_heads
@@ -382,11 +493,11 @@ def run_composition(
     if src_li.o_proj_path is None:
         raise ValueError(f"No output projection in source layer {src_layer}.")
 
-    src_proj = _get_mod_by_path(model._model, src_li.o_proj_path)
+    src_proj = module_at_path(model._model, src_li.o_proj_path)
     if not hasattr(src_proj, "weight"):
         raise ValueError(f"No output projection in source layer {src_layer}.")
 
-    raw_w_o_src = _get_weight(src_proj).float()
+    raw_w_o_src = get_weight(src_proj).float()
     is_conv1d = type(src_proj).__name__ == "Conv1D"
     w_o_src = raw_w_o_src.T if is_conv1d else raw_w_o_src  # -> (d_model, H*D_h)
     head_dim = int(w_o_src.shape[1]) // num_heads

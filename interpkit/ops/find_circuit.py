@@ -9,7 +9,9 @@ from rich.console import Console
 from rich.progress import Progress
 
 from interpkit.core.theme import ACCENT, MUTED
-from interpkit.ops.patch import _compute_effect, _get_module
+from interpkit.ops._hooks import register_capture_hook
+from interpkit.ops.patch import _compute_effect_value as _compute_effect
+from interpkit.ops.patch import _get_module
 
 if TYPE_CHECKING:
     from interpkit.core.model import Model
@@ -185,17 +187,9 @@ def run_find_circuit(
                 cache_hooks: list = []
                 for comp in components:
                     key = comp["module_name"]
-
-                    def _cache(k: str, _acts=corrupted_acts):
-                        def fn(_mod, _inp, output):
-                            t = output if isinstance(output, torch.Tensor) else (
-                                output[0] if isinstance(output, (tuple, list)) and len(output) > 0 and isinstance(output[0], torch.Tensor) else None
-                            )
-                            if t is not None:
-                                _acts[k] = t.detach().clone()
-                        return fn
-
-                    cache_hooks.append(comp["module"].register_forward_hook(_cache(key)))
+                    cache_hooks.append(
+                        register_capture_hook(comp["module"], corrupted_acts, key)
+                    )
 
                 with torch.no_grad():
                     model._forward(ri)

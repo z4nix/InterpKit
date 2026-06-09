@@ -98,7 +98,10 @@ def test_dtype_unknown_string_raises():
         load("gpt2", dtype="int8", device="cpu")
 
 
-def test_dtype_none_not_forwarded():
+def test_dtype_default_is_fp32():
+    """interpkit defaults to fp32 (F-007 fix) — the HF default ``"auto"`` is
+    silently lossy for many modern checkpoints (fp16 / bf16) and was the
+    root cause of subtle numerical noise across every op."""
     captured = {}
 
     def _fake_load_from_hf(name, *, tokenizer, image_processor, device, torch_dtype, device_map):
@@ -108,7 +111,14 @@ def test_dtype_none_not_forwarded():
     with patch("interpkit.core.loader._load_from_hf", side_effect=_fake_load_from_hf):
         load("gpt2", device="cpu")
 
-    assert captured["torch_dtype"] is None
+    assert captured["torch_dtype"] is torch.float32
+
+
+def test_dtype_none_raises():
+    """Passing ``dtype=None`` is no longer a valid 'use default' shortcut —
+    callers must be explicit about precision (F-007 fix)."""
+    with pytest.raises(TypeError, match="dtype=None"):
+        load("gpt2", device="cpu", dtype=None)
 
 
 # ══════════════════════════════════════════════════════════════════

@@ -1,0 +1,49 @@
+{
+  "block_mechanisms": [
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention"
+  ],
+  "blocks": [
+    "vit.encoder.layer.0",
+    "vit.encoder.layer.1",
+    "vit.encoder.layer.2",
+    "vit.encoder.layer.3",
+    "vit.encoder.layer.4",
+    "vit.encoder.layer.5",
+    "vit.encoder.layer.6",
+    "vit.encoder.layer.7",
+    "vit.encoder.layer.8",
+    "vit.encoder.layer.9",
+    "vit.encoder.layer.10",
+    "vit.encoder.layer.11"
+  ],
+  "capabilities": {
+    "has_attention": true,
+    "has_residual_stream": true,
+    "has_unembedding": true,
+    "is_generative": false
+  },
+  "decoder_blocks": [],
+  "embed_path": "vit.embeddings.patch_embeddings",
+  "family": "vision_transformer",
+  "has_cls_token": true,
+  "has_disentangled_attention": false,
+  "head_path": "classifier",
+  "is_encoder_decoder": false,
+  "is_shared_layers": false,
+  "mlm_head_path": null,
+  "pre_head_path": "vit.layernorm",
+  "project_out_path": null,
+  "residual_topology": "pre_ln",
+  "spatial": true
+}

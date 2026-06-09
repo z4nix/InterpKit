@@ -2,11 +2,11 @@
 
 > Mech interp for any HuggingFace model.
 
-InterpKit provides a single, consistent interface for mechanistic interpretability operations across any HuggingFace model — transformers, SSMs, vision models, and more — with zero annotation required.
+InterpKit provides a single, consistent interface for mechanistic interpretability operations across a wide range of HuggingFace models — transformers, SSMs, vision models, and more — with automatic architecture discovery and little to no manual setup.
 
 ## Features
 
-- **Universal model support** — works with any HuggingFace model via automatic architecture discovery
+- **Broad model support** — works across HuggingFace architectures (transformers, SSMs, vision, CNNs) via automatic discovery
 - **Complete operation set** — causal tracing, activation patching, logit lens, DLA, attribution, SAE features, circuit finding, and more
 - **Chat-model aware** — pass message lists (`[{"role": "user", "content": "..."}]`) to any op; the tokenizer's chat template is applied automatically
 - **Rich CLI** — run any operation from the command line with `interpkit` (or `python -m interpkit`)

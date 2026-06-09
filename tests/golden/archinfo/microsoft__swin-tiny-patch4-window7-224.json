@@ -1,0 +1,33 @@
+{
+  "block_mechanisms": [
+    "attention",
+    "attention",
+    "attention",
+    "attention"
+  ],
+  "blocks": [
+    "swin.encoder.layers.0",
+    "swin.encoder.layers.1",
+    "swin.encoder.layers.2",
+    "swin.encoder.layers.3"
+  ],
+  "capabilities": {
+    "has_attention": true,
+    "has_residual_stream": false,
+    "has_unembedding": true,
+    "is_generative": false
+  },
+  "decoder_blocks": [],
+  "embed_path": "swin.embeddings.patch_embeddings",
+  "family": "vision_transformer",
+  "has_cls_token": false,
+  "has_disentangled_attention": false,
+  "head_path": "classifier",
+  "is_encoder_decoder": false,
+  "is_shared_layers": false,
+  "mlm_head_path": null,
+  "pre_head_path": "swin.layernorm",
+  "project_out_path": null,
+  "residual_topology": "pre_ln",
+  "spatial": true
+}

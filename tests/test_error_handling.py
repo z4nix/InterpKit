@@ -204,3 +204,14 @@ def test_out_of_range_position_lens(gpt2_model):
 def test_out_of_range_position_dla(gpt2_model):
     with pytest.raises((IndexError, ValueError, RuntimeError)):
         gpt2_model.dla(TEXT, position=9999)
+
+
+def test_out_of_range_position_message_is_actionable(gpt2_model):
+    """Out-of-range position raises a clean, actionable ValueError naming the
+    valid range — not a raw torch IndexError — for every position op."""
+    for op in (gpt2_model.dla, gpt2_model.lens, gpt2_model.decompose):
+        with pytest.raises(ValueError) as exc:
+            op(TEXT, position=9999)
+        msg = str(exc.value).lower()
+        assert "out of range" in msg, msg
+        assert "valid positions" in msg, msg

@@ -42,7 +42,12 @@ def test_dla_returns_contributions(gpt2_model):
     result = gpt2_model.dla(TEXT)
     assert "contributions" in result
     assert "target_token" in result
-    assert "total_logit" in result
+    # F-006: total_logit was renamed into three explicit fields so users
+    # can see both the pre-LN sum and the model's actual logit.
+    assert "total_logit_pre_ln" in result
+    assert "model_logit" in result
+    assert "ln_error" in result
+    assert "total_logit" not in result, "legacy total_logit field should be removed"
     assert len(result["contributions"]) > 0
     for entry in result["contributions"]:
         assert "component" in entry

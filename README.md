@@ -12,7 +12,7 @@
 
 Mechanistic interpretability tooling today is fragmented. Each library supports a narrow set of architectures, and moving to a different model family usually means rewriting hook code from scratch.
 
-InterpKit provides a single, consistent interface for mech interp operations across any HuggingFace model — transformers, SSMs, vision models, and more — with zero annotation required.
+InterpKit provides a single, consistent interface for mech interp operations across a wide range of HuggingFace models — transformers, SSMs, vision models, and more — with automatic architecture discovery and little to no manual setup.
 
 ---
 
@@ -501,6 +501,30 @@ model.trace(input_a, input_b, top_k=10)
 ```
 
 ---
+
+## Known limitations
+
+- **DeBERTa-v3 (DisentangledSelfAttention).** A known broadcast bug in
+  HuggingFace transformers' relative-position-bias path triggers on
+  forward hooks for any DeBERTa-v3 model (e.g.
+  `microsoft/deberta-v3-small`). interpkit detects this at load time
+  and gates `trace`, `decompose`, `attribute`, `head_activations`,
+  `steer`, `probe`, `diff`, `ov_scores`, `qk_scores` with a clean
+  `OperationNotSupportedForArchitecture` rather than the cryptic
+  upstream `RuntimeError: tensor (512) must match (7)`. `lens` and
+  `attention` still work. Use `bert`, `roberta`, `electra`, or
+  `albert` for the gated ops on encoder-only inputs.
+
+- **Integrated-gradients completeness on some modern decoders.** On
+  Qwen2/Qwen2.5/Qwen3 and SmolLM-family models, the trapezoidal Riemann
+  sum does not converge to model-output completeness even at large
+  `n_steps` (the P0b/N-008 empirical finding). Per-token IG scores remain
+  reliable as a token-importance **ranking** but cannot be interpreted as
+  additive contribution **magnitudes** on these models. `attribute()`
+  reports this programmatically: `result["interpretation"]` is
+  `"ranking_only"` in that case (and for `gradient` / `gradient_x_input`,
+  which are saliency methods), versus `"quantitative"` when IG completeness
+  holds. Branch on that field rather than parsing the warning text.
 
 ## Examples
 

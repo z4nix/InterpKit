@@ -12,13 +12,24 @@ CLEAN = "The Eiffel Tower is in Paris"
 CORRUPT = "The Eiffel Tower is in Rome"
 
 
-def test_patch_identical_inputs_no_change(gpt2_model):
-    """Patching with identical clean and corrupted inputs should produce zero effect."""
+def test_patch_identical_inputs_degenerate_gap(gpt2_model):
+    """Patching with identical clean and corrupted inputs is mathematically
+    undefined for ratio metrics — there's no clean-vs-corrupted gap to
+    normalise against.
+
+    Pre-1.0 silently returned 0 (F-010), masking the degenerate case as
+    "the patch did nothing". The 1.0 fix returns NaN and includes
+    ``"degenerate_gap"`` in the result's ``warnings`` list so the
+    undefined region is visible to downstream callers.
+    """
+    import math
+
     layer = gpt2_model.arch_info.layer_names[0]
     result = gpt2_model.patch(TEXT, TEXT, at=layer)
-    assert abs(result["effect"]) < 1e-4, (
-        f"Patching identical inputs should produce ~0 effect, got {result['effect']}"
+    assert math.isnan(result["effect"]), (
+        f"Identical inputs should yield NaN (degenerate gap), got {result['effect']}"
     )
+    assert "degenerate_gap" in result.get("warnings", [])
 
 
 def test_ablate_zero_changes_output(gpt2_model):
@@ -71,10 +82,13 @@ def test_qk_scores_bounded(gpt2_model):
 
 
 def test_trace_effects_sum_positive(gpt2_model):
-    """At least some modules should show positive causal effect."""
-    result = gpt2_model.trace(CLEAN, CORRUPT, top_k=5)
-    assert isinstance(result, list)
-    effects = [r["effect"] for r in result]
+    """At least some modules should show positive causal effect.
+
+    The 1.0 trace returns ``{"results": [...], "meta": {...}}`` (F-015).
+    """
+    out = gpt2_model.trace(CLEAN, CORRUPT, top_k=5)
+    assert isinstance(out, dict)
+    effects = [r["effect"] for r in out["results"] if r["effect"] == r["effect"]]
     assert max(effects) > 0, "Expected at least one module with positive trace effect"
 
 

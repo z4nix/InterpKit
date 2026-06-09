@@ -1,0 +1,44 @@
+{
+  "block_mechanisms": [
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention"
+  ],
+  "blocks": [
+    "encoder.block.0",
+    "encoder.block.1",
+    "encoder.block.2",
+    "encoder.block.3",
+    "encoder.block.4",
+    "encoder.block.5"
+  ],
+  "capabilities": {
+    "has_attention": true,
+    "has_residual_stream": true,
+    "has_unembedding": true,
+    "is_generative": true
+  },
+  "decoder_blocks": [
+    "decoder.block.0",
+    "decoder.block.1",
+    "decoder.block.2",
+    "decoder.block.3",
+    "decoder.block.4",
+    "decoder.block.5"
+  ],
+  "embed_path": "shared",
+  "family": "seq2seq_lm",
+  "has_cls_token": false,
+  "has_disentangled_attention": false,
+  "head_path": "lm_head",
+  "is_encoder_decoder": true,
+  "is_shared_layers": false,
+  "mlm_head_path": null,
+  "pre_head_path": "decoder.final_layer_norm",
+  "project_out_path": null,
+  "residual_topology": "seq2seq",
+  "spatial": false
+}

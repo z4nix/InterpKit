@@ -1,14 +1,51 @@
-"""lens — logit lens: project each layer's output to vocabulary space."""
+"""lens — logit lens with family-aware projection (F-003 / F-004 / F-005).
+
+Pre-1.0 interpkit's lens read ``model(x, output_hidden_states=True).hidden_states[-1]``
+and projected each layer through ``ln_f`` + ``lm_head``. This had three
+correctness bugs:
+
+- F-003: on encoder-decoder models (T5/BART), ``hidden_states`` returns
+  the encoder hidden states, but the projection used the decoder's lm_head.
+  Result: garbage token rankings.
+- F-004: HuggingFace's ``hidden_states[-1]`` semantics differ across
+  architectures. For OPT, HF applies ``final_layer_norm`` *in-forward*
+  before storing the last hidden state; interpkit then applied it
+  *again* (double-LN) when projecting. Top-1 disagreed with model logits.
+- F-005: GPT-2 lens disagreed with TransformerLens at the final layer.
+  This is a known TL-side reformulation difference (TL folds ``unembed.b``
+  into ``ln_final``); not fixable in interpkit. Documented.
+
+The 1.0 fix: hook the **output of the last block directly** (which is
+unambiguously pre-final-norm on every family), then apply the
+family-appropriate projection pipeline:
+
+- LM (causal / seq2seq): ``pre_head`` (LayerNorm) → ``project_out`` (OPT only)
+  → ``head`` (lm_head) → token logits.
+- Vision transformer (ViT): pool spatial dims (CLS token or mean) → optional
+  ``pre_head`` LN → ``head`` (classifier) → class logits.
+- CNN: pool spatial dims (mean) → ``head`` (classifier) → class logits.
+
+Same code structure for every family; only the projection step differs.
+The validation contract (Phase 0e) auto-runs on first use to catch any
+resolver drift.
+"""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
 import torch
+import torch.nn as nn
 from rich.console import Console
 
-from interpkit.core.discovery import _get_weight
-from interpkit.ops.patch import _get_module
+from interpkit.core.exceptions import LensPipelineMismatch
+from interpkit.core.inputs import input_seq_len
+from interpkit.core.paths import validate_position
+from interpkit.core.support_matrix import (
+    check_op_supported,
+    lens_blocks,
+    validate_lens_pipeline,
+)
 
 if TYPE_CHECKING:
     from interpkit.core.model import Model
@@ -24,168 +61,103 @@ def run_lens(
     html: str | None = None,
     position: int | None = None,
 ) -> list[dict[str, Any]] | None:
-    """Project each layer's hidden state through the unembedding matrix.
+    """Project each block's output through the head pipeline.
 
-    Analyses **all** token positions by default, producing the classic logit-lens
-    heatmap (layers x positions).  Pass ``position=N`` to analyse a single
-    token position (negative indices supported, e.g. ``position=-1`` for the
-    last token — matching the original behaviour).
+    The same primary code path works for LMs, ViTs, and CNNs — only the
+    projection step differs by family (Phase 3 of the plan).
 
-    Each entry in the returned list includes:
+    For LMs: returns layer-by-layer next-token predictions. For vision
+    models: returns layer-by-layer class-probability evolution (the
+    "vision lens" technique).
 
-    - ``layer_name``, ``top1_token``, ``top1_prob``, ``top5_tokens``, ``top5_probs``
-      for the *last* position (backward-compatible).
-    - ``positions``: a list of per-position dicts, each containing
-      ``pos``, ``top1_token``, ``top1_prob``, ``top5_tokens``, ``top5_probs``.
+    Parameters
+    ----------
+    text:
+        Input. String for text models; image path for vision models.
+    position:
+        Token position to report (LMs only; ignored for vision).
+        Default ``None`` reports all positions; ``-1`` for last token.
 
-    The return value also has a ``tokens`` key on each entry when all
-    positions are analysed, listing the input tokens.
+    Returns
+    -------
+    list[dict] | None
+        Per-block dicts with ``layer_name``, ``top1_token``, ``top1_prob``,
+        ``top5_tokens``, ``top5_probs``, and ``positions`` (LM only).
+        Returns ``None`` if the model has no head we can project through
+        (e.g. headless encoder).
     """
     from interpkit.core.render import render_lens
 
     arch = model.arch_info
+    check_op_supported("lens", arch)
 
-    if not arch.is_language_model or arch.unembedding_name is None:
+    # N-002: pick the family-appropriate block list. Seq2seq lens hooks
+    # the decoder stack; MLM/causal/vision use ``arch.blocks`` directly.
+    blocks = lens_blocks(arch)
+
+    has_head = arch.head_module is not None or arch.mlm_head_module is not None
+    if not has_head or not blocks:
         console.print(
-            f"\n  [yellow]lens not available:[/yellow] no unembedding matrix detected"
+            f"\n  [yellow]lens not available:[/yellow] no head/block detected"
             f" for {arch.arch_family or 'this model'}.\n"
         )
         return None
 
-    if not arch.layer_names:
-        console.print(
-            "\n  [yellow]lens not available:[/yellow] no layer structure detected.\n"
-        )
-        return None
-
-    if model._tokenizer is None:
-        console.print(
-            "\n  [yellow]lens not available:[/yellow] no tokenizer loaded.\n"
-        )
-        return None
-
+    # N-009: prepare the input *before* the lens validation contract so that
+    # empty / whitespace-only / type-error inputs surface as the same
+    # ``ValueError`` users get from every other op, never as the much
+    # less actionable ``LensPipelineMismatch``.
     text_input = model._prepare(text)
 
-    unembed_mod = _get_module(model._model, arch.unembedding_name)
-    unembed_weight = _get_weight(unembed_mod)  # (vocab_size, embed_dim) or (embed_dim, vocab_size) for Conv1D
-    if type(unembed_mod).__name__ == "Conv1D":
-        unembed_weight = unembed_weight.T  # normalize to (vocab_size, embed_dim)
-    unembed_bias = getattr(unembed_mod, "bias", None)
+    if position is not None:
+        _seq_len = input_seq_len(text_input)
+        if _seq_len is not None:
+            position = validate_position(position, _seq_len, op="lens")
 
-    # Handle models where embed_dim != hidden_size (e.g. OPT-350m)
-    project_out_mod = None
-    if arch.project_out_path:
-        try:
-            project_out_mod = _get_module(model._model, arch.project_out_path)
-        except AttributeError:
-            pass
-
-    layer_outputs: dict[str, torch.Tensor] = {}
-
-    def _make_hook(name: str):
-        def hook_fn(_mod: torch.nn.Module, _inp: Any, output: Any) -> None:
-            t = output if isinstance(output, torch.Tensor) else (
-                output[0] if isinstance(output, (tuple, list)) and isinstance(output[0], torch.Tensor) else None
-            )
-            if t is not None:
-                layer_outputs[name] = t.detach()
-        return hook_fn
-
-    hooks = []
-    for layer_name in arch.layer_names:
-        try:
-            mod = _get_module(model._model, layer_name)
-            hooks.append(mod.register_forward_hook(_make_hook(layer_name)))
-        except AttributeError:
-            continue
-
+    # Validation contract (Phase 0e) — on first use, assert lens-at-last-block
+    # matches model output. Catches any resolver drift loudly.
     try:
-        with torch.no_grad():
-            model._forward(text_input)
-    finally:
-        for h in hooks:
-            h.remove()
+        validate_lens_pipeline(model)
+    except LensPipelineMismatch:
+        # Re-raise so the user sees the actionable diagnostic.
+        raise
 
-    if not layer_outputs:
-        console.print("\n  [yellow]lens:[/yellow] no layer outputs captured.\n")
+    # Capture each block's output via hooks (only the family-appropriate ones)
+    block_outputs = _capture_block_outputs(model, arch, text_input, blocks=blocks)
+
+    if not block_outputs:
+        console.print("\n  [yellow]lens:[/yellow] no block outputs captured.\n")
         return None
 
-    final_norm = _find_final_norm(model._model, arch)
-
-    # Recover input tokens for labelling
+    # Recover input tokens for labelling (LMs only)
     input_tokens: list[str] | None = None
-    if isinstance(text, str) and model._tokenizer is not None:
-        encoded = model._tokenizer(text, return_tensors="pt")
-        input_tokens = model._tokenizer.convert_ids_to_tokens(
-            encoded["input_ids"][0].tolist()
-        )
+    if isinstance(text, str) and model._tokenizer is not None and not arch.spatial:
+        try:
+            encoded = model._tokenizer(text, return_tensors="pt")
+            input_tokens = model._tokenizer.convert_ids_to_tokens(
+                encoded["input_ids"][0].tolist()
+            )
+        except Exception:
+            input_tokens = None
 
     predictions: list[dict[str, Any]] = []
-
-    for layer_name in arch.layer_names:
-        if layer_name not in layer_outputs:
+    for block in blocks:
+        if block.path not in block_outputs:
             continue
+        block_out = block_outputs[block.path].float()
+        logits = _project_through_head(arch, block_out)
+        if logits is None:
+            continue
+        entry = _build_prediction_entry(
+            block.path, logits, model, position=position,
+            input_tokens=input_tokens, spatial=arch.spatial,
+        )
+        if entry is not None:
+            predictions.append(entry)
 
-        hidden = layer_outputs[layer_name].float()  # (batch, seq, hidden) or (seq, hidden)
-
-        if hidden.dim() == 2:
-            hidden = hidden.unsqueeze(0)  # -> (1, seq, hidden)
-
-        seq_len = hidden.shape[1]
-
-        if final_norm is not None:
-            norm_dtype = next(final_norm.parameters()).dtype
-            hidden = final_norm(hidden.to(norm_dtype)).float()
-
-        # Project through project_out if the model has embed_dim != hidden_size
-        projected = hidden
-        if project_out_mod is not None:
-            proj_dtype = next(project_out_mod.parameters()).dtype
-            projected = project_out_mod(projected.to(proj_dtype)).float()
-
-        logits = projected @ unembed_weight.float().T
-        if unembed_bias is not None:
-            logits = logits + unembed_bias.float()
-        probs = torch.softmax(logits, dim=-1)  # (batch, seq, vocab)
-
-        # Determine which positions to report
-        if position is not None:
-            pos_idx = position if position >= 0 else seq_len + position
-            pos_indices = [pos_idx]
-        else:
-            pos_indices = list(range(seq_len))
-
-        per_position: list[dict[str, Any]] = []
-        for pos in pos_indices:
-            if pos < 0 or pos >= seq_len:
-                continue
-            top5_probs_t, top5_ids_t = probs[0, pos].topk(min(5, probs.shape[-1]))
-            top5_tokens = [model._tokenizer.decode([tid]) for tid in top5_ids_t.tolist()]
-            top5_probs_list = top5_probs_t.tolist()
-            per_position.append({
-                "pos": pos,
-                "top1_token": top5_tokens[0],
-                "top1_prob": top5_probs_list[0],
-                "top5_tokens": top5_tokens,
-                "top5_probs": top5_probs_list,
-            })
-
-        # Backward-compatible top-level fields use the last position
-        last_pos_data = per_position[-1] if per_position else {
-            "top1_token": "", "top1_prob": 0.0, "top5_tokens": [], "top5_probs": [],
-        }
-
-        entry: dict[str, Any] = {
-            "layer_name": layer_name,
-            "top1_token": last_pos_data["top1_token"],
-            "top1_prob": last_pos_data["top1_prob"],
-            "top5_tokens": last_pos_data["top5_tokens"],
-            "top5_probs": last_pos_data["top5_probs"],
-            "positions": per_position,
-        }
-        if input_tokens is not None:
-            entry["tokens"] = input_tokens
-        predictions.append(entry)
+    if not predictions:
+        console.print("\n  [yellow]lens:[/yellow] no projections succeeded.\n")
+        return None
 
     model_name = arch.arch_family or "model"
     render_lens(predictions, model_name)
@@ -196,18 +168,14 @@ def run_lens(
         plot_lens(predictions, save_path=save, input_tokens=input_tokens)
 
     if html is not None:
-        import re as _re_html
-
         from interpkit.core.html import html_lens as gen_html_lens
         from interpkit.core.html import save_html
 
         flat_preds = []
-        for pred in predictions:
-            _lm = _re_html.search(r"\.(\d+)", pred.get("layer_name", ""))
-            li = int(_lm.group(1)) if _lm else 0
-            for pos_data in pred.get("positions", []):
+        for li_idx, pred in enumerate(predictions):
+            for pos_data in pred.get("positions", [{"pos": 0, "top1_token": pred.get("top1_token", "?"), "top1_prob": pred.get("top1_prob", 0.0)}]):
                 flat_preds.append({
-                    "layer": li,
+                    "layer": li_idx,
                     "position": pos_data.get("pos", 0),
                     "prediction": pos_data.get("top1_token", "?"),
                     "prob": pos_data.get("top1_prob", 0.0),
@@ -217,27 +185,213 @@ def run_lens(
     return predictions
 
 
-def _find_final_norm(model: torch.nn.Module, arch: Any) -> torch.nn.Module | None:
-    """Try to find the final layer norm applied before the LM head."""
-    import re
+def run_encoder_lens(
+    model: Model,
+    text: Any,
+    *,
+    position: int | None = None,
+) -> list[dict[str, Any]] | None:
+    """Encoder-side lens for seq2seq models (N-002).
 
-    norm_pattern = re.compile(
-        r"^(model\.norm|transformer\.ln_f|gpt_neox\.final_layer_norm|"
-        r"model\.final_layernorm|backbone\.norm_f)$",
-        re.IGNORECASE,
-    )
-    for name, mod in model.named_modules():
-        if norm_pattern.match(name):
-            assert isinstance(mod, torch.nn.Module)
-            return mod
+    Mirrors :func:`run_lens` but explicitly hooks ``arch.blocks`` (the
+    encoder stack on T5/BART, since ``_find_blocks`` picks the encoder
+    first when both stacks have equal layer counts) and projects through
+    the same head pipeline. The model's lm_head is typically tied to
+    both encoder and decoder embeddings on these models, so the same
+    projection is meaningful for encoder hidden states.
+    """
+    from interpkit.core.arch import ArchFamily
+    from interpkit.core.exceptions import OperationNotSupportedForArchitecture
+    from interpkit.core.render import render_lens
 
-    # Generic fallback: look for a top-level norm module (LayerNorm or RMSNorm variants)
-    for name, mod in model.named_modules():
-        if name.count(".") <= 1:
-            cls_name = type(mod).__name__.lower()
-            is_norm = isinstance(mod, torch.nn.LayerNorm) or "rmsnorm" in cls_name or "layernorm" in cls_name
-            if is_norm and ("norm" in name.lower() or "Norm" in type(mod).__name__):
-                assert isinstance(mod, torch.nn.Module)
-                return mod
+    arch = model.arch_info
+    if arch.family != ArchFamily.SEQ2SEQ_LM:
+        raise OperationNotSupportedForArchitecture(
+            f"`encoder_lens` only applies to seq2seq models; "
+            f"this model is family={arch.family.value!r}. "
+            f"Use `lens()` for non-encoder-decoder models."
+        )
+    if arch.head_module is None or not arch.blocks:
+        console.print(
+            "\n  [yellow]encoder_lens not available:[/yellow] "
+            "no head/encoder block detected.\n"
+        )
+        return None
 
-    return None
+    text_input = model._prepare(text)
+    block_outputs = _capture_block_outputs(model, arch, text_input, blocks=arch.blocks)
+    if not block_outputs:
+        console.print("\n  [yellow]encoder_lens:[/yellow] no block outputs captured.\n")
+        return None
+
+    input_tokens: list[str] | None = None
+    if isinstance(text, str) and model._tokenizer is not None:
+        try:
+            encoded = model._tokenizer(text, return_tensors="pt")
+            input_tokens = model._tokenizer.convert_ids_to_tokens(
+                encoded["input_ids"][0].tolist(),
+            )
+        except Exception:
+            input_tokens = None
+
+    predictions: list[dict[str, Any]] = []
+    for block in arch.blocks:
+        if block.path not in block_outputs:
+            continue
+        block_out = block_outputs[block.path].float()
+        logits = _project_through_head(arch, block_out)
+        if logits is None:
+            continue
+        entry = _build_prediction_entry(
+            block.path, logits, model, position=position,
+            input_tokens=input_tokens, spatial=False,
+        )
+        if entry is not None:
+            predictions.append(entry)
+
+    if not predictions:
+        console.print("\n  [yellow]encoder_lens:[/yellow] no projections succeeded.\n")
+        return None
+
+    render_lens(predictions, (arch.arch_family or "model") + " (encoder)")
+    return predictions
+
+
+def _capture_block_outputs(
+    model: Model,
+    arch: Any,
+    text_input: Any,
+    *,
+    blocks: list | None = None,
+) -> dict[str, torch.Tensor]:
+    """Hook each block in *blocks* and capture its output tensor.
+
+    Defaults to ``arch.blocks`` when *blocks* is None for backwards
+    compatibility. ``run_lens`` passes ``lens_blocks(arch)`` explicitly
+    so seq2seq models hook only the decoder side (N-002).
+    """
+    captured: dict[str, torch.Tensor] = {}
+    blocks = blocks if blocks is not None else arch.blocks
+
+    def make_hook(name: str):
+        def fn(_m: nn.Module, _inp: Any, out: Any) -> None:
+            if isinstance(out, torch.Tensor):
+                captured[name] = out.detach()
+            elif isinstance(out, tuple) and out and isinstance(out[0], torch.Tensor):
+                captured[name] = out[0].detach()
+
+        return fn
+
+    handles = []
+    from interpkit.core.arch import module_at_path as _module_at_path
+
+    for block in blocks:
+        try:
+            mod = _module_at_path(model._model, block.path)
+        except (AttributeError, IndexError, KeyError, TypeError):
+            continue
+        handles.append(mod.register_forward_hook(make_hook(block.path)))
+
+    try:
+        with torch.no_grad():
+            model._forward(text_input)
+    finally:
+        for h in handles:
+            h.remove()
+
+    return captured
+
+
+def _project_through_head(arch: Any, block_output: torch.Tensor) -> torch.Tensor | None:
+    """Family-aware projection from a block output to logits.
+
+    Delegates to the canonical implementation in
+    :mod:`interpkit.core.support_matrix` so lens, dla, trace, and the
+    validation contract all use the exact same pipeline (no chance of
+    drift between op-time and validation-time projections).
+    """
+    from interpkit.core.support_matrix import _project_through_head as _proj
+    return _proj(arch, block_output)
+
+
+def _build_prediction_entry(
+    layer_name: str,
+    logits: torch.Tensor,
+    model: Model,
+    *,
+    position: int | None,
+    input_tokens: list[str] | None,
+    spatial: bool,
+) -> dict[str, Any] | None:
+    """Build a per-layer prediction entry with top-k decoding."""
+    if spatial:
+        # Vision: logits shape (B, num_classes); single prediction per image.
+        if logits.dim() == 1:
+            logits = logits.unsqueeze(0)
+        probs = torch.softmax(logits, dim=-1)
+        topk = min(5, probs.shape[-1])
+        top5_probs_t, top5_ids_t = probs[0].topk(topk)
+        top5_probs_list = top5_probs_t.tolist()
+        top5_tokens = [_decode_class(model, int(c)) for c in top5_ids_t.tolist()]
+        return {
+            "layer_name": layer_name,
+            "top1_token": top5_tokens[0],
+            "top1_prob": top5_probs_list[0],
+            "top5_tokens": top5_tokens,
+            "top5_probs": top5_probs_list,
+            "positions": [],
+        }
+
+    # Language: logits shape (B, seq, vocab).
+    if logits.dim() == 2:
+        logits = logits.unsqueeze(0)
+    probs = torch.softmax(logits, dim=-1)
+    seq_len = probs.shape[1]
+
+    if position is not None:
+        pos_idx = position if position >= 0 else seq_len + position
+        pos_indices = [pos_idx]
+    else:
+        pos_indices = list(range(seq_len))
+
+    per_position: list[dict[str, Any]] = []
+    for pos in pos_indices:
+        if pos < 0 or pos >= seq_len:
+            continue
+        top5_probs_t, top5_ids_t = probs[0, pos].topk(min(5, probs.shape[-1]))
+        if model._tokenizer is not None:
+            top5_tokens = [model._tokenizer.decode([tid]) for tid in top5_ids_t.tolist()]
+        else:
+            top5_tokens = [str(int(tid)) for tid in top5_ids_t.tolist()]
+        top5_probs_list = top5_probs_t.tolist()
+        per_position.append({
+            "pos": pos,
+            "top1_token": top5_tokens[0],
+            "top1_prob": top5_probs_list[0],
+            "top5_tokens": top5_tokens,
+            "top5_probs": top5_probs_list,
+        })
+
+    last = per_position[-1] if per_position else {
+        "top1_token": "", "top1_prob": 0.0, "top5_tokens": [], "top5_probs": [],
+    }
+    entry: dict[str, Any] = {
+        "layer_name": layer_name,
+        "top1_token": last["top1_token"],
+        "top1_prob": last["top1_prob"],
+        "top5_tokens": last["top5_tokens"],
+        "top5_probs": last["top5_probs"],
+        "positions": per_position,
+    }
+    if input_tokens is not None:
+        entry["tokens"] = input_tokens
+    return entry
+
+
+def _decode_class(model: Model, class_idx: int) -> str:
+    """Decode a class index to a label using the model's id2label if available."""
+    config = getattr(model._model, "config", None)
+    id2label = getattr(config, "id2label", None) if config is not None else None
+    if id2label is not None:
+        return str(id2label.get(class_idx, f"class_{class_idx}"))
+    return f"class_{class_idx}"

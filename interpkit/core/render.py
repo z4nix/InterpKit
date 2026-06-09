@@ -15,7 +15,7 @@ from rich_gradient import Rule as GradientRule
 from interpkit.core.theme import ACCENT, BRAND_COLORS, MUTED, ROLE_PILL
 
 if TYPE_CHECKING:
-    from interpkit.core.discovery import ModelArchInfo
+    from interpkit.core.arch import ArchInfo
 
 console = Console()
 
@@ -43,7 +43,13 @@ def _bar(
     positive: bool | None = None,
 ) -> str:
     """Render a smooth unicode bar with half-block precision."""
+    import math
+
     if max_val <= 0:
+        return ""
+    if math.isnan(value) or math.isinf(value):
+        # F-010: NaN-valued effects (degenerate gaps) render as empty
+        # rather than crashing the bar generator.
         return ""
     ratio = min(abs(value) / max_val, 1.0)
     full = int(ratio * width)
@@ -91,7 +97,7 @@ def _format_params(n: int) -> str:
 # ------------------------------------------------------------------
 
 
-def render_inspect(arch_info: ModelArchInfo, nn_model: torch.nn.Module | None = None) -> None:
+def render_inspect(arch_info: ArchInfo, nn_model: torch.nn.Module | None = None) -> None:
     """Print a module tree with types, param counts, and detected roles."""
     header_parts = []
     if arch_info.arch_family:
@@ -117,6 +123,34 @@ def render_inspect(arch_info: ModelArchInfo, nn_model: torch.nn.Module | None = 
     _section("Model Architecture")
     details = " \u00b7 ".join(header_parts)
     console.print(f"  [{MUTED}]{details}[/{MUTED}]")
+
+    # Capability + mechanism provenance \u2014 what analyses this model supports
+    # (detected structurally, not from the family label) and what each block
+    # actually computes. Makes hybrids (Griffin) and pure-SSM models (Mamba)
+    # legible: e.g. "blocks: ssm\u00d724" or "blocks: recurrent\u00d718, attention\u00d78".
+    caps: list[str] = []
+    if arch_info.has_unembedding:
+        caps.append("unembedding")
+    if arch_info.has_residual_stream:
+        caps.append("residual-stream")
+    if arch_info.has_attention:
+        n_attn = len(arch_info.attention_layer_indices)
+        n_blocks = len(arch_info.lm_blocks) or len(arch_info.layer_infos)
+        caps.append(f"attention[{n_attn}/{n_blocks} layers]")
+    if arch_info.is_generative:
+        caps.append("generative")
+    if caps:
+        console.print(
+            f"  [{MUTED}]family={arch_info.family.value} \u00b7 "
+            f"capabilities: {', '.join(caps)}[/{MUTED}]"
+        )
+    mechs = arch_info.block_mechanisms
+    if mechs:
+        counts: dict[str, int] = {}
+        for mch in mechs:
+            counts[mch] = counts.get(mch, 0) + 1
+        mech_str = ", ".join(f"{k}\u00d7{v}" for k, v in counts.items())
+        console.print(f"  [{MUTED}]blocks: {mech_str}[/{MUTED}]")
 
     table = Table(show_header=True, header_style="bold", box=_TABLE_BOX, pad_edge=False)
     table.add_column("Module", style=ACCENT, no_wrap=True)
@@ -343,11 +377,24 @@ def render_attribution_heatmap(
 
 def render_patch(result: dict[str, Any]) -> None:
     """Print the result of a single activation patch."""
+    import math
+
     _section(f"Activation Patch \u2014 {result['module']}")
 
     effect = result["effect"]
-    bar = _bar(effect, max(abs(effect), 0.001), width=16)
-    console.print(f"  Normalised effect: [bold]{effect:.4f}[/bold]  {bar}")
+    warnings = result.get("warnings") or []
+    if math.isnan(effect):
+        # F-010: degenerate-gap case — surface the warning explicitly.
+        reason = ", ".join(warnings) if warnings else "undefined"
+        console.print(
+            f"  [yellow]Effect undefined[/yellow]  ({reason}) \u2014 "
+            "the metric has no clean-vs-corrupted gap to normalise against."
+        )
+    else:
+        bar = _bar(effect, max(abs(effect), 0.001), width=16)
+        console.print(f"  Normalised effect: [bold]{effect:.4f}[/bold]  {bar}")
+        if warnings:
+            console.print(f"  [dim]warnings: {warnings}[/dim]")
     console.print()
 
 
@@ -577,10 +624,16 @@ def render_diff(
 def render_features(result: dict[str, Any]) -> None:
     """Print SAE feature decomposition results."""
     _section(f"SAE Features \u2014 {result['module']}")
+    # F-014: render the unambiguous active/dead fractions and loss_ratio.
+    active_frac = result.get("active_fraction", 0.0)
+    dead_frac = result.get("dead_fraction", 0.0)
+    loss_ratio = result.get("loss_ratio", 0.0)
     console.print(
         f"  Active: [bold]{result['num_active_features']}[/bold] / {result['total_features']}  "
-        f"[dim]\u2502[/dim]  Sparsity: [bold]{result['sparsity']:.2%}[/bold]  "
-        f"[dim]\u2502[/dim]  Recon error: {result['reconstruction_error']:.4f}"
+        f"[dim]\u2502[/dim]  active: [bold]{active_frac:.2%}[/bold]  "
+        f"[dim]\u2502[/dim]  dead: [bold]{dead_frac:.2%}[/bold]  "
+        f"[dim]\u2502[/dim]  recon error: {result['reconstruction_error']:.4f}  "
+        f"[dim]\u2502[/dim]  loss/norm: [bold]{loss_ratio:.3f}[/bold]"
     )
 
     top = result.get("top_features", [])
@@ -698,7 +751,10 @@ def render_dla(result: dict[str, Any], *, top_k: int = 10) -> None:
     _section("Direct Logit Attribution")
 
     console.print(Panel(
-        f'Target token: [bold]"{target}"[/bold]  |  Total logit sum: [bold]{result["total_logit"]:.3f}[/bold]',
+        f'Target token: [bold]"{target}"[/bold]  |  '
+        f'Pre-LN sum: [bold]{result["total_logit_pre_ln"]:.3f}[/bold]  '
+        f'Model logit: [bold]{result["model_logit"]:.3f}[/bold]  '
+        f'(LN error: {result["ln_error"]:+.3f})',
         border_style=ACCENT,
         padding=(0, 2),
         expand=False,

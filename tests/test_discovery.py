@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from interpkit.core.discovery import discover
+from interpkit.core.arch import discover
 
 
 class _Attn(nn.Module):

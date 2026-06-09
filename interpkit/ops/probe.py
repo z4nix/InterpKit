@@ -27,7 +27,21 @@ def run_probe(
     torch-based probe if sklearn is not installed.
     """
     from interpkit.core.render import render_probe
+    from interpkit.core.support_matrix import check_op_supported
     from interpkit.ops.activations import run_activations
+
+    # N-004: gate DeBERTa-v3 — activation extraction hooks fire the
+    # broken relative-position-bias broadcast path.
+    check_op_supported("probe", model.arch_info)
+
+    # F-021: validate inputs at the top so users see "probe requires non-empty
+    # texts and labels" instead of NumPy's opaque "need at least one array
+    # to stack" error from inside vstack.
+    if not texts or not labels:
+        raise ValueError(
+            "probe() requires non-empty 'texts' and 'labels'. "
+            f"Got len(texts)={len(texts)}, len(labels)={len(labels)}."
+        )
 
     if len(texts) != len(labels):
         raise ValueError(f"texts ({len(texts)}) and labels ({len(labels)}) must have the same length.")

@@ -69,9 +69,14 @@ def test_run_features_with_gpt2(gpt2_model):
 
     assert "top_features" in result
     assert "reconstruction_error" in result
-    assert "sparsity" in result
+    # F-014: sparsity was renamed into unambiguous fields.
+    assert "active_fraction" in result
+    assert "dead_fraction" in result
+    assert "loss_ratio" in result
     assert "num_active_features" in result
     assert "total_features" in result
+    assert "sae_config" in result
+    assert "sparsity" not in result, "legacy sparsity field should be removed"
     assert result["total_features"] == 128
     assert len(result["top_features"]) <= 10
 

@@ -14,6 +14,7 @@ from interpkit.core.inputs import (
 from interpkit.core.inputs import (
     warn_if_leading_space_better,
 )
+from interpkit.core.paths import validate_module_path
 from interpkit.ops.patch import _get_module
 
 if TYPE_CHECKING:
@@ -90,6 +91,9 @@ def run_steer_vector(
     """
     from interpkit.core.inputs import normalize_input_group
 
+    # F-022: reject typo'd module paths up-front with a friendly KeyError.
+    validate_module_path(at, model.arch_info)
+
     positives = normalize_input_group(positive)
     negatives = normalize_input_group(negative)
 
@@ -148,6 +152,13 @@ def run_steer(
 ) -> dict[str, Any]:
     """Run inference with and without a steering vector, compare top predictions."""
     from interpkit.core.render import render_steer
+    from interpkit.core.support_matrix import check_op_supported
+
+    # N-004: gate DeBERTa-v3 — steering hooks fire the broken
+    # relative-position-bias broadcast path.
+    check_op_supported("steer", model.arch_info)
+    # F-022: reject typo'd module paths up-front with a friendly KeyError.
+    validate_module_path(at, model.arch_info)
 
     model_input = model._prepare(input_data)
 

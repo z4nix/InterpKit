@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-import re
 from collections import deque
 from typing import TYPE_CHECKING, Any
 
 import torch
 
-from interpkit.core.discovery import _get_weight
+from interpkit.core.arch import ATTN_NAMES as _ATTN_NAMES
+from interpkit.core.arch import MLP_NAMES as _MLP_NAMES
+from interpkit.core.arch import get_weight
+from interpkit.core.inputs import input_seq_len
+from interpkit.core.paths import validate_position
+from interpkit.ops._hooks import first_tensor
 from interpkit.ops.patch import _get_module
 
 if TYPE_CHECKING:
@@ -37,11 +41,18 @@ def run_dla(
     ``W_U @ LayerNorm(residual)``.  Because LayerNorm is nonlinear, the
     contribution of each component cannot be decomposed exactly through
     it.  This implementation projects each component's raw output directly
-    through W_U, bypassing LayerNorm.  As a result, ``total_logit`` (the
-    sum of all component contributions) will *not* exactly equal the
-    model's actual logit for the target token.  Component *rankings* are
-    still meaningful — this is the same approximation used by
-    TransformerLens and other standard DLA implementations.
+    through W_U, *bypassing the final LayerNorm entirely* (it does not
+    apply the per-position LN scale/centering, nor does it include the
+    token/positional embedding contributions to the residual).  As a
+    result, the sum of contributions (``total_logit_pre_ln``) is on a
+    different scale from the model's actual logit, and ``ln_error`` can be
+    comparable to or larger than the logit magnitude — this is expected.
+    Component *rankings* remain meaningful (the omitted terms are shared
+    across components at a position), which is the contract this op
+    provides.  Note this differs from TransformerLens, which applies the
+    cached final-LN scale (and centering) so its residual-decomposition
+    sum reconstructs the logit to near-zero error; use ``ln_error`` here
+    to see the gap rather than assuming reconstruction.
 
     Parameters
     ----------
@@ -99,16 +110,20 @@ def run_dla(
 
     model_input = model._prepare(input_data)
 
+    _seq_len = input_seq_len(model_input)
+    if _seq_len is not None:
+        position = validate_position(position, _seq_len, op="dla")
+
     # Get unembedding direction for the target token
     unembed_mod = _get_module(model._model, arch.unembedding_name)
-    unembed_weight = _get_weight(unembed_mod).float()  # (vocab, embed_dim)
+    unembed_weight = get_weight(unembed_mod).float()  # (vocab, embed_dim)
 
     # Handle models where embed_dim != hidden_size (e.g. OPT-350m)
     project_out_weight = None
     if arch.project_out_path:
         try:
             po_mod = _get_module(model._model, arch.project_out_path)
-            project_out_weight = _get_weight(po_mod).float()  # (embed_dim, hidden_size)
+            project_out_weight = get_weight(po_mod).float()  # (embed_dim, hidden_size)
         except AttributeError:
             import warnings
             warnings.warn(
@@ -117,49 +132,17 @@ def run_dla(
                 stacklevel=2,
             )
 
-    # Determine target token id
-    if token is None:
-        with torch.no_grad():
-            logits = model._forward(model_input)
-        if logits.dim() == 3:
-            last_logits = logits[0, position, :]
-        else:
-            last_logits = logits[0]
-        target_id = int(last_logits.argmax().item())
-    elif isinstance(token, str):
-        ids = model._tokenizer.encode(token, add_special_tokens=False)
-        if not ids:
-            raise ValueError(f"Could not encode token: {token!r}")
-        if len(ids) > 1:
-            import warnings
-            decoded_first = model._tokenizer.decode([ids[0]])
+    # Single instrumented forward — captures each component's output, each
+    # attention layer's pre-projection per-head input, AND the model logits
+    # in ONE pass. The pre-refactor DLA ran three or four separate forwards
+    # for these; everything below reuses this one.
+    shared_layers = bool(getattr(arch, "is_shared_layers", False))
+    component_outputs, pre_proj_captures, proj_info, logits = _capture_dla_activations(
+        model, arch, model_input, shared_layers,
+    )
 
-            tip = ""
-            if not token.startswith((" ", "\t", "\n")):
-                try:
-                    spaced_ids = model._tokenizer.encode(
-                        " " + token, add_special_tokens=False,
-                    )
-                except (TypeError, ValueError, RuntimeError):
-                    spaced_ids = []
-                if len(spaced_ids) == 1:
-                    tip = (
-                        f" Tip: pass token={(' ' + token)!r} (with a leading "
-                        f"space) — that is a single token in this vocabulary "
-                        f"(id={spaced_ids[0]}) and matches what the model "
-                        f"actually predicts mid-sentence."
-                    )
-
-            warnings.warn(
-                f"Token {token!r} encodes to {len(ids)} subwords; "
-                f"using only the first subword ({decoded_first!r}, id={ids[0]})."
-                + tip,
-                stacklevel=2,
-            )
-        target_id = ids[0]
-    else:
-        target_id = token
-
+    # Determine target token id (model top-1 reuses the forward above).
+    target_id = _resolve_target_id(model, token, position, logits)
     target_token_str = model._tokenizer.decode([target_id])
 
     # Compute effective unembedding direction in residual-stream space.
@@ -172,161 +155,54 @@ def run_dla(
     else:
         unembed_dir = raw_unembed_dir  # (d_model,)
 
-    # Capture outputs of each attention output-projection and each MLP
-    component_outputs: dict[str, torch.Tensor] = {}
-    hooks: list[torch.utils.hooks.RemovableHandle] = []
-
-    for li in arch.layer_infos:
-        comp_key_attn = f"{li.name}::attn"
-        if li.attn_path:
-            attn_mod = _get_module(model._model, li.attn_path)
-
-            def _make_attn_hook(key: str):
-                def hook_fn(_mod: torch.nn.Module, _inp: Any, output: Any) -> None:
-                    t = output if isinstance(output, torch.Tensor) else (
-                        output[0] if isinstance(output, (tuple, list)) and isinstance(output[0], torch.Tensor) else None
-                    )
-                    if t is not None:
-                        component_outputs[key] = t.detach().float()
-                return hook_fn
-
-            hooks.append(attn_mod.register_forward_hook(_make_attn_hook(comp_key_attn)))
-
-        if li.mlp_path:
-            mlp_mod = _get_module(model._model, li.mlp_path)
-            comp_key_mlp = f"{li.name}::mlp"
-
-            def _make_mlp_hook(key: str):
-                def hook_fn(_mod: torch.nn.Module, _inp: Any, output: Any) -> None:
-                    t = output if isinstance(output, torch.Tensor) else (
-                        output[0] if isinstance(output, (tuple, list)) and isinstance(output[0], torch.Tensor) else None
-                    )
-                    if t is not None:
-                        component_outputs[key] = t.detach().float()
-                return hook_fn
-
-            hooks.append(mlp_mod.register_forward_hook(_make_mlp_hook(comp_key_mlp)))
-
-    model._forward(model_input)
-
-    for hook in hooks:
-        hook.remove()
-
-    # Compute each component's contribution to the target logit
-    contributions: list[dict[str, Any]] = []
-
-    for comp_key, output_tensor in component_outputs.items():
-        layer_name, comp_type = comp_key.rsplit("::", 1)
-
-        if output_tensor.dim() == 3:
-            vec = output_tensor[0, position, :]  # (d_model,)
-        elif output_tensor.dim() == 2:
-            vec = output_tensor[position, :]
-        else:
-            vec = output_tensor
-
-        logit_contrib = (vec @ unembed_dir).item()
-
-        layer_match = re.search(r"\.(\d+)", layer_name)
-        layer_idx = int(layer_match.group(1)) if layer_match else 0
-
-        contributions.append({
-            "component": f"L{layer_idx}.{'attn' if comp_type == 'attn' else 'mlp'}",
-            "layer": layer_idx,
-            "type": comp_type,
-            "logit_contribution": logit_contrib,
-            "module": comp_key.split("::")[0],
-        })
-
-    # Per-head breakdown: capture all pre-projection inputs in a single forward pass
-    head_contributions: list[dict[str, Any]] = []
-
-    proj_info: list[tuple[str, torch.nn.Module]] = []
-    pre_proj_captures: dict[str, list[torch.Tensor]] = {}
-
-    for li in arch.layer_infos:
-        if not li.o_proj_path or not li.attn_path:
-            continue
-        try:
-            proj_mod = _get_module(model._model, li.o_proj_path)
-        except AttributeError:
-            continue
-        if not hasattr(proj_mod, "weight"):
-            continue
-        comp_key = f"{li.name}::attn"
-        if comp_key not in component_outputs:
-            continue
-        proj_info.append((li.name, proj_mod))
-        pre_proj_captures[li.name] = []
-
-    if proj_info:
-        capture_hooks: list[torch.utils.hooks.RemovableHandle] = []
-
-        def _make_capture_hook(store: list[torch.Tensor]):
-            def hook_fn(_mod: torch.nn.Module, inp: Any, _output: Any) -> None:
-                t = inp[0] if isinstance(inp, tuple) else inp
-                if isinstance(t, torch.Tensor):
-                    store.append(t.detach().float())
-            return hook_fn
-
-        for layer_name, proj_mod in proj_info:
-            capture_hooks.append(
-                proj_mod.register_forward_hook(_make_capture_hook(pre_proj_captures[layer_name]))
-            )
-
-        model._forward(model_input)
-
-        for ch in capture_hooks:
-            ch.remove()
-
-    for layer_name, proj_mod in proj_info:
-        captured = pre_proj_captures[layer_name]
-        if not captured:
-            continue
-
-        concat_heads = captured[0]
-        if concat_heads.dim() == 2:
-            concat_heads = concat_heads.unsqueeze(0)
-
-        head_dim = concat_heads.shape[-1] // num_heads
-        per_head = concat_heads[0, position, :].view(num_heads, head_dim)
-
-        raw_w_o = _get_weight(proj_mod).float()
-        is_conv1d = type(proj_mod).__name__ == "Conv1D"
-        w_o = raw_w_o.T if is_conv1d else raw_w_o
-        d_model = int(w_o.shape[0])
-        w_o_heads = w_o.view(d_model, num_heads, head_dim)
-
-        layer_match = re.search(r"\.(\d+)", layer_name)
-        layer_idx = int(layer_match.group(1)) if layer_match else 0
-
-        for h in range(num_heads):
-            head_resid = per_head[h] @ w_o_heads[:, h, :].T
-            logit_contrib = (head_resid @ unembed_dir).item()
-            head_contributions.append({
-                "component": f"L{layer_idx}.H{h}",
-                "layer": layer_idx,
-                "head": h,
-                "type": "head",
-                "logit_contribution": logit_contrib,
-            })
+    contributions = _component_contributions(
+        component_outputs, unembed_dir, position, arch,
+    )
+    head_contributions = _head_contributions(
+        proj_info, pre_proj_captures, unembed_dir, position, num_heads,
+        shared_layers, arch,
+    )
 
     contributions.sort(key=lambda c: c["logit_contribution"], reverse=True)
     head_contributions.sort(key=lambda c: c["logit_contribution"], reverse=True)
 
-    total_logit = sum(c["logit_contribution"] for c in contributions)
+    # F-006: split the misleading single ``total_logit`` field into three
+    # explicit fields. The pre-1.0 API exposed only the sum-of-contributions
+    # value but called it ``total_logit``, leading users to treat it as
+    # the actual model logit. Per the audit, this routinely deviated by
+    # 3.5–12.1 nats from the true logit (>20% relative error).
+    #
+    # The sum of per-component contributions bypasses the final LayerNorm —
+    # because LayerNorm is non-linear, this sum cannot equal the actual logit.
+    # We now report all three values explicitly so users can see both the
+    # decomposition rankings (still valid) and the LN-induced gap.
+    total_logit_pre_ln = float(sum(c["logit_contribution"] for c in contributions))
+
+    # Actual model logit at the target — read from the single capture forward.
+    if logits.dim() == 3:
+        model_logit = float(logits[0, position, target_id].item())
+    elif logits.dim() == 2:
+        model_logit = float(logits[0, target_id].item())
+    else:
+        model_logit = float(logits[target_id].item())
+    ln_error = float(model_logit - total_logit_pre_ln)
 
     result = {
         "target_token": target_token_str,
         "target_id": target_id,
         "contributions": contributions,
         "head_contributions": head_contributions,
-        "total_logit": total_logit,
+        # F-006: three explicit fields, never the misleading single total_logit
+        "total_logit_pre_ln": total_logit_pre_ln,
+        "model_logit": model_logit,
+        "ln_error": ln_error,
         "approximation_note": (
-            "total_logit is the sum of per-component contributions projected "
-            "through the unembedding matrix, bypassing the final LayerNorm. "
-            "Because LayerNorm is nonlinear, this sum will not exactly match "
-            "the model's true logit. Component rankings remain valid."
+            "total_logit_pre_ln is the sum of per-component contributions "
+            "projected through the unembedding matrix, BYPASSING the final "
+            "LayerNorm. model_logit is the actual model output at the target "
+            "token. ln_error = model_logit - total_logit_pre_ln captures the "
+            "LayerNorm non-linearity gap. Component rankings remain valid; "
+            "the sum is an approximation, not the model's prediction."
         ),
     }
 
@@ -349,6 +225,239 @@ def run_dla(
         save_html(gen_html_dla(result), html)
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# DLA phase helpers (run_dla orchestrates these)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_target_id(
+    model: Model, token: int | str | None, position: int, logits: torch.Tensor,
+) -> int:
+    """Resolve the target token id.
+
+    ``None`` → the model's top-1 at *position* (reusing *logits*, no extra
+    forward); an ``int`` → used directly; a ``str`` → decoded to its first
+    sub-token, warning (with a leading-space tip) when it spans several.
+    """
+    if token is None:
+        last_logits = logits[0, position, :] if logits.dim() == 3 else logits[0]
+        return int(last_logits.argmax().item())
+    if isinstance(token, str):
+        ids = model._tokenizer.encode(token, add_special_tokens=False)
+        if not ids:
+            raise ValueError(f"Could not encode token: {token!r}")
+        if len(ids) > 1:
+            import warnings
+            decoded_first = model._tokenizer.decode([ids[0]])
+
+            tip = ""
+            if not token.startswith((" ", "\t", "\n")):
+                try:
+                    spaced_ids = model._tokenizer.encode(" " + token, add_special_tokens=False)
+                except (TypeError, ValueError, RuntimeError):
+                    spaced_ids = []
+                if len(spaced_ids) == 1:
+                    tip = (
+                        f" Tip: pass token={(' ' + token)!r} (with a leading "
+                        f"space) — that is a single token in this vocabulary "
+                        f"(id={spaced_ids[0]}) and matches what the model "
+                        f"actually predicts mid-sentence."
+                    )
+
+            warnings.warn(
+                f"Token {token!r} encodes to {len(ids)} subwords; "
+                f"using only the first subword ({decoded_first!r}, id={ids[0]})." + tip,
+                stacklevel=3,
+            )
+        return ids[0]
+    return token
+
+
+def _make_component_hook(
+    store: dict[str, torch.Tensor],
+    layer_name: str,
+    comp_type: str,
+    counter: list[int] | None,
+):
+    """Forward hook capturing a component's output into *store* (fp32).
+
+    Non-shared models key by ``"{layer}::{type}"``. Shared-weight models
+    (ALBERT, *counter* given) write a distinct ``"{layer}#{i}::{type}"`` key
+    per invocation so per-layer contributions don't collapse into one entry.
+    """
+    def hook(_mod: torch.nn.Module, _inp: Any, output: Any) -> None:
+        t = first_tensor(output)
+        if t is None:
+            return
+        if counter is None:
+            store[f"{layer_name}::{comp_type}"] = t.detach().float()
+        else:
+            store[f"{layer_name}#{counter[0]}::{comp_type}"] = t.detach().float()
+            counter[0] += 1
+
+    return hook
+
+
+def _make_preproj_hook(store: list[torch.Tensor]):
+    """Forward hook capturing a projection module's INPUT (the per-head,
+    pre-output-projection activations) — appended per invocation."""
+    def hook(_mod: torch.nn.Module, inp: Any, _output: Any) -> None:
+        t = inp[0] if isinstance(inp, tuple) else inp
+        if isinstance(t, torch.Tensor):
+            store.append(t.detach().float())
+
+    return hook
+
+
+def _capture_dla_activations(
+    model: Model,
+    arch: Any,
+    model_input: Any,
+    shared_layers: bool,
+) -> tuple[dict[str, torch.Tensor], dict[str, list[torch.Tensor]], list[tuple[str, torch.nn.Module]], torch.Tensor]:
+    """Single forward capturing everything DLA needs in one pass.
+
+    Returns ``(component_outputs, pre_proj_captures, proj_info, logits)``:
+    each component's output (attn / mlp), each attention layer's
+    pre-projection per-head input, and the model logits. This replaces the
+    three separate forward passes the pre-refactor DLA ran (component
+    capture, per-head capture, and the final logit read). Shared-weight
+    models register one hook per physical module and rely on per-call
+    ordering, which a single forward makes self-consistent.
+    """
+    component_outputs: dict[str, torch.Tensor] = {}
+    pre_proj_captures: dict[str, list[torch.Tensor]] = {}
+    proj_info: list[tuple[str, torch.nn.Module]] = []
+    handles: list[torch.utils.hooks.RemovableHandle] = []
+    seen_attn: set[int] = set()
+    seen_mlp: set[int] = set()
+    seen_proj: set[int] = set()
+
+    for li in arch.layer_infos:
+        if li.attn_path:
+            mod = _get_module(model._model, li.attn_path)
+            if not (shared_layers and id(mod) in seen_attn):
+                seen_attn.add(id(mod))
+                handles.append(mod.register_forward_hook(_make_component_hook(
+                    component_outputs, li.name, "attn", [0] if shared_layers else None)))
+        if li.mlp_path:
+            mod = _get_module(model._model, li.mlp_path)
+            if not (shared_layers and id(mod) in seen_mlp):
+                seen_mlp.add(id(mod))
+                handles.append(mod.register_forward_hook(_make_component_hook(
+                    component_outputs, li.name, "mlp", [0] if shared_layers else None)))
+        if li.o_proj_path and li.attn_path:
+            try:
+                proj_mod = _get_module(model._model, li.o_proj_path)
+            except AttributeError:
+                proj_mod = None
+            if (proj_mod is not None and hasattr(proj_mod, "weight")
+                    and not (shared_layers and id(proj_mod) in seen_proj)):
+                seen_proj.add(id(proj_mod))
+                store: list[torch.Tensor] = []
+                pre_proj_captures[li.name] = store
+                proj_info.append((li.name, proj_mod))
+                handles.append(proj_mod.register_forward_hook(_make_preproj_hook(store)))
+
+    try:
+        logits = model._forward(model_input)
+    finally:
+        for h in handles:
+            h.remove()
+    return component_outputs, pre_proj_captures, proj_info, logits
+
+
+def _component_contributions(
+    component_outputs: dict[str, torch.Tensor],
+    unembed_dir: torch.Tensor,
+    position: int,
+    arch: Any,
+) -> list[dict[str, Any]]:
+    """Project each captured component output through the unembedding direction."""
+    out: list[dict[str, Any]] = []
+    for comp_key, output_tensor in component_outputs.items():
+        # Shared-layer keys carry a "#N" call-index suffix; strip it to
+        # recover the module path and use the suffix as the logical layer.
+        layer_part, comp_type = comp_key.rsplit("::", 1)
+        if "#" in layer_part:
+            layer_name, idx_str = layer_part.rsplit("#", 1)
+            try:
+                layer_idx = int(idx_str)
+            except ValueError:
+                layer_idx = 0
+        else:
+            layer_name = layer_part
+            layer_idx_opt = arch.layer_of(layer_name) if hasattr(arch, "layer_of") else None
+            layer_idx = layer_idx_opt if layer_idx_opt is not None else 0
+
+        if output_tensor.dim() == 3:
+            vec = output_tensor[0, position, :]
+        elif output_tensor.dim() == 2:
+            vec = output_tensor[position, :]
+        else:
+            vec = output_tensor
+
+        out.append({
+            "component": f"L{layer_idx}.{'attn' if comp_type == 'attn' else 'mlp'}",
+            "layer": layer_idx,
+            "type": comp_type,
+            "logit_contribution": (vec @ unembed_dir).item(),
+            "module": layer_name,
+        })
+    return out
+
+
+def _head_contributions(
+    proj_info: list[tuple[str, torch.nn.Module]],
+    pre_proj_captures: dict[str, list[torch.Tensor]],
+    unembed_dir: torch.Tensor,
+    position: int,
+    num_heads: int,
+    shared_layers: bool,
+    arch: Any,
+) -> list[dict[str, Any]]:
+    """Per-head logit attribution: split each captured pre-projection input
+    into heads and project ``head_act @ W_O[head]`` through the unembedding."""
+    out: list[dict[str, Any]] = []
+    for layer_name, proj_mod in proj_info:
+        captured = pre_proj_captures.get(layer_name, [])
+        if not captured:
+            continue
+
+        # Shared-weight o_proj fires N times → each capture is one logical
+        # layer. Non-shared layers capture exactly once.
+        captures_to_process = captured if shared_layers else [captured[0]]
+
+        raw_w_o = get_weight(proj_mod).float()
+        is_conv1d = type(proj_mod).__name__ == "Conv1D"
+        w_o = raw_w_o.T if is_conv1d else raw_w_o
+        d_model = int(w_o.shape[0])
+
+        for invocation_idx, concat_heads in enumerate(captures_to_process):
+            if concat_heads.dim() == 2:
+                concat_heads = concat_heads.unsqueeze(0)
+            head_dim = concat_heads.shape[-1] // num_heads
+            per_head = concat_heads[0, position, :].view(num_heads, head_dim)
+            w_o_heads = w_o.view(d_model, num_heads, head_dim)
+
+            if shared_layers:
+                layer_idx = invocation_idx
+            else:
+                layer_idx_opt = arch.layer_of(layer_name) if hasattr(arch, "layer_of") else None
+                layer_idx = layer_idx_opt if layer_idx_opt is not None else 0
+
+            for h in range(num_heads):
+                head_resid = per_head[h] @ w_o_heads[:, h, :].T
+                out.append({
+                    "component": f"L{layer_idx}.H{h}",
+                    "layer": layer_idx,
+                    "head": h,
+                    "type": "head",
+                    "logit_contribution": (head_resid @ unembed_dir).item(),
+                })
+    return out
 
 
 _ATTN_SUFFIXES = (".attn", ".self_attn", ".attention")
@@ -475,17 +584,24 @@ def _compute_dla_features(
     }
 
 
+# _ATTN_NAMES / _MLP_NAMES imported from interpkit.core.arch at module top.
+
+
 def _find_attn_submodule(
     layer_mod: torch.nn.Module,
 ) -> tuple[str, torch.nn.Module] | None:
-    """Find the attention submodule inside a layer (recursive BFS)."""
+    """Find the attention submodule inside a layer (recursive BFS).
+
+    Identifies attention submodules by canonical attribute name set
+    (no regex). Same set used across the codebase for consistency.
+    """
     queue: deque[tuple[str, torch.nn.Module]] = deque()
     for name, mod in layer_mod.named_children():
         queue.append((name, mod))
     while queue:
         rel_name, mod = queue.popleft()
-        base = rel_name.split(".")[-1]
-        if re.search(r"(self_attn|attn|attention)", base, re.IGNORECASE):
+        base = rel_name.rsplit(".", 1)[-1].lower()
+        if base in _ATTN_NAMES:
             return rel_name, mod
         for child_name, child_mod in mod.named_children():
             queue.append((f"{rel_name}.{child_name}", child_mod))
@@ -495,14 +611,17 @@ def _find_attn_submodule(
 def _find_mlp_submodule(
     layer_mod: torch.nn.Module,
 ) -> tuple[str, torch.nn.Module] | None:
-    """Find the MLP submodule inside a layer (recursive BFS)."""
+    """Find the MLP submodule inside a layer (recursive BFS).
+
+    Identifies MLP submodules by canonical attribute name set (no regex).
+    """
     queue: deque[tuple[str, torch.nn.Module]] = deque()
     for name, mod in layer_mod.named_children():
         queue.append((name, mod))
     while queue:
         rel_name, mod = queue.popleft()
-        base = rel_name.split(".")[-1]
-        if re.search(r"(mlp|ffn|feed_forward)", base, re.IGNORECASE):
+        base = rel_name.rsplit(".", 1)[-1].lower()
+        if base in _MLP_NAMES:
             return rel_name, mod
         for child_name, child_mod in mod.named_children():
             queue.append((f"{rel_name}.{child_name}", child_mod))

@@ -17,6 +17,18 @@ NO_CHAT_TEMPLATE_MSG = (
 MAX_LEADING_SPACE_WARNINGS = 4
 
 
+def input_seq_len(prepared: Any) -> int | None:
+    """Best-effort sequence length of a prepared model input (token ids).
+
+    Returns ``None`` when it can't be determined (e.g. image tensors), so
+    callers can skip position validation rather than guess a wrong length.
+    """
+    ids = prepared.get("input_ids") if isinstance(prepared, dict) else prepared
+    if torch.is_tensor(ids) and ids.dim() >= 2:
+        return int(ids.shape[1])
+    return None
+
+
 def warn_if_leading_space_better(
     tokenizer: Any | None,
     text: Any,
@@ -249,12 +261,35 @@ def prepare_input(
                 return loaded
 
         # Text
+        # F-024 / N-009: reject empty / whitespace-only strings *before*
+        # tokenization. The post-tokenization ``numel() == 0`` check below
+        # only catches tokenizers that emit zero tokens (rare); BERT-family
+        # tokenizers add ``[CLS][SEP]`` so an empty raw string still yields
+        # 2 tokens and slips past — the audit's N-009 case. Catching the
+        # raw string upstream gives a single, consistent error path across
+        # every op and every tokenizer.
+        if not raw.strip():
+            raise ValueError(
+                "Input is empty or whitespace-only. "
+                "Pass at least one non-whitespace character."
+            )
+
         if tokenizer is None:
             raise ValueError(
                 "Cannot tokenize string input — no tokenizer available. "
                 "Pass a tokenizer when loading the model or provide a torch.Tensor directly."
             )
         encoded = tokenizer(raw, return_tensors="pt")
+        # Belt-and-braces: some exotic tokenizers can still emit zero
+        # ``input_ids`` for non-whitespace inputs (e.g. byte-level BPEs on
+        # control characters). Keep the original F-024 guard as a fallback.
+        input_ids = encoded.get("input_ids")
+        if input_ids is not None and input_ids.numel() == 0:
+            raise ValueError(
+                "Input produced 0 tokens after tokenization "
+                "(was the input empty or whitespace-only?). "
+                "Pass at least one non-whitespace character."
+            )
         return {k: v.to(device) for k, v in encoded.items()}
 
     raise TypeError(f"Unsupported input type: {type(raw).__name__}")
@@ -284,6 +319,15 @@ def prepare_pair(
         and not raw_b.endswith(".pt")
         and tokenizer is not None
     ):
+        # N-009: reject empty / whitespace-only inputs symmetric with
+        # ``prepare_input``. The paired tokenizer call emits 2 sequences;
+        # without this guard an empty leg would tokenize to special tokens
+        # only and cascade into opaque downstream failures.
+        if not raw_a.strip() or not raw_b.strip():
+            raise ValueError(
+                "Input is empty or whitespace-only. "
+                "Pass at least one non-whitespace character on both sides."
+            )
         encoded = tokenizer(
             [raw_a, raw_b],
             return_tensors="pt",

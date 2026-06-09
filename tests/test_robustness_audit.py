@@ -130,6 +130,26 @@ class _StubAutoModel:
 # ─────────────────────────────────────────────────────────────────────────
 
 
+def _fake_arch_for_attribute() -> SimpleNamespace:
+    """Minimal arch_info shim sufficient for ``check_op_supported('attribute', ...)``.
+
+    The attribute op gates DeBERTa-v3 (DisentangledSelfAttention) via the
+    support matrix before routing to text vs messages. The matrix reads
+    ``arch.family`` and ``arch.has_disentangled_attention`` — the shim
+    only needs to satisfy those attribute accesses for a non-DeBERTa
+    family. Mirrors the pattern at
+    ``test_contrastive_features_treats_bare_chat_as_single_example``.
+    """
+    from interpkit.core.arch import ArchFamily
+
+    return SimpleNamespace(
+        family=ArchFamily.CAUSAL_LM,
+        has_disentangled_attention=False,
+        spatial=False,
+        all_paths=lambda: [],
+    )
+
+
 def test_attribute_routes_messages_to_attribute_messages(monkeypatch):
     """The dispatch should pick ``_attribute_messages`` for chat-style lists."""
     from interpkit.ops import attribute
@@ -148,7 +168,10 @@ def test_attribute_routes_messages_to_attribute_messages(monkeypatch):
     )
 
     msgs = [{"role": "user", "content": "hi"}]
-    attribute.run_attribute(model=object(), input_data=msgs)
+    attribute.run_attribute(
+        model=SimpleNamespace(arch_info=_fake_arch_for_attribute()),
+        input_data=msgs,
+    )
     assert captured["messages"] == msgs
 
 
@@ -162,7 +185,10 @@ def test_attribute_text_still_routes_to_text(monkeypatch):
         return {"tokens": ["a"], "scores": [1.0], "target": 0, "method": "fake"}
 
     monkeypatch.setattr(attribute, "_attribute_text", _fake_attribute_text)
-    attribute.run_attribute(model=object(), input_data="hello world")
+    attribute.run_attribute(
+        model=SimpleNamespace(arch_info=_fake_arch_for_attribute()),
+        input_data="hello world",
+    )
     assert seen == ["hello world"]
 
 
@@ -654,8 +680,11 @@ def test_contrastive_features_treats_bare_chat_as_single_example(monkeypatch):
     pos_chat = [{"role": "user", "content": "I love cats."}]
     neg_chat = [{"role": "user", "content": "I hate cats."}]
 
+    fake_arch = SimpleNamespace(all_paths=lambda: ["layer.0"])
     out = sae_module.run_contrastive_features(
-        model=SimpleNamespace(_tokenizer=None, _device="cpu"),
+        model=SimpleNamespace(
+            _tokenizer=None, _device="cpu", arch_info=fake_arch,
+        ),
         positive_inputs=pos_chat,
         negative_inputs=neg_chat,
         at="layer.0",
@@ -740,14 +769,16 @@ def test_find_circuit_normalizes_chat_messages(monkeypatch):
 
 
 def test_python_dash_m_interpkit_module_imports():
-    """``python -m interpkit`` must dispatch to the same Typer app as the
-    console script.  Importing the module exposes ``main`` and ``app``."""
+    """``python -m interpkit`` must dispatch through the same entry as the
+    console script — ``interpkit.cli.main:run``, which wraps the Typer app so
+    interpkit's fail-loud errors render as a clean message instead of a
+    traceback. Importing the module exposes ``main`` and ``run``."""
     import importlib
 
     mod = importlib.import_module("interpkit.__main__")
     assert hasattr(mod, "main") and callable(mod.main)
-    from interpkit.cli.main import app as expected_app
-    assert mod.app is expected_app
+    from interpkit.cli.main import run as expected_run
+    assert mod.run is expected_run
 
 
 def test_python_dash_m_interpkit_help_runs():

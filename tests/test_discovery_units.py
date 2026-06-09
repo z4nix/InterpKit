@@ -10,18 +10,18 @@ from types import SimpleNamespace
 import torch
 import torch.nn as nn
 
-from interpkit.core.discovery import (
-    _LM_HEAD_PATTERNS,
+from interpkit.core.arch import (
+    ArchFamily,
+    ArchInfo,
     LayerInfo,
-    ModelArchInfo,
     ModuleInfo,
-    _detect_layers,
-    _find_unembedding,
-    _parse_hf_config,
-    _resolve_layer_info,
-    _split_fused_weight,
     extract_proj_weight,
 )
+from interpkit.core.arch.blocks import _detect_layers
+from interpkit.core.arch.family import _parse_hf_config
+from interpkit.core.arch.heads import _LM_HEAD_PATTERNS, _find_unembedding
+from interpkit.core.arch.layers import _resolve_layer_info
+from interpkit.core.arch.tree import _split_fused_weight
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  Helpers — synthetic module builders
@@ -474,22 +474,22 @@ class TestRegexPatterns:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  ModelArchInfo property
+#  ArchInfo property
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class TestModelArchInfoProperty:
+class TestArchInfoProperty:
 
     def test_is_language_model_true(self):
-        info = ModelArchInfo(has_lm_head=True, unembedding_name="lm_head")
+        info = ArchInfo(family=ArchFamily.CAUSAL_LM)
         assert info.is_language_model is True
 
-    def test_is_language_model_false_no_head(self):
-        info = ModelArchInfo(has_lm_head=False, unembedding_name=None)
+    def test_is_language_model_false_unknown_family(self):
+        info = ArchInfo(family=ArchFamily.UNKNOWN)
         assert info.is_language_model is False
 
-    def test_is_language_model_false_head_no_unembed(self):
-        info = ModelArchInfo(has_lm_head=True, unembedding_name=None)
+    def test_is_language_model_false_vision_family(self):
+        info = ArchInfo(family=ArchFamily.VISION_TRANSFORMER)
         assert info.is_language_model is False
 
     def test_attention_layer_indices(self):
@@ -501,7 +501,7 @@ class TestModelArchInfoProperty:
             LayerInfo(name="l.4", index=4, attn_path=None, layer_type="recurrent"),
             LayerInfo(name="l.5", index=5, attn_path="l.5.attn", layer_type="standard"),
         ]
-        arch = ModelArchInfo(layer_infos=infos)
+        arch = ArchInfo(layer_infos=infos)
         assert arch.attention_layer_indices == [2, 5]
 
     def test_attention_layer_infos(self):
@@ -509,7 +509,7 @@ class TestModelArchInfoProperty:
             LayerInfo(name="l.0", index=0, attn_path="l.0.attn"),
             LayerInfo(name="l.1", index=1, attn_path=None),
         ]
-        arch = ModelArchInfo(layer_infos=infos)
+        arch = ArchInfo(layer_infos=infos)
         result = arch.attention_layer_infos
         assert len(result) == 1
         assert result[0].index == 0
@@ -519,7 +519,7 @@ class TestModelArchInfoProperty:
             LayerInfo(name="l.0", index=0, layer_type="recurrent"),
             LayerInfo(name="l.1", index=1, layer_type="standard"),
         ]
-        arch = ModelArchInfo(layer_infos=infos)
+        arch = ArchInfo(layer_infos=infos)
         assert arch.is_hybrid is True
 
     def test_is_hybrid_false(self):
@@ -527,11 +527,11 @@ class TestModelArchInfoProperty:
             LayerInfo(name="l.0", index=0, layer_type="standard"),
             LayerInfo(name="l.1", index=1, layer_type="standard"),
         ]
-        arch = ModelArchInfo(layer_infos=infos)
+        arch = ArchInfo(layer_infos=infos)
         assert arch.is_hybrid is False
 
     def test_is_hybrid_empty(self):
-        arch = ModelArchInfo(layer_infos=[])
+        arch = ArchInfo(layer_infos=[])
         assert arch.is_hybrid is False
 
 
@@ -834,7 +834,7 @@ class TestLayerType:
         assert infos[5].layer_type == "standard"
         assert infos[5].attn_path is not None
 
-        arch = ModelArchInfo(layer_infos=infos)
+        arch = ArchInfo(layer_infos=infos)
         assert arch.is_hybrid is True
         assert arch.attention_layer_indices == [2, 5]
 

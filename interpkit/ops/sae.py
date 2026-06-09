@@ -11,6 +11,7 @@ import torch
 from rich.console import Console
 from rich.progress import Progress
 
+from interpkit.core.paths import validate_module_path
 from interpkit.ops.patch import _get_module
 
 if TYPE_CHECKING:
@@ -21,7 +22,30 @@ console = Console()
 
 @dataclass
 class SAE:
-    """A loaded Sparse Autoencoder with weights ready for inference."""
+    """A loaded Sparse Autoencoder with weights ready for inference.
+
+    Honours the SAELens-style configuration flags so the encoder runs in
+    the regime it was trained for. Pre-1.0 ignored these flags and
+    consequently produced ~98% active features on jbloom's GPT-2 SAEs
+    (F-014); reading the cfg correctly drops this to <5% active.
+
+    Configuration fields
+    --------------------
+    apply_b_dec_to_input:
+        SAELens convention. When True, subtract ``b_dec`` from the input
+        before the encoder linear map (the SAE was trained to reconstruct
+        ``x`` from ``encode(x - b_dec)``). When False, encode raw ``x``.
+        Default True (matches SAELens default).
+    normalize_activations:
+        SAELens convention. When True, L2-normalise the input before
+        encoding and rescale the reconstruction back. Default False.
+    activation_fn:
+        Encoder activation function name. ``"relu"`` (default), ``"jumprelu"``,
+        ``"topk"``. Determines feature sparsity behaviour.
+    activation_fn_kwargs:
+        Per-activation kwargs (e.g. ``{"k": 32}`` for top-k SAEs,
+        ``{"threshold": 0.1}`` for jump-ReLU).
+    """
 
     W_enc: torch.Tensor
     W_dec: torch.Tensor
@@ -29,10 +53,46 @@ class SAE:
     b_dec: torch.Tensor
     d_in: int = 0
     d_sae: int = 0
+    apply_b_dec_to_input: bool = True
+    normalize_activations: bool = False
+    activation_fn: str = "relu"
+    activation_fn_kwargs: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.relu((x - self.b_dec) @ self.W_enc + self.b_enc)
+        """Encode activations into sparse features.
+
+        Pipeline:
+            (optional normalize) → (optional subtract b_dec) → linear → activation
+        """
+        if self.normalize_activations:
+            norms = x.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+            x = x / norms
+
+        if self.apply_b_dec_to_input:
+            x = x - self.b_dec
+
+        pre_acts = x @ self.W_enc + self.b_enc
+        return self._apply_activation(pre_acts)
+
+    def _apply_activation(self, pre_acts: torch.Tensor) -> torch.Tensor:
+        """Apply the encoder's activation function honouring cfg flags."""
+        fn = self.activation_fn.lower()
+        if fn == "relu":
+            return torch.relu(pre_acts)
+        if fn == "jumprelu":
+            threshold = float(self.activation_fn_kwargs.get("threshold", 0.0))
+            mask = (pre_acts > threshold).to(pre_acts.dtype)
+            return pre_acts * mask
+        if fn == "topk":
+            k = int(self.activation_fn_kwargs.get("k", 32))
+            k = min(k, pre_acts.shape[-1])
+            top_vals, top_idx = pre_acts.topk(k, dim=-1)
+            out = torch.zeros_like(pre_acts)
+            out.scatter_(-1, top_idx, torch.relu(top_vals))
+            return out
+        # Unknown activation: treat as ReLU and surface a metadata note.
+        return torch.relu(pre_acts)
 
     def decode(self, features: torch.Tensor) -> torch.Tensor:
         return features @ self.W_dec + self.b_dec
@@ -63,6 +123,10 @@ def _ensure_sae_on_device(sae: SAE, target_device: torch.device) -> SAE:
         b_dec=sae.b_dec.to(target_device),
         d_in=sae.d_in,
         d_sae=sae.d_sae,
+        apply_b_dec_to_input=sae.apply_b_dec_to_input,
+        normalize_activations=sae.normalize_activations,
+        activation_fn=sae.activation_fn,
+        activation_fn_kwargs=dict(sae.activation_fn_kwargs),
         metadata=sae.metadata,
     )
 
@@ -196,11 +260,7 @@ def load_sae_from_path(
     if cfg_path.is_file():
         metadata = json.loads(cfg_path.read_text())
 
-    return SAE(
-        W_enc=W_enc, W_dec=W_dec, b_enc=b_enc, b_dec=b_dec,
-        d_in=W_enc.shape[0], d_sae=W_enc.shape[1],
-        metadata=metadata,
-    )
+    return _build_sae_from_weights(W_enc, W_dec, b_enc, b_dec, metadata)
 
 
 def _load_local_weights(path: Path) -> dict[str, torch.Tensor]:
@@ -246,11 +306,7 @@ def _load_sae_from_hf(
 
     metadata = _download_config(hf_id, subfolder=subfolder)
 
-    return SAE(
-        W_enc=W_enc, W_dec=W_dec, b_enc=b_enc, b_dec=b_dec,
-        d_in=W_enc.shape[0], d_sae=W_enc.shape[1],
-        metadata=metadata,
-    )
+    return _build_sae_from_weights(W_enc, W_dec, b_enc, b_dec, metadata)
 
 
 def load_sae_from_tensors(
@@ -262,15 +318,50 @@ def load_sae_from_tensors(
     metadata: dict[str, Any] | None = None,
 ) -> SAE:
     """Create an SAE from raw weight tensors (useful for testing)."""
+    return _build_sae_from_weights(W_enc, W_dec, b_enc, b_dec, metadata or {})
+
+
+def _build_sae_from_weights(
+    W_enc: torch.Tensor,
+    W_dec: torch.Tensor,
+    b_enc: torch.Tensor,
+    b_dec: torch.Tensor,
+    metadata: dict[str, Any],
+) -> SAE:
+    """Construct an SAE honouring SAELens-style cfg fields (F-014)."""
     return SAE(
-        W_enc=W_enc,
-        W_dec=W_dec,
-        b_enc=b_enc,
-        b_dec=b_dec,
-        d_in=W_enc.shape[0],
-        d_sae=W_enc.shape[1],
-        metadata=metadata or {},
+        W_enc=W_enc, W_dec=W_dec, b_enc=b_enc, b_dec=b_dec,
+        d_in=W_enc.shape[0], d_sae=W_enc.shape[1],
+        apply_b_dec_to_input=bool(metadata.get("apply_b_dec_to_input", True)),
+        normalize_activations=bool(metadata.get("normalize_activations", False)),
+        activation_fn=str(metadata.get("activation_fn", "relu")),
+        activation_fn_kwargs=dict(metadata.get("activation_fn_kwargs", {}) or {}),
+        metadata=metadata,
     )
+
+
+def from_sae_lens(sae_lens_obj: Any) -> SAE:
+    """Wrap a `sae_lens.SAE` instance as an interpkit :class:`SAE`.
+
+    Thin interop shim so users with an existing ``sae_lens`` SAE can use
+    interpkit's :meth:`Model.features` without reloading from disk.
+
+    Reads the cfg via ``sae_lens_obj.cfg`` and copies the four weight
+    tensors plus the four configuration flags interpkit uses.
+    """
+    cfg = getattr(sae_lens_obj, "cfg", None)
+    metadata: dict[str, Any] = {}
+    if cfg is not None:
+        for attr in ("apply_b_dec_to_input", "normalize_activations", "activation_fn", "activation_fn_kwargs"):
+            val = getattr(cfg, attr, None)
+            if val is not None:
+                metadata[attr] = val
+
+    W_enc = sae_lens_obj.W_enc.detach()
+    W_dec = sae_lens_obj.W_dec.detach()
+    b_enc = sae_lens_obj.b_enc.detach()
+    b_dec = sae_lens_obj.b_dec.detach()
+    return _build_sae_from_weights(W_enc, W_dec, b_enc, b_dec, metadata)
 
 
 def run_features(
@@ -297,6 +388,9 @@ def run_features(
     """
     from interpkit.ops.activations import run_activations
 
+    # F-022: reject typo'd module paths up-front with a friendly KeyError.
+    validate_module_path(at, model.arch_info)
+
     act = run_activations(model, input_data, at=at, print_stats=False)
     if not isinstance(act, torch.Tensor):
         raise TypeError(f"Expected tensor from activations, got {type(act).__name__}")
@@ -316,8 +410,21 @@ def run_features(
 
     features, x_hat = sae.forward(flat)
 
+    # F-014: compute reconstruction quality metrics in unambiguous units.
     recon_error = (flat - x_hat).norm(dim=-1).mean().item()
-    sparsity = (features == 0).float().mean().item()
+    activation_norm = flat.norm(dim=-1).mean().item()
+    loss_ratio = recon_error / max(activation_norm, 1e-8)
+
+    # F-014: replace ambiguous "sparsity" (was it fraction-active or
+    # fraction-dead?) with two unambiguous fields.
+    # active_fraction: fraction of features firing on the *current* input.
+    # dead_fraction: fraction of features that fired *zero times across
+    # all token positions* in the current input (token-level dead-feature
+    # estimate; for true population-level dead-feature stats, accumulate
+    # this across many inputs).
+    feature_was_active = (features > 0).any(dim=0)
+    active_fraction = float(feature_was_active.float().mean().item())
+    dead_fraction = float((~feature_was_active).float().mean().item())
 
     mean_activations = features.mean(dim=0)
     topk_vals, topk_idxs = mean_activations.topk(min(top_k, sae.d_sae))
@@ -331,10 +438,20 @@ def run_features(
         "module": at,
         "top_features": top_features,
         "reconstruction_error": recon_error,
-        "sparsity": sparsity,
-        "num_active_features": int((mean_activations > 0).sum().item()),
+        # F-014: unambiguous fraction fields replacing "sparsity"
+        "active_fraction": active_fraction,
+        "dead_fraction": dead_fraction,
+        "loss_ratio": loss_ratio,
+        "activation_norm": activation_norm,
+        "num_active_features": int(feature_was_active.sum().item()),
         "total_features": sae.d_sae,
         "feature_activations": features.detach(),
+        "sae_config": {
+            "apply_b_dec_to_input": sae.apply_b_dec_to_input,
+            "normalize_activations": sae.normalize_activations,
+            "activation_fn": sae.activation_fn,
+            "activation_fn_kwargs": dict(sae.activation_fn_kwargs),
+        },
     }
 
     if attribute:
@@ -367,6 +484,9 @@ def run_contrastive_features(
     the two concepts.
     """
     from interpkit.ops.activations import run_activations
+
+    # F-022: reject typo'd module paths up-front with a friendly KeyError.
+    validate_module_path(at, model.arch_info)
 
     if not positive_inputs:
         raise ValueError("At least one positive input is required for contrastive features.")

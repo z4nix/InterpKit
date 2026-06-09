@@ -14,20 +14,40 @@ console = Console()
 
 
 def run_diff(
-    model_a: Model,
-    model_b: Model,
+    model_a: Model | str,
+    model_b: Model | str,
     input_data: Any,
     *,
     save: str | None = None,
 ) -> dict[str, Any]:
     """Compare activations between two models at all discovered layers.
 
+    F-016: ``model_a`` and ``model_b`` may now be HuggingFace model id
+    strings — they're auto-loaded via :func:`interpkit.load`. Pre-1.0
+    silently failed deep inside with ``AttributeError: 'str' object has
+    no attribute 'arch_info'`` when callers passed strings (a reasonable
+    inference from the function name).
+
     Returns a dict with ``"results"`` (list sorted by cosine distance,
     highest first), ``"skipped_a"`` (count of modules only in model A),
     and ``"skipped_b"`` (count of modules only in model B).
     """
     from interpkit.core.render import render_diff
+    from interpkit.core.support_matrix import check_op_supported
     from interpkit.ops.activations import run_activations
+
+    # F-016: auto-load string IDs for ergonomic UX.
+    if isinstance(model_a, str):
+        from interpkit.core.loader import load
+        model_a = load(model_a)
+    if isinstance(model_b, str):
+        from interpkit.core.loader import load
+        model_b = load(model_b)
+
+    # N-004: gate DeBERTa-v3 on either side — diff hooks would fire the
+    # broken relative-position-bias broadcast path.
+    check_op_supported("diff", model_a.arch_info)
+    check_op_supported("diff", model_b.arch_info)
 
     layers_a = set(model_a.arch_info.layer_names or [])
     layers_b = set(model_b.arch_info.layer_names or [])

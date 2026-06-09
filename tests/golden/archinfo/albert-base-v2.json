@@ -1,0 +1,49 @@
+{
+  "block_mechanisms": [
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention"
+  ],
+  "blocks": [
+    "albert.encoder.albert_layer_groups.0",
+    "albert.encoder.albert_layer_groups.0",
+    "albert.encoder.albert_layer_groups.0",
+    "albert.encoder.albert_layer_groups.0",
+    "albert.encoder.albert_layer_groups.0",
+    "albert.encoder.albert_layer_groups.0",
+    "albert.encoder.albert_layer_groups.0",
+    "albert.encoder.albert_layer_groups.0",
+    "albert.encoder.albert_layer_groups.0",
+    "albert.encoder.albert_layer_groups.0",
+    "albert.encoder.albert_layer_groups.0",
+    "albert.encoder.albert_layer_groups.0"
+  ],
+  "capabilities": {
+    "has_attention": true,
+    "has_residual_stream": true,
+    "has_unembedding": true,
+    "is_generative": false
+  },
+  "decoder_blocks": [],
+  "embed_path": "albert.embeddings.word_embeddings",
+  "family": "mlm",
+  "has_cls_token": false,
+  "has_disentangled_attention": false,
+  "head_path": "predictions.decoder",
+  "is_encoder_decoder": false,
+  "is_shared_layers": true,
+  "mlm_head_path": "predictions",
+  "pre_head_path": "predictions.LayerNorm",
+  "project_out_path": "predictions.dense",
+  "residual_topology": "post_ln",
+  "spatial": false
+}

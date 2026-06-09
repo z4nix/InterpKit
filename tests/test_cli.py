@@ -21,12 +21,46 @@ runner = CliRunner()
 
 @pytest.fixture(autouse=True)
 def _reset_output_format():
-    """Reset CLI output format between tests."""
+    """Reset CLI output format AND op-module consoles between tests.
+
+    F-023: the CLI's --format json mode re-binds every op-module's
+    ``console`` to write to stderr. Pytest closes captured streams
+    between tests, so we restore stdout-bound Console objects after
+    each test to avoid I/O-on-closed-file errors in unrelated tests.
+    """
+    import importlib
+
+    from rich.console import Console
+
     import interpkit.cli.main as cli_mod
 
     cli_mod._output_format = "rich"
     yield
     cli_mod._output_format = "rich"
+    # Restore op-module consoles to fresh stdout-bound instances.
+    for mod_name in (
+        "interpkit.core.render",
+        "interpkit.core.plot",
+        "interpkit.ops.attention",
+        "interpkit.ops.attribute",
+        "interpkit.ops.batch",
+        "interpkit.ops.circuits",
+        "interpkit.ops.diff",
+        "interpkit.ops.find_circuit",
+        "interpkit.ops.lens",
+        "interpkit.ops.probe",
+        "interpkit.ops.report",
+        "interpkit.ops.sae",
+        "interpkit.ops.scan",
+        "interpkit.ops.steer",
+        "interpkit.ops.trace",
+    ):
+        try:
+            mod = importlib.import_module(mod_name)
+            if hasattr(mod, "console"):
+                mod.console = Console()
+        except ImportError:
+            continue
 
 
 @pytest.fixture()
@@ -680,3 +714,45 @@ def test_json_dump_multidim_tensor(capsys):
     out = capsys.readouterr().out
     parsed = json.loads(out)
     assert parsed["x"] == [[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]]
+
+
+# ── run(): interpkit's fail-loud errors render cleanly, not as tracebacks ──
+
+
+def test_run_renders_interpkit_error_without_traceback(monkeypatch, capsys):
+    """The ``run()`` entry boundary turns an InterpkitError into a clean
+    one-line message + exit 1, instead of letting it surface as a traceback."""
+    from interpkit.cli import main as cli
+    from interpkit.core.exceptions import OperationNotSupportedForArchitecture
+
+    def _boom():
+        raise OperationNotSupportedForArchitecture(
+            "`attention` requires at least one attention layer; this model lacks it"
+        )
+
+    monkeypatch.setattr(cli, "app", _boom)
+    with pytest.raises(SystemExit) as exc:
+        cli.run()
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "Error:" in err and "attention layer" in err
+
+
+def test_run_renders_value_and_key_errors_cleanly(monkeypatch, capsys):
+    """Common user-input errors (empty input -> ValueError, unknown module
+    path -> KeyError) are rendered cleanly too, not as tracebacks. KeyError's
+    quoted ``__str__`` must not leak the wrapping quotes."""
+    from interpkit.cli import main as cli
+
+    monkeypatch.setattr(cli, "app", lambda: (_ for _ in ()).throw(
+        KeyError("Module path 'x' not found on this model. Did you mean: [...]")
+    ))
+    with pytest.raises(SystemExit) as exc:
+        cli.run()
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "Module path" in err
+    # The message is unwrapped (no leading quote from KeyError.__str__).
+    assert "Error: Module path" in err

@@ -1,8 +1,17 @@
-"""CLI entry point — Typer app with all interpkit commands."""
+"""CLI entry point — Typer app with all interpkit commands.
+
+When ``--format json`` is set, all status / progress output (rich panels,
+load progress bars, tqdm) is silenced or routed to stderr (F-023). The
+stdout stream stays clean JSON for programmatic consumers — pre-1.0
+``--format json`` interleaved rich panels and tqdm bars with the JSON
+block, breaking ``json.loads(p.stdout)`` for every CLI invocation.
+"""
 
 from __future__ import annotations
 
 import json as _json
+import os as _os
+import sys as _sys
 from importlib.metadata import version as _pkg_version
 
 import typer
@@ -33,10 +42,84 @@ app = typer.Typer(
     no_args_is_help=False,
     add_completion=False,
     rich_markup_mode="rich",
+    # interpkit's own errors (OperationNotSupportedForArchitecture,
+    # WrongInputType, LensPipelineMismatch, …) are deliberate, well-messaged,
+    # user-facing failures — not bugs. Disable Typer's rich-traceback so they
+    # don't reach the user as a scary stack trace; ``run()`` renders them as a
+    # clean one-line error instead.
+    pretty_exceptions_enable=False,
 )
+# F-023: console object — production code should call _make_console() so
+# JSON-mode stderr routing happens uniformly. The module-level singleton
+# is reassigned by main() once --format is parsed.
 console = Console()
 
 _output_format: str = "rich"
+
+
+def _make_console() -> Console:
+    """Construct a Console that respects the active output format.
+
+    In ``json`` mode, status / progress output goes to stderr so stdout
+    remains clean JSON. In ``rich`` mode, behaves identically to the
+    pre-1.0 module-level singleton.
+    """
+    if _output_format == "json":
+        return Console(file=_sys.stderr)
+    return Console()
+
+
+def _silence_third_party_loaders() -> None:
+    """Mute transformers / tqdm / huggingface chatter in JSON mode.
+
+    Pre-1.0 ``--format json`` had model-loading tqdm bars and the
+    "Loaded ... on cpu" rich line interleaved with the actual JSON
+    payload (F-023). Programmatic consumers couldn't json.loads(stdout).
+
+    Also re-binds every op-module console to write to stderr so rich
+    op-level rendering doesn't pollute the JSON stream.
+    """
+    if _output_format != "json":
+        return
+    # Silence HF transformers progress / warnings to stderr-only.
+    try:
+        from transformers import logging as _hf_logging
+        _hf_logging.set_verbosity_error()
+        _hf_logging.disable_progress_bar()
+    except (ImportError, AttributeError):
+        pass
+    # Silence raw tqdm.
+    _os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+    _os.environ["TQDM_DISABLE"] = "1"
+    _os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+
+    # Re-bind op-module consoles to stderr so renders don't pollute stdout.
+    import importlib
+
+    _stderr_console = Console(file=_sys.stderr)
+    for mod_name in (
+        "interpkit.core.render",
+        "interpkit.core.plot",
+        "interpkit.ops.attention",
+        "interpkit.ops.attribute",
+        "interpkit.ops.batch",
+        "interpkit.ops.circuits",
+        "interpkit.ops.diff",
+        "interpkit.ops.find_circuit",
+        "interpkit.ops.lens",
+        "interpkit.ops.probe",
+        "interpkit.ops.report",
+        "interpkit.ops.sae",
+        "interpkit.ops.scan",
+        "interpkit.ops.steer",
+        "interpkit.ops.trace",
+    ):
+        try:
+            mod = importlib.import_module(mod_name)
+            if hasattr(mod, "console"):
+                mod.console = _stderr_console  # type: ignore[attr-defined]
+        except ImportError:
+            continue
 
 _VERSION = _pkg_version("interpkit")
 
@@ -63,8 +146,17 @@ def _load_model(
 ):
     from interpkit.core.model import load
 
+    # F-007 fix: don't forward dtype=None — load() now requires explicit
+    # dtype. Defer to its built-in default (fp32) when the CLI user didn't
+    # specify --dtype.
+    kwargs: dict = {"device": device}
+    if dtype is not None:
+        kwargs["dtype"] = dtype
+    if device_map is not None:
+        kwargs["device_map"] = device_map
+
     with console.status(f"  Loading [bold]{model_name}[/bold]..."):
-        m = load(model_name, device=device, dtype=dtype, device_map=device_map)
+        m = load(model_name, **kwargs)
     console.print(f"  [bold green]Loaded[/bold green] [{ACCENT}]{model_name}[/{ACCENT}] on [bold]{m._device}[/bold]")
     return m
 
@@ -417,8 +509,11 @@ def main(
     ),
 ) -> None:
     """Mech interp for any HuggingFace model."""
-    global _output_format
+    global _output_format, console
     _output_format = fmt
+    # F-023: re-bind module-level console so it routes to stderr in JSON mode.
+    console = _make_console()
+    _silence_third_party_loaders()
     if ctx.invoked_subcommand is not None:
         return
     if extensive:
@@ -526,6 +621,38 @@ def inspect(
 ) -> None:
     """Print the model's module tree with types, param counts, and detected roles."""
     m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
+    if _output_format == "json":
+        # F-023: inspect previously ignored --format json. Now emits a
+        # structured JSON description of the architecture.
+        arch = m.arch_info
+        result = {
+            "model": model_name,
+            "family": arch.family.value if hasattr(arch.family, "value") else str(arch.family),
+            "arch_family": arch.arch_family,
+            "device": m.device,
+            "dtype": str(m.dtype),
+            "num_layers": arch.num_layers,
+            "hidden_size": arch.hidden_size,
+            "num_attention_heads": arch.num_attention_heads,
+            "vocab_size": arch.vocab_size,
+            "is_encoder_decoder": arch.is_encoder_decoder,
+            "spatial": arch.spatial,
+            "head_path": arch.head_path,
+            "embed_path": arch.embed_path,
+            "pre_head_path": arch.pre_head_path,
+            "project_out_path": arch.project_out_path,
+            "blocks": [
+                {"path": b.path, "stage": b.stage,
+                 "has_attention": b.has_attention, "has_residual": b.has_residual}
+                for b in arch.blocks
+            ],
+            "modules": [
+                {"name": m.name, "type": m.type_name, "param_count": m.param_count, "role": m.role}
+                for m in arch.modules
+            ],
+        }
+        _json_dump(result)
+        return
     with console.status("  Inspecting model..."):
         m.inspect()
 
@@ -1063,5 +1190,38 @@ def chat(
         _json_dump({k: v for k, v in result.items() if k not in {"input_ids", "output_ids"}})
 
 
+def run() -> None:
+    """CLI entry point that renders interpkit's intentional errors cleanly.
+
+    The ``InterpkitError`` family (e.g. ``OperationNotSupportedForArchitecture``,
+    ``WrongInputType``, ``LensPipelineMismatch``) is the project's fail-loud
+    contract — these are clear, actionable, user-facing messages, not crashes.
+    Presenting them as a Python traceback undermines that, so we catch them at
+    the boundary and print a single clean line (JSON object in ``--format json``)
+    + exit non-zero. Unexpected exceptions still propagate as a normal traceback.
+    """
+    from interpkit.core.exceptions import InterpkitError
+
+    try:
+        app()
+    except (InterpkitError, ValueError, KeyError, IndexError) as exc:
+        # interpkit's user-facing validation failures: unsupported op / wrong
+        # input type (InterpkitError family), empty input (ValueError), unknown
+        # module path (KeyError with a "did you mean" hint), out-of-range
+        # position (ValueError / IndexError). These are clear, actionable
+        # messages — render one line, not a traceback. Genuine internal bugs
+        # raise other types (RuntimeError, TypeError, …) and still surface a
+        # full traceback. ``KeyError.__str__`` wraps the message in quotes, so
+        # pull ``args[0]`` for it.
+        msg = exc.args[0] if (isinstance(exc, KeyError) and exc.args) else str(exc)
+        if _output_format == "json":
+            import json as _json
+
+            print(_json.dumps({"error": type(exc).__name__, "message": str(msg)}))
+        else:
+            Console(file=_sys.stderr).print(f"[bold red]Error:[/bold red] {msg}")
+        raise SystemExit(1) from None
+
+
 if __name__ == "__main__":
-    app()
+    run()

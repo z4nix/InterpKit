@@ -1,20 +1,57 @@
-"""attention — capture and display attention patterns for transformer models."""
+"""attention — eager-attention weights for transformer models (F-001 + F-002 + N-003).
+
+Pre-1.0 interpkit had two correctness bugs in attention:
+
+- F-001: ``output_attentions=True`` was set BEFORE ``_attn_implementation="eager"``,
+  but in transformers 5.x the ``output_attentions`` setter inspects the
+  current attn implementation and raises if it's still SDPA. The exception
+  was swallowed and the code silently fell back to a QK-reconstruction
+  path that returned RoPE/ALiBi-less weights — wrong by orders of magnitude.
+
+- F-002: the QK-reconstruction fallback captured Q/K BEFORE the model's
+  RoPE/ALiBi/softcap was applied. Reconstructing post-positional Q/K
+  correctly requires family-specific code (RoPE via apply_rotary_pos_emb,
+  ALiBi via per-head slopes, Gemma softcap, DeBERTa disentangled bias) —
+  ~100 lines per family, a permanent source of subtle bugs.
+
+- N-003: encoder-decoder models (T5/Flan-T5/BART) populate
+  ``decoder_attentions``, ``cross_attentions``, and ``encoder_attentions``
+  on their forward output — never the flat ``attentions`` field. Reading
+  only ``attentions`` produced ``AttentionBackendUnavailable`` on every
+  seq2seq model. The ``kind=`` parameter routes to the appropriate field
+  per family.
+
+The 1.0 fix: write order is correct, every call goes through eager
+(via :meth:`Model._ensure_eager_attention` which lazily loads a second
+model copy with ``attn_implementation="eager"``), and the QK-reconstruction
+fallback is *deleted*. If eager is unavailable (ancient transformers,
+custom architecture without eager support), we raise
+:class:`AttentionBackendUnavailable` with a clear message rather than
+return wrong weights.
+"""
 
 from __future__ import annotations
 
-import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import torch
 import torch.nn.functional as F
 from rich.console import Console
 
-from interpkit.ops.patch import _get_module
+from interpkit.core.exceptions import AttentionBackendUnavailable
+from interpkit.core.support_matrix import check_op_supported
 
 if TYPE_CHECKING:
     from interpkit.core.model import Model
 
 console = Console()
+
+
+# N-003: valid attention-tensor kinds. ``self`` is decoder-self for
+# seq2seq, plain self-attention for causal/MLM/vision. ``cross`` is
+# decoder→encoder cross-attention (seq2seq only). ``encoder`` is
+# encoder-self attention on a seq2seq model.
+_VALID_ATTENTION_KINDS = ("self", "cross", "encoder")
 
 
 def run_attention(
@@ -24,27 +61,47 @@ def run_attention(
     layer: int | None = None,
     head: int | None = None,
     causal: bool | None = None,
+    kind: Literal["self", "cross", "encoder"] = "self",
     save: str | None = None,
     html: str | None = None,
 ) -> list[dict[str, Any]] | None:
-    """Capture attention weights and display a summary.
+    """Capture eager-attention weights and display a summary.
 
-    Computes attention weights manually from Q/K projections via hooks,
-    since modern transformer implementations (SDPA, FlashAttention) don't
-    return attention weights.
+    Always uses HuggingFace's eager attention implementation for
+    correctness — modern transformers default to SDPA / FlashAttention
+    which don't return weights without an eager backend.
 
     Parameters
     ----------
     causal:
-        Whether to apply a causal (triangular) attention mask.  If *None*
-        (default), auto-detected from ``model.config.is_decoder``.
-        Explicitly set to ``True`` or ``False`` to override.
+        Whether to apply a causal (triangular) attention mask.  Passed
+        to the attention layer when relevant; ignored when reading
+        eager attentions directly (the model already applies its own mask).
+    kind:
+        Which attention tensor to return for encoder-decoder models
+        (T5/BART). Ignored on causal-LM, MLM, and vision models, which
+        only have a single self-attention stack.
+
+        - ``"self"`` (default): decoder self-attention (seq2seq) or the
+          model's only self-attention stack (everything else).
+        - ``"cross"``: decoder→encoder cross-attention (seq2seq only).
+        - ``"encoder"``: encoder self-attention (seq2seq only).
+
+        Each result row carries ``attention_kind`` so callers can verify
+        which tensor was returned.
     """
     from interpkit.core.render import render_attention
 
-    arch = model.arch_info
-    attn_modules = [m for m in arch.modules if m.role == "attention"]
+    if kind not in _VALID_ATTENTION_KINDS:
+        raise ValueError(
+            f"attention(kind={kind!r}) invalid — must be one of "
+            f"{_VALID_ATTENTION_KINDS}."
+        )
 
+    arch = model.arch_info
+    check_op_supported("attention", arch)
+
+    attn_modules = [m for m in arch.modules if m.role == "attention"]
     if not attn_modules:
         console.print(
             "\n  [yellow]attention not available:[/yellow] no attention modules detected"
@@ -57,168 +114,107 @@ def run_attention(
         if config is not None:
             is_decoder = getattr(config, "is_decoder", None)
             is_enc_dec = getattr(config, "is_encoder_decoder", None)
-            if is_decoder is False and not is_enc_dec:
-                causal = False
-            else:
-                causal = True
+            causal = not (is_decoder is False and not is_enc_dec)
         else:
             causal = True
 
+    eager_model = model._ensure_eager_attention()
     model_input = model._prepare(input_data)
 
-    tokens = None
+    tokens: list[str] | None = None
     if model._tokenizer is not None and isinstance(input_data, str):
         encoded = model._tokenizer(input_data, return_tensors="pt")
         token_ids = encoded["input_ids"][0].tolist()
         tokens = model._tokenizer.convert_ids_to_tokens(token_ids)
 
-    # Strategy: try output_attentions=True first (gives correct post-softmax
-    # weights including RoPE, ALiBi, etc.), fall back to manual Q/K
-    # reconstruction if that returns nothing (e.g. SDPA kernels).
-    results: list[dict[str, Any]] = []
-    used_output_attentions = False
+    config = getattr(eager_model, "config", None)
+    if config is None:
+        raise AttentionBackendUnavailable(
+            f"Cannot enable eager attention on a model without a `.config` "
+            f"attribute (type {type(eager_model).__name__}). Pass a HuggingFace "
+            f"PreTrainedModel via interpkit.load() to use attention()."
+        )
 
-    config = getattr(model._model, "config", None)
-    if config is not None:
-        old_output_attn = getattr(config, "output_attentions", None)
-        old_attn_impl = getattr(config, "_attn_implementation", None)
-        try:
-            config.output_attentions = True
-            # Force eager attention so SDPA backends actually return weights
-            config._attn_implementation = "eager"
-            with torch.no_grad():
-                if isinstance(model_input, dict):
-                    out = model._model(**model_input)
-                else:
-                    out = model._model(model_input)
-            attentions = getattr(out, "attentions", None)
-            if attentions is not None and len(attentions) > 0:
-                used_output_attentions = True
-                for li, attn_tensor in enumerate(attentions):
-                    if layer is not None and li != layer:
-                        continue
-                    aw = attn_tensor[0].detach()  # (num_heads, seq, seq)
-                    for head_idx in range(aw.shape[0]):
-                        if head is not None and head_idx != head:
-                            continue
-                        head_attn = aw[head_idx]
-                        top_pairs = _get_top_pairs(head_attn, k=5)
-                        entropy = _attention_entropy(head_attn)
-                        results.append({
-                            "layer": li,
-                            "head": head_idx,
-                            "top_pairs": top_pairs,
-                            "entropy": entropy,
-                            "weights": head_attn,
-                        })
-        except Exception as exc:
-            console.print(
-                f"  [dim]attention: output_attentions failed "
-                f"({type(exc).__name__}: {exc}), falling back to Q/K reconstruction.[/dim]"
-            )
-            used_output_attentions = False
-        finally:
-            if old_output_attn is None:
-                config.output_attentions = False
-            else:
-                config.output_attentions = old_output_attn
-            if old_attn_impl is None:
-                try:
-                    del config._attn_implementation
-                except AttributeError:
-                    pass
-            else:
-                config._attn_implementation = old_attn_impl
+    # Save and restore previous config flags around the eager forward pass.
+    old_output_attn = getattr(config, "output_attentions", None)
+    old_attn_impl = getattr(config, "_attn_implementation", None)
 
-    # Fallback: manual Q/K reconstruction (pre-RoPE for models with rotary embeddings)
-    if not used_output_attentions:
-        qk_cache: dict[str, dict[str, torch.Tensor]] = {}
-        hooks = []
-
-        def _make_qk_hook(name: str, attn_name: str):
-            def hook_fn(_mod: torch.nn.Module, _inp: Any, output: Any) -> None:
-                t = output if isinstance(output, torch.Tensor) else (
-                    output[0] if isinstance(output, (tuple, list)) and len(output) > 0 and isinstance(output[0], torch.Tensor) else None
-                )
-                if t is not None:
-                    qk_cache.setdefault(attn_name, {})[name] = t.detach()
-            return hook_fn
-
-        # Use pre-resolved layer_infos when available
-        if arch.layer_infos:
-            for layer_info in arch.layer_infos:
-                if layer is not None and layer_info.index != layer:
-                    continue
-                if layer_info.attn_path is None:
-                    continue
-                attn_key = layer_info.attn_path
-                if layer_info.qkv_style == "fused" and layer_info.qkv_proj_path:
-                    qkv_mod = _get_module(model._model, layer_info.qkv_proj_path)
-                    child_name = layer_info.qkv_proj_path.rsplit(".", 1)[-1]
-                    hooks.append(qkv_mod.register_forward_hook(_make_qk_hook(child_name, attn_key)))
-                elif layer_info.qkv_style == "separate":
-                    if layer_info.q_proj_path:
-                        q_mod = _get_module(model._model, layer_info.q_proj_path)
-                        hooks.append(q_mod.register_forward_hook(
-                            _make_qk_hook(layer_info.q_proj_path.rsplit(".", 1)[-1], attn_key)))
-                    if layer_info.k_proj_path:
-                        k_mod = _get_module(model._model, layer_info.k_proj_path)
-                        hooks.append(k_mod.register_forward_hook(
-                            _make_qk_hook(layer_info.k_proj_path.rsplit(".", 1)[-1], attn_key)))
-        else:
-            for mod_info in attn_modules:
-                if layer is not None:
-                    layer_match = re.search(r"\.(\d+)\.", mod_info.name)
-                    if layer_match and int(layer_match.group(1)) != layer:
-                        continue
-                attn_mod = _get_module(model._model, mod_info.name)
-                for child_name, child_mod in attn_mod.named_modules():
-                    is_qkv = any(p in child_name.lower() for p in ("c_attn", "qkv", "query_key_value", "q_proj", "query", "q_lin"))
-                    is_k = any(p in child_name.lower() for p in ("k_proj", "key", "k_lin"))
-                    if is_qkv or is_k:
-                        hooks.append(child_mod.register_forward_hook(_make_qk_hook(child_name, mod_info.name)))
-
+    try:
+        # F-001: order matters — set the implementation first, THEN turn on
+        # output_attentions. The setter inspects the attn implementation in
+        # transformers 5.x and raises if it's still SDPA.
+        config._attn_implementation = "eager"
+        config.output_attentions = True
+        # N-003: also pass output_attentions / return_dict as forward kwargs.
+        # Some HF model classes (notably T5/BART encoder-decoders in modern
+        # transformers) ignore the config attribute and only honor the kwarg.
+        # ``return_dict=True`` ensures the output object exposes named
+        # ``decoder_attentions`` / ``cross_attentions`` fields.
+        forward_kwargs: dict[str, Any] = {
+            "output_attentions": True,
+            "return_dict": True,
+        }
         with torch.no_grad():
-            model._forward(model_input)
+            if isinstance(model_input, dict):
+                out = eager_model(**model_input, **forward_kwargs)
+            else:
+                out = eager_model(model_input, **forward_kwargs)
+        # N-003: encoder-decoder models populate decoder_/cross_/encoder_
+        # attentions separately; the flat ``attentions`` field is None.
+        # Route per-family + user-requested ``kind`` to the right field.
+        attentions, attention_kind_used = _extract_attentions(
+            out, arch=arch, kind=kind, model_class=type(eager_model).__name__,
+        )
+    finally:
+        if old_output_attn is None:
+            try:
+                del config.output_attentions
+            except AttributeError:
+                pass
+        else:
+            config.output_attentions = old_output_attn
+        if old_attn_impl is None:
+            try:
+                del config._attn_implementation
+            except AttributeError:
+                pass
+        else:
+            config._attn_implementation = old_attn_impl
 
-        for h in hooks:
-            h.remove()
-
-        for attn_name, projections in qk_cache.items():
-            layer_match = re.search(r"\.(\d+)\.", attn_name)
-            layer_idx = int(layer_match.group(1)) if layer_match else 0
-
-            attn_weights = _compute_attention_from_projections(
-                projections, arch.num_attention_heads, causal=causal,
-            )
-
-            if attn_weights is None:
-                console.print(
-                    f"  [dim]attention: could not compute weights for {attn_name} "
-                    f"(captured projections: {list(projections.keys())})[/dim]"
-                )
+    results: list[dict[str, Any]] = []
+    for li, attn_tensor in enumerate(attentions):
+        if layer is not None and li != layer:
+            continue
+        # attn_tensor shape: (batch, num_heads, seq, seq) — drop batch dim.
+        aw = attn_tensor[0].detach()
+        for head_idx in range(aw.shape[0]):
+            if head is not None and head_idx != head:
                 continue
-
-            num_heads_found = attn_weights.shape[0]
-            for head_idx in range(num_heads_found):
-                if head is not None and head_idx != head:
-                    continue
-
-                head_attn = attn_weights[head_idx]
-                top_pairs = _get_top_pairs(head_attn, k=5)
-                entropy = _attention_entropy(head_attn)
-
-                results.append({
-                    "layer": layer_idx,
-                    "head": head_idx,
-                    "top_pairs": top_pairs,
-                    "entropy": entropy,
-                    "weights": head_attn,
-                })
+            head_attn = aw[head_idx]
+            top_pairs = _get_top_pairs(head_attn, k=5)
+            entropy = _attention_entropy(head_attn)
+            results.append({
+                "layer": li,
+                "head": head_idx,
+                "top_pairs": top_pairs,
+                "entropy": entropy,
+                "weights": head_attn,
+                # F-001/F-002 metadata — fields retained for API stability
+                # even though they're now constants. Documents that the
+                # weights are real (not RoPE/ALiBi-less reconstructions).
+                "source": "eager",
+                "positional_encoding_applied": True,
+                # N-003: which attention tensor was returned (always one of
+                # "self" / "cross" / "encoder"). For decoder-only / MLM /
+                # vision this is always "self" — the field disambiguates
+                # only for seq2seq.
+                "attention_kind": attention_kind_used,
+            })
 
     if not results:
         console.print(
-            "\n  [yellow]attention:[/yellow] could not compute attention weights.\n"
+            f"\n  [yellow]attention:[/yellow] no attention layers matched the "
+            f"filter (layer={layer!r}, head={head!r}).\n"
         )
         return None
 
@@ -229,8 +225,10 @@ def run_attention(
         from interpkit.core.plot import plot_attention, plot_attention_multi
 
         if layer is not None and head is not None and len(results) == 1:
-            plot_attention(results[0]["weights"], tokens, layer=results[0]["layer"],
-                           head=results[0]["head"], save_path=save)
+            plot_attention(
+                results[0]["weights"], tokens, layer=results[0]["layer"],
+                head=results[0]["head"], save_path=save,
+            )
         else:
             plot_attention_multi(results, tokens, save_path=save)
 
@@ -250,96 +248,62 @@ def run_attention(
     return results
 
 
-def _compute_attention_from_projections(
-    projections: dict[str, torch.Tensor],
-    num_heads: int | None,
+def _extract_attentions(
+    out: Any,
     *,
-    causal: bool = True,
-) -> torch.Tensor | None:
-    """Compute attention weights from captured QKV or Q/K projections."""
-    # Fused QKV: c_attn / qkv / query_key_value produce [Q, K, V] concatenated
-    for key, tensor in projections.items():
-        if "c_attn" in key or "qkv" in key or "query_key_value" in key:
-            if tensor.dim() == 3:
-                tensor = tensor[0]  # drop batch
-            hidden = tensor.shape[-1] // 3
-            q, k, _v = tensor.split(hidden, dim=-1)
-            return _qk_to_attention(q, k, num_heads, causal=causal)
+    arch: Any,
+    kind: str,
+    model_class: str,
+) -> tuple[tuple[torch.Tensor, ...], str]:
+    """Pick the right attention tensor stack from an HF forward output.
 
-    # Separate Q and K projections
-    q_tensor = None
-    k_tensor = None
-    for key, tensor in projections.items():
-        if "q_proj" in key or "query" in key or "q_lin" in key:
-            q_tensor = tensor
-        elif "k_proj" in key or "key" in key or "k_lin" in key:
-            k_tensor = tensor
+    Encoder-decoder models (T5/Flan-T5/BART/Marian/Pegasus/MBart) populate
+    ``decoder_attentions``, ``cross_attentions``, and ``encoder_attentions``
+    on the forward output. They never set the flat ``attentions`` field.
+    Reading that field directly produced ``AttentionBackendUnavailable``
+    on every seq2seq audit run (N-003).
 
-    if q_tensor is not None and k_tensor is not None:
-        if q_tensor.dim() == 3:
-            q_tensor = q_tensor[0]
-        if k_tensor.dim() == 3:
-            k_tensor = k_tensor[0]
-        return _qk_to_attention(q_tensor, k_tensor, num_heads, causal=causal)
+    Routing rules:
+      - Causal-LM / MLM / vision: only ``out.attentions`` exists. The
+        ``kind=`` argument is ignored (informational); we always return
+        ``("self", out.attentions)``.
+      - Seq2seq + ``kind="self"``: ``out.decoder_attentions``.
+      - Seq2seq + ``kind="cross"``: ``out.cross_attentions``.
+      - Seq2seq + ``kind="encoder"``: ``out.encoder_attentions``.
 
-    return None
-
-
-def _qk_to_attention(
-    q: torch.Tensor, k: torch.Tensor, num_heads: int | None,
-    *, causal: bool = True,
-) -> torch.Tensor:
-    """Compute attention weights from Q and K tensors.
-
-    Handles standard MHA, grouped-query attention (GQA), and multi-query
-    attention (MQA) by detecting the number of KV heads from the K tensor
-    shape and expanding K heads to match Q heads when necessary.
-
-    q: (seq_len, q_hidden)  — q_hidden = num_q_heads * head_dim
-    k: (seq_len, k_hidden)  — k_hidden = num_kv_heads * head_dim
-    Returns: (num_q_heads, seq_len, seq_len)
+    Returns a (tensors, kind_label) pair. Raises
+    ``AttentionBackendUnavailable`` only when the family-appropriate
+    field is unavailable on the output object.
     """
-    seq_len, q_hidden = q.shape
-    _seq_len_k, k_hidden = k.shape
+    is_enc_dec = bool(getattr(arch, "is_encoder_decoder", False))
 
-    if num_heads is not None and num_heads > 0:
-        head_dim = q_hidden // num_heads
-        num_q_heads = num_heads
-    else:
-        # Best-effort: assume Q and K have the same head count (standard MHA)
-        # and try common head dims (64, 128, 80) to infer num_heads.
-        for candidate_dim in (64, 128, 80, 96, 32):
-            if q_hidden % candidate_dim == 0:
-                head_dim = candidate_dim
-                num_q_heads = q_hidden // head_dim
-                break
-        else:
-            head_dim = q_hidden
-            num_q_heads = 1
-
-    num_kv_heads = k_hidden // head_dim
-
-    q = q.view(seq_len, num_q_heads, head_dim).transpose(0, 1)   # (q_heads, seq, head_dim)
-    k = k.view(seq_len, num_kv_heads, head_dim).transpose(0, 1)  # (kv_heads, seq, head_dim)
-
-    # GQA / MQA: expand K heads to match Q heads
-    if num_kv_heads < num_q_heads:
-        if num_q_heads % num_kv_heads != 0:
-            raise ValueError(
-                f"num_q_heads ({num_q_heads}) must be divisible by "
-                f"num_kv_heads ({num_kv_heads}) for GQA/MQA repeat."
+    if not is_enc_dec:
+        attentions = getattr(out, "attentions", None)
+        if attentions is None or len(attentions) == 0:
+            raise AttentionBackendUnavailable(
+                f"Eager attention forward returned no `attentions` field "
+                f"(model={model_class}). The model may not "
+                f"support output_attentions=True. Try a different attention-"
+                f"having model, or file an issue with the model id."
             )
-        repeats = num_q_heads // num_kv_heads
-        k = k.repeat_interleave(repeats, dim=0)  # (q_heads, seq, head_dim)
+        return tuple(attentions), "self"
 
-    scale = head_dim ** 0.5
-    scores = torch.matmul(q, k.transpose(-2, -1)) / scale  # (q_heads, seq, seq)
+    field_for_kind = {
+        "self": "decoder_attentions",
+        "cross": "cross_attentions",
+        "encoder": "encoder_attentions",
+    }
+    field = field_for_kind[kind]
+    attentions = getattr(out, field, None)
 
-    if causal:
-        causal_mask = torch.triu(torch.ones(seq_len, seq_len, dtype=torch.bool, device=q.device), diagonal=1)
-        scores.masked_fill_(causal_mask.unsqueeze(0), float("-inf"))
-
-    return F.softmax(scores, dim=-1)
+    if attentions is None or len(attentions) == 0:
+        raise AttentionBackendUnavailable(
+            f"Eager attention forward on encoder-decoder model "
+            f"{model_class} returned no `{field}` "
+            f"field for kind={kind!r}. Available output fields: "
+            f"{[k for k in ('attentions', 'decoder_attentions', 'cross_attentions', 'encoder_attentions') if getattr(out, k, None) is not None]}."
+        )
+    return tuple(attentions), kind
 
 
 def _get_top_pairs(
@@ -363,3 +327,8 @@ def _attention_entropy(attn: torch.Tensor) -> float:
     log_attn = torch.log(attn + eps)
     entropy_per_query = -(attn * log_attn).sum(dim=-1)
     return entropy_per_query.mean().item()
+
+
+# Suppress unused-import warning for F (kept for backwards-compat re-exports
+# from interpkit.ops.attention.F that older scripts might rely on).
+_ = F

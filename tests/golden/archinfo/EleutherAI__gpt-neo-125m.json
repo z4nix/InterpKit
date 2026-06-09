@@ -1,0 +1,49 @@
+{
+  "block_mechanisms": [
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention"
+  ],
+  "blocks": [
+    "transformer.h.0",
+    "transformer.h.1",
+    "transformer.h.2",
+    "transformer.h.3",
+    "transformer.h.4",
+    "transformer.h.5",
+    "transformer.h.6",
+    "transformer.h.7",
+    "transformer.h.8",
+    "transformer.h.9",
+    "transformer.h.10",
+    "transformer.h.11"
+  ],
+  "capabilities": {
+    "has_attention": true,
+    "has_residual_stream": true,
+    "has_unembedding": true,
+    "is_generative": true
+  },
+  "decoder_blocks": [],
+  "embed_path": "transformer.wte",
+  "family": "causal_lm",
+  "has_cls_token": false,
+  "has_disentangled_attention": false,
+  "head_path": "lm_head",
+  "is_encoder_decoder": false,
+  "is_shared_layers": false,
+  "mlm_head_path": null,
+  "pre_head_path": "transformer.ln_f",
+  "project_out_path": null,
+  "residual_topology": "pre_ln",
+  "spatial": false
+}

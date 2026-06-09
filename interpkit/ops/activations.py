@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
+from interpkit.core.paths import validate_module_path
 from interpkit.ops.patch import _get_module
 
 if TYPE_CHECKING:
@@ -23,12 +24,19 @@ def run_activations(
 
     Returns a single tensor if *at* is a string, or a dict if *at* is a list.
     """
-    model_input = model._prepare(input_data)
     single = isinstance(at, str)
     if isinstance(at, str):
         module_names: list[str] = [at]
     else:
         module_names = list(at)
+
+    # F-022: reject typo'd paths with a clear KeyError + suggestions before any
+    # work runs, so users don't see HF's `'GPT2LMHeadModel' object has no
+    # attribute 'completely'` from `_get_module()`.
+    for name in module_names:
+        validate_module_path(name, model.arch_info)
+
+    model_input = model._prepare(input_data)
 
     # Check activation cache first (pass prepared input to avoid re-tokenizing)
     cached = model._get_cached(input_data, module_names, _prepared_input=model_input)

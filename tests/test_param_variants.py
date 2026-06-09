@@ -42,8 +42,10 @@ def test_patch_metrics(gpt2_model, metric):
 
 @pytest.mark.parametrize("metric", ["logit_diff", "kl_div"])
 def test_trace_metrics(gpt2_model, metric):
-    result = gpt2_model.trace(CLEAN, CORRUPT, top_k=3, metric=metric)
-    assert isinstance(result, list)
+    out = gpt2_model.trace(CLEAN, CORRUPT, top_k=3, metric=metric)
+    # F-015: trace now returns {"results": ..., "meta": ...} not a bare list.
+    assert isinstance(out, dict)
+    assert isinstance(out["results"], list)
 
 
 def test_trace_position_mode(gpt2_model):

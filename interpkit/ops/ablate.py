@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
+from interpkit.core.enums import VALID_ABLATE_METHODS, _validate_enum
+from interpkit.core.paths import validate_module_path
 from interpkit.ops.patch import _get_module
 
 if TYPE_CHECKING:
@@ -31,7 +33,19 @@ def run_ablate(
     reference:
         A different input whose activations replace the target module's
         output.  Required when ``method="resample"``.
+
+    Raises
+    ------
+    ValueError
+        If *method* is not one of ``"zero"`` / ``"mean"`` / ``"resample"``.
+        Pre-1.0 silently fell back to a default on typos (F-018 family).
     """
+    # F-018: validate method at the entry. No silent fallback.
+    _validate_enum(method, VALID_ABLATE_METHODS, "method")
+
+    # F-022: reject typo'd module paths up-front with a friendly KeyError.
+    validate_module_path(at, model.arch_info)
+
     from interpkit.core.render import render_ablate
 
     model_input = model._prepare(input_data)

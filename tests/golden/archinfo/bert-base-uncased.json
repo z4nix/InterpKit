@@ -1,0 +1,49 @@
+{
+  "block_mechanisms": [
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention"
+  ],
+  "blocks": [
+    "bert.encoder.layer.0",
+    "bert.encoder.layer.1",
+    "bert.encoder.layer.2",
+    "bert.encoder.layer.3",
+    "bert.encoder.layer.4",
+    "bert.encoder.layer.5",
+    "bert.encoder.layer.6",
+    "bert.encoder.layer.7",
+    "bert.encoder.layer.8",
+    "bert.encoder.layer.9",
+    "bert.encoder.layer.10",
+    "bert.encoder.layer.11"
+  ],
+  "capabilities": {
+    "has_attention": true,
+    "has_residual_stream": true,
+    "has_unembedding": true,
+    "is_generative": false
+  },
+  "decoder_blocks": [],
+  "embed_path": "bert.embeddings.word_embeddings",
+  "family": "mlm",
+  "has_cls_token": false,
+  "has_disentangled_attention": false,
+  "head_path": "cls.predictions.decoder",
+  "is_encoder_decoder": false,
+  "is_shared_layers": false,
+  "mlm_head_path": "cls.predictions",
+  "pre_head_path": "cls.predictions.transform.LayerNorm",
+  "project_out_path": "cls.predictions.transform.dense",
+  "residual_topology": "post_ln",
+  "spatial": false
+}

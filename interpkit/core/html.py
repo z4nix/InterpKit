@@ -442,7 +442,10 @@ def html_dla(result: dict[str, Any]) -> str:
         return _wrap_page("Direct Logit Attribution", "<h1>DLA</h1><p>No data.</p>")
 
     target_token = result.get("target_token", "?")
-    total_logit = result.get("total_logit", 0)
+    # F-006: report all three explicit fields rather than a single misleading total.
+    total_logit_pre_ln = result.get("total_logit_pre_ln", 0)
+    model_logit = result.get("model_logit", 0)
+    ln_error = result.get("ln_error", 0)
     note = result.get("approximation_note", "")
 
     data_json = json.dumps([
@@ -457,7 +460,7 @@ def html_dla(result: dict[str, Any]) -> str:
 
     body = f"""
 <h1>Direct Logit Attribution</h1>
-<p class="subtitle">Target: <strong>{html.escape(str(target_token))}</strong> | Total logit (approx): {total_logit:.3f}</p>
+<p class="subtitle">Target: <strong>{html.escape(str(target_token))}</strong> | Pre-LN sum: {total_logit_pre_ln:.3f} | Model logit: {model_logit:.3f} | LN error: {ln_error:+.3f}</p>
 {"<p class='subtitle' style='font-size:0.8em'>" + html.escape(note) + "</p>" if note else ""}
 <div class="controls panel">
     <label>Sort by:

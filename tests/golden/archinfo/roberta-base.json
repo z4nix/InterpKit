@@ -1,0 +1,49 @@
+{
+  "block_mechanisms": [
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention",
+    "attention"
+  ],
+  "blocks": [
+    "roberta.encoder.layer.0",
+    "roberta.encoder.layer.1",
+    "roberta.encoder.layer.2",
+    "roberta.encoder.layer.3",
+    "roberta.encoder.layer.4",
+    "roberta.encoder.layer.5",
+    "roberta.encoder.layer.6",
+    "roberta.encoder.layer.7",
+    "roberta.encoder.layer.8",
+    "roberta.encoder.layer.9",
+    "roberta.encoder.layer.10",
+    "roberta.encoder.layer.11"
+  ],
+  "capabilities": {
+    "has_attention": true,
+    "has_residual_stream": true,
+    "has_unembedding": true,
+    "is_generative": false
+  },
+  "decoder_blocks": [],
+  "embed_path": "roberta.embeddings.word_embeddings",
+  "family": "mlm",
+  "has_cls_token": false,
+  "has_disentangled_attention": false,
+  "head_path": "lm_head.decoder",
+  "is_encoder_decoder": false,
+  "is_shared_layers": false,
+  "mlm_head_path": "lm_head",
+  "pre_head_path": "lm_head.layer_norm",
+  "project_out_path": "lm_head.dense",
+  "residual_topology": "post_ln",
+  "spatial": false
+}
