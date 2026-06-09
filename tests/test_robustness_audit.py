@@ -489,38 +489,34 @@ def test_dla_target_token_warning_no_tip_when_already_spaced(gpt2_model):
 # ─────────────────────────────────────────────────────────────────────────
 
 
-def test_cli_features_has_sae_subfolder_option():
-    from typer.testing import CliRunner
+def _command_param_names(name: str) -> set[str]:
+    """Parameter names registered on a CLI command.
+
+    Introspects the Click command rather than scraping ``--help`` text:
+    rich renders the help table to the terminal size and row-truncates long
+    option lists (with a ``…`` row) under short/non-tty terminals and across
+    typer/rich versions, which made help-text assertions environment-fragile.
+    The command's parameter set is the actual contract and is stable.
+    """
+    from typer.main import get_command
 
     from interpkit.cli.main import app
 
-    runner = CliRunner()
-    res = runner.invoke(app, ["features", "--help"])
-    assert res.exit_code == 0
-    assert "--sae-subfolder" in res.output
+    return {p.name for p in get_command(app).commands[name].params}
+
+
+def test_cli_features_has_sae_subfolder_option():
+    assert "sae_subfolder" in _command_param_names("features")
 
 
 def test_cli_dla_has_sae_subfolder_option():
-    from typer.testing import CliRunner
-
-    from interpkit.cli.main import app
-
-    runner = CliRunner()
-    res = runner.invoke(app, ["dla", "--help"])
-    assert res.exit_code == 0
-    assert "--sae-subfolder" in res.output
+    assert "sae_subfolder" in _command_param_names("dla")
 
 
 def test_cli_chat_command_registered():
-    from typer.testing import CliRunner
-
-    from interpkit.cli.main import app
-
-    runner = CliRunner()
-    res = runner.invoke(app, ["chat", "--help"])
-    assert res.exit_code == 0
-    assert "--system" in res.output
-    assert "--max-new-tokens" in res.output
+    params = _command_param_names("chat")
+    assert "system" in params
+    assert "max_new_tokens" in params
 
 
 # ─────────────────────────────────────────────────────────────────────────
