@@ -5,6 +5,84 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-06-10
+
+Generation-time interventions, gradient-based circuit discovery, and
+feature-browsing workflows. Upgrading from **0.5.0** is additive 
+
+### Added
+
+- **`interpkit.core.interventions`** — declarative hook-write plumbing shared
+  across single-forward and multi-token generation. Public types:
+  `Intervention`, `SteerIntervention`, `AblateIntervention`,
+  `PatchIntervention`, `FnIntervention`, `CaptureProbe`,
+  `GenerationContext`, and `apply_interventions()`. Exported from
+  `interpkit`.
+- **`Model.generate()`** — text generation with interventions active across
+  the prefill and every KV-cached decode step. `capture="lens"` records
+  per-token logit-lens trajectories; `capture="logits"` records per-step
+  final logits. Positional interventions use absolute, prompt-indexed
+  positions (`prompt_len + i` for generated token *i*).
+- **`Model.intervene()`** — context manager that applies
+  `Intervention` objects to any op run inside the block (including
+  `lens`, `dla`, `trace`, etc.).
+- **`Model.atp()`** — Attribution Patching: first-order patch-effect scores
+  for all modules from three passes (clean forward, corrupted forward, one
+  backward). Public home of the machinery that previously lived in private
+  `ops/_atp.py` (now a re-export shim for `trace(method="approximate")`).
+- **`Model.eap()`** — Edge Attribution Patching: gradient-based
+  component → residual-stream edge scores. `ig_steps > 0` switches to
+  EAP-IG (interpolated embedding gradients; try 5). Requires token-aligned
+  clean/corrupted pairs.
+- **`Model.train_tuned_lens()`** and **`lens(kind="tuned")`** — train
+  per-block affine translators (Belrose et al. 2023) so early-layer
+  readouts match the model's final distribution under KL. Artifacts are
+  safetensors weights + a JSON metadata sidecar.
+- **`Model.max_activating()`** — scan a corpus for the examples that most
+  activate a neuron, SAE feature, or attention head. Streams batched
+  forwards with O(k) memory via `interpkit.core.topk.TopKTracker`.
+  Accepts a `list[str]` or an `"hf:name[:split[:column]]"` dataset spec.
+- **`find_circuit(method="eap")` / `method="eap-ig"`** — gradient-based
+  component selection (a handful of passes) followed by causal
+  verification via mean ablation of excluded components. EAP mode adds
+  `edges` and `meta` keys to the result dict; the legacy `circuit` /
+  `excluded` / `verification` schema is unchanged.
+- **`Model.chat(..., interventions=[...])`** — apply `Intervention` objects
+  during chat generation (without positional tracking; use `generate()` for
+  `positions=...`).
+- **CLI commands:** `generate`, `train-tuned-lens`, `atp`, `eap`, `maxact`.
+  `find-circuit` gains `--method eap` / `eap-ig`; `lens` gains
+  `--tuned-lens`.
+- **`interpkit[data]` optional extra** — `datasets>=2.14` for HuggingFace
+  dataset specs in `max_activating`.
+- **`sentencepiece>=0.1.99`** added as a core dependency for
+  SentencePiece-only tokenizers (Marian, XLM, some T5/ALBERT checkpoints).
+- **Examples:** `examples/11_generation_interventions.ipynb`,
+  `examples/12_circuit_discovery_and_lenses.ipynb`.
+
+### Changed
+
+- **`steer` / `ablate` / `patch` / `find_circuit`** — hook closures now
+  compile from `Intervention` objects in `core.interventions`. External
+  behaviour and return shapes are preserved; dtype/device writeback is
+  unified (F-008 cast path).
+- **`ops/atp.py`** promoted to the public AtP implementation;
+  `ops/_atp.py` is a thin shim re-exporting `compute_atp_scores` for
+  `trace`'s approximate shortlist.
+- **README and `docs/cli.md`** — operations table, CLI examples, and
+  notebook index updated for the new features.
+
+### Tests
+
+- `tests/test_interventions.py` — intervention types, context manager,
+  generation-time hooks, position semantics.
+- `tests/test_generate.py` — `generate()` with steer/ablate/capture.
+- `tests/test_atp.py`, `tests/test_eap.py` — gradient patching scores.
+- `tests/test_tuned_lens.py` — train/load round-trip and `lens(kind="tuned")`.
+- `tests/test_maxact.py` — neuron / feature / head scoring over corpora.
+- `tests/test_topk.py` — streaming top-k tracker.
+- `tests/test_cli.py` — new CLI commands and options.
+
 ## [0.5.0] - 2026-06-09
 
 Major correctness rewrite and architecture consolidation. Upgrading from **0.4.0**
