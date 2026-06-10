@@ -136,7 +136,13 @@ See [examples/10_chat_models.ipynb](examples/10_chat_models.ipynb) for a full wa
 | **`ov_scores`** | OV circuit analysis — W_OV matrix per head | Transformers |
 | **`qk_scores`** | QK circuit analysis — W_QK matrix per head | Transformers |
 | **`composition`** | Q/K/V composition scores between heads in two layers | Transformers |
-| **`find_circuit`** | Automated circuit discovery via iterative ablation | Transformers |
+| **`find_circuit`** | Automated circuit discovery — iterative ablation or EAP-based selection with causal verification | Transformers |
+| **`generate`** | Generation with interventions active across every decode step + per-token lens capture | Generative LMs |
+| **`intervene`** | Context manager applying steer/ablate/patch interventions to any op | Any model |
+| **`atp`** | Attribution Patching — first-order patch-effect scores for all modules in 3 passes | Any model |
+| **`eap`** | Edge Attribution Patching — gradient-based component → residual-stream edge scores (EAP-IG via `ig_steps`) | Causal LMs |
+| **`train_tuned_lens`** | Train per-layer tuned-lens translators (Belrose et al. 2023); use via `lens(kind="tuned")` | LMs |
+| **`max_activating`** | Scan a corpus for the examples that most activate a neuron / SAE feature / head | Any model |
 | **`batch`** | Run any operation over a dataset with result aggregation | Any model |
 
 ---
@@ -432,6 +438,20 @@ interpkit features gpt2 "The capital of France is" --at transformer.h.8 --sae jb
 interpkit features gpt2 "The capital of France is" --at transformer.h.8 --sae ./my_sae.safetensors
 interpkit dla gpt2 "The capital of France is" --sae jbloom/GPT2-Small-SAEs-Reformatted --sae-at transformer.h.11.attn
 
+# Generation-time interventions + per-token lens trajectories
+interpkit generate gpt2 "I feel" --positive " joy" --negative " fear" --at transformer.h.6 --scale 8
+interpkit generate gpt2 "The capital of France is" --capture lens
+
+# Gradient-based circuit discovery
+interpkit atp gpt2 --clean "The capital of France is" --corrupted "The capital of Germany is"
+interpkit eap gpt2 --clean "..." --corrupted "..." --ig-steps 5
+interpkit find-circuit gpt2 --clean "..." --corrupted "..." --method eap --threshold 0.3
+
+# Tuned lens + max-activating examples
+interpkit train-tuned-lens gpt2 --corpus-file texts.txt --save lens_dir/
+interpkit lens gpt2 "The capital of France is" --tuned-lens lens_dir/
+interpkit maxact gpt2 --at transformer.h.6.mlp --neuron 42 --texts-file corpus.txt
+
 # Chat / instruct models — applies the tokenizer's chat template automatically
 interpkit chat HuggingFaceTB/SmolLM2-360M-Instruct "Write a haiku about cats." --max-new-tokens 64
 interpkit chat HuggingFaceTB/SmolLM2-360M-Instruct "What is 2+2?" --system "You are terse." --show-prompt
@@ -542,6 +562,8 @@ See the [`examples/`](examples/) directory for Jupyter notebooks:
 | `08_dla_and_circuits` | DLA, head activations, residual decomposition, OV/QK analysis, composition, circuit discovery |
 | `09_scan_and_batch` | Auto-scan, batch operations, dataset workflows |
 | `10_chat_models` | Chat-template handling, `model.chat()`, message-list inputs, chat-style steering |
+| `11_generation_interventions` | Steering/ablation active across every decode step, per-token lens trajectories, positional interventions, `model.intervene()` |
+| `12_circuit_discovery_and_lenses` | Attribution Patching, Edge Attribution Patching, EAP-driven `find_circuit`, tuned lens, max-activating examples |
 
 ---
 

@@ -19,39 +19,20 @@ if TYPE_CHECKING:
 console = Console()
 
 
-def _make_ablation_hook(method: str = "mean", *, resample_act: torch.Tensor | None = None):
-    """Forward hook that replaces tensor output according to *method*.
+def _make_ablation_hook(
+    at: str, method: str = "mean", *, resample_act: torch.Tensor | None = None,
+):
+    """Compile an ablation forward hook via :class:`AblateIntervention`.
 
-    ``"zero"``     — replace with zeros.
-    ``"mean"``     — replace with the mean across the sequence dimension.
-    ``"resample"`` — replace with *resample_act* (e.g. corrupted activation).
+    The replacement math (zeros / sequence mean / resampled corrupted
+    activation) lives in :mod:`interpkit.core.interventions` — the single
+    canonical implementation shared with ``ops/ablate.py``.
     """
-    def hook_fn(_mod, _inp, output):
-        t = output if isinstance(output, torch.Tensor) else (
-            output[0] if isinstance(output, (tuple, list)) and len(output) > 0 and isinstance(output[0], torch.Tensor) else None
-        )
-        if t is None:
-            return output
+    from interpkit.core.interventions import AblateIntervention
 
-        if method == "zero":
-            replacement = torch.zeros_like(t)
-        elif method == "mean":
-            if t.dim() >= 3:
-                replacement = t.mean(dim=-2, keepdim=True).expand_as(t)
-            else:
-                replacement = t.mean(dim=0, keepdim=True).expand_as(t)
-        elif method == "resample":
-            if resample_act is not None:
-                replacement = resample_act.to(t.device)
-            else:
-                replacement = torch.zeros_like(t)
-        else:
-            replacement = torch.zeros_like(t)
-
-        if isinstance(output, torch.Tensor):
-            return replacement
-        return (replacement,) + tuple(output[1:])
-    return hook_fn
+    return AblateIntervention(
+        at, method=method, replacement=resample_act,
+    ).build_hook(None)
 
 
 def run_find_circuit(
@@ -85,9 +66,19 @@ def run_find_circuit(
         Minimum ablation effect for a component to be included in the
         circuit.  Lower values include more components.
     method:
-        Ablation strategy: ``"mean"`` (default — recommended),
-        ``"zero"``, or ``"resample"`` (replace with corrupted-input
-        activations).
+        Component-selection strategy.
+
+        Ablation methods (one forward per component per pair):
+        ``"mean"`` (default — recommended), ``"zero"``, or
+        ``"resample"`` (replace with corrupted-input activations).
+
+        Gradient methods (a handful of passes total, phase 2):
+        ``"eap"`` ranks components by Edge Attribution Patching scores;
+        ``"eap-ig"`` uses 5 interpolated backward passes for more
+        faithful scores. For both, *threshold* is interpreted as a
+        fraction of the top component's absolute score, and the
+        discovered circuit is still verified **causally** in phase 3
+        via mean ablation of the excluded components.
     metric:
         Effect metric passed to ``_compute_effect``.
 
@@ -165,11 +156,14 @@ def run_find_circuit(
     if not components:
         raise ValueError("No attention or MLP components found for circuit discovery.")
 
-    if method not in ("zero", "mean", "resample"):
-        raise ValueError(
-            f"method must be one of 'zero', 'mean', 'resample'; got {method!r}"
-        )
-    ablation_method = method
+    from interpkit.core.enums import VALID_FIND_CIRCUIT_METHODS, _validate_enum
+
+    _validate_enum(method, VALID_FIND_CIRCUIT_METHODS, "method")
+    use_eap = method in ("eap", "eap-ig")
+    # EAP methods select components by gradient scores but verify the
+    # discovered circuit *causally* — the phase-3 ablation below always
+    # runs, using mean ablation for the EAP path.
+    ablation_method = "mean" if use_eap else method
 
     # For resample ablation, cache each component's corrupted-input activations
     # per pair so we can swap them in during ablation.
@@ -202,41 +196,97 @@ def run_find_circuit(
             if _resample_ctx is not None:
                 _resample_ctx.stop()
 
-    # Phase 1: individual ablation — measure each component's importance
+    # Phase 1: measure each component's importance.
+    # - Ablation methods: ablate each component individually (one forward
+    #   per component per pair).
+    # - EAP methods: one clean forward + one corrupted backward per pair
+    #   scores all components at once; "effect" is the absolute EAP node
+    #   score normalised by the largest component score, so the same
+    #   threshold semantics apply.
     component_effects: list[dict[str, Any]] = []
+    eap_edges: list[dict[str, Any]] | None = None
+    eap_ig_steps = 0
 
-    with Progress(console=console, transient=True) as progress:
-        task = progress.add_task("Evaluating components", total=len(components))
+    if use_eap:
+        from interpkit.ops.eap import run_eap
+
+        eap_ig_steps = 5 if method == "eap-ig" else 0
+        node_scores: dict[str, list[float]] = {}
+        edge_scores: dict[tuple[str, str], list[float]] = {}
+        for c, r in zip(cleans, corrupteds):
+            eap_result = run_eap(
+                model, c, r,
+                ig_steps=eap_ig_steps, top_k_edges=None, render=False,
+            )
+            for nd in eap_result["nodes"]:
+                if nd["type"] in ("attn", "mlp") and nd["score"] == nd["score"]:
+                    node_scores.setdefault(nd["node"], []).append(nd["score"])
+            for ed in eap_result["edges"]:
+                if ed["score"] == ed["score"]:
+                    edge_scores.setdefault((ed["src"], ed["dst"]), []).append(
+                        ed["score"]
+                    )
+
+        mean_scores = {
+            name: sum(vals) / len(vals) for name, vals in node_scores.items()
+        }
+        max_abs = max((abs(v) for v in mean_scores.values()), default=1.0) or 1.0
         for comp in components:
-            effect_sum = 0.0
-            for pi, (ci, _ri, cl, rl) in enumerate(pairs):
-                resample_act = (
-                    all_corrupted_acts[pi].get(comp["module_name"])
-                    if ablation_method == "resample" else None
-                )
-                handle = comp["module"].register_forward_hook(
-                    _make_ablation_hook(ablation_method, resample_act=resample_act)
-                )
-                try:
-                    with torch.no_grad():
-                        ablated_logits = model._forward(ci)
-                finally:
-                    handle.remove()
-
-                effect = _compute_effect(cl, rl, ablated_logits, metric=metric)
-                effect_sum += 1.0 - effect
-
-            ablation_effect = effect_sum / n_pairs
-
+            raw = mean_scores.get(comp["component"])
+            effect = abs(raw) / max_abs if raw is not None else 0.0
             component_effects.append({
                 "component": comp["component"],
                 "layer": comp["layer"],
                 "type": comp["type"],
-                "effect": ablation_effect,
+                "effect": effect,
+                "eap_score": raw,
                 "module_name": comp["module_name"],
                 "module": comp["module"],
             })
-            progress.advance(task)
+
+        eap_edges = [
+            {"src": src, "dst": dst, "score": sum(vals) / len(vals)}
+            for (src, dst), vals in edge_scores.items()
+        ]
+        eap_edges.sort(key=lambda e: abs(e["score"]), reverse=True)
+        for i, e in enumerate(eap_edges):
+            e["rank"] = i
+
+    if not use_eap:
+        with Progress(console=console, transient=True) as progress:
+            task = progress.add_task("Evaluating components", total=len(components))
+            for comp in components:
+                effect_sum = 0.0
+                for pi, (ci, _ri, cl, rl) in enumerate(pairs):
+                    resample_act = (
+                        all_corrupted_acts[pi].get(comp["module_name"])
+                        if ablation_method == "resample" else None
+                    )
+                    handle = comp["module"].register_forward_hook(
+                        _make_ablation_hook(
+                            comp["module_name"], ablation_method, resample_act=resample_act,
+                        )
+                    )
+                    try:
+                        with torch.no_grad():
+                            ablated_logits = model._forward(ci)
+                    finally:
+                        handle.remove()
+
+                    effect = _compute_effect(cl, rl, ablated_logits, metric=metric)
+                    effect_sum += 1.0 - effect
+
+                ablation_effect = effect_sum / n_pairs
+
+                component_effects.append({
+                    "component": comp["component"],
+                    "layer": comp["layer"],
+                    "type": comp["type"],
+                    "effect": ablation_effect,
+                    "module_name": comp["module_name"],
+                    "module": comp["module"],
+                })
+                progress.advance(task)
 
     # Phase 2: threshold to select circuit
     circuit = [c for c in component_effects if c["effect"] >= threshold]
@@ -265,7 +315,9 @@ def run_find_circuit(
                         if ablation_method == "resample" else None
                     )
                     hooks.append(comp["module"].register_forward_hook(
-                        _make_ablation_hook(ablation_method, resample_act=resample_act)
+                        _make_ablation_hook(
+                            comp["module_name"], ablation_method, resample_act=resample_act,
+                        )
                     ))
 
                 try:
@@ -307,6 +359,19 @@ def run_find_circuit(
         "total_components": len(component_effects),
         "num_pairs": n_pairs,
     }
+    if use_eap:
+        # Additive keys — the legacy schema above is unchanged.
+        result["edges"] = eap_edges
+        result["meta"] = {
+            "method": method,
+            "ig_steps": eap_ig_steps,
+            "selection": "eap",
+            "verification_ablation": ablation_method,
+            "effect_definition": (
+                "absolute EAP node score normalised by the largest component "
+                "score (threshold is a fraction of the top component)"
+            ),
+        }
 
     _render_circuit(result)
     return result

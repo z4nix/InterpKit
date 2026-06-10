@@ -7,7 +7,9 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from interpkit.core.enums import VALID_ABLATE_METHODS, _validate_enum
+from interpkit.core.interventions import AblateIntervention, apply_interventions
 from interpkit.core.paths import validate_module_path
+from interpkit.ops._hooks import register_capture_hook
 from interpkit.ops.patch import _get_module
 
 if TYPE_CHECKING:
@@ -62,51 +64,19 @@ def run_ablate(
             raise ValueError("method='resample' requires a 'reference' input.")
         ref_input = model._prepare(reference)
 
-        def _cache_hook(_mod: torch.nn.Module, _inp: Any, output: Any) -> None:
-            nonlocal resample_act
-            t = output if isinstance(output, torch.Tensor) else (
-                output[0] if isinstance(output, (tuple, list)) and isinstance(output[0], torch.Tensor) else None
-            )
-            if t is not None:
-                resample_act = t.detach().clone()
-
-        h = target_mod.register_forward_hook(_cache_hook)
+        ref_store: dict[str, torch.Tensor] = {}
+        h = register_capture_hook(target_mod, ref_store, "ref")
         try:
             with torch.no_grad():
                 model._forward(ref_input)
         finally:
             h.remove()
+        resample_act = ref_store.get("ref")
 
-    # 3. Ablated forward
-    def _ablate_hook(_mod: torch.nn.Module, _inp: Any, output: Any) -> Any:
-        t = output if isinstance(output, torch.Tensor) else (
-            output[0] if isinstance(output, (tuple, list)) and isinstance(output[0], torch.Tensor) else None
-        )
-        if t is None:
-            return output
-
-        if method == "zero":
-            replacement = torch.zeros_like(t)
-        elif method == "mean":
-            if t.dim() >= 3:
-                replacement = t.mean(dim=-2, keepdim=True).expand_as(t)
-            else:
-                replacement = t.mean(dim=0, keepdim=True).expand_as(t)
-        elif method == "resample":
-            replacement = resample_act.to(t.device) if resample_act is not None else torch.zeros_like(t)
-        else:
-            raise ValueError(f"Unknown ablation method: {method!r}. Use 'zero', 'mean', or 'resample'.")
-
-        if isinstance(output, torch.Tensor):
-            return replacement
-        return (replacement,) + tuple(output[1:])
-
-    handle = target_mod.register_forward_hook(_ablate_hook)
-    try:
-        with torch.no_grad():
-            ablated_logits = model._forward(model_input)
-    finally:
-        handle.remove()
+    # 3. Ablated forward — replacement math lives in AblateIntervention.
+    ablate_iv = AblateIntervention(at, method=method, replacement=resample_act)
+    with apply_interventions(model, [ablate_iv]), torch.no_grad():
+        ablated_logits = model._forward(model_input)
 
     effect = _compute_ablation_effect(clean_logits, ablated_logits)
 

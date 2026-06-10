@@ -9,18 +9,16 @@ import torch
 import torch.nn.functional as F
 
 from interpkit.core.enums import VALID_METRICS, _validate_enum
+from interpkit.core.interventions import PatchIntervention, apply_interventions
+
+# Backwards-compat shim: the canonical helper moved to core.paths.get_module.
+# steer.py / ablate.py / trace.py / find_circuit.py / _atp.py import it from
+# here (same pattern as steer._warn_if_token_mismatch).
+from interpkit.core.paths import get_module as _get_module  # noqa: F401
 from interpkit.core.paths import validate_module_path
 
 if TYPE_CHECKING:
     from interpkit.core.model import Model
-
-
-def _get_module(model: torch.nn.Module, name: str) -> torch.nn.Module:
-    parts = name.split(".")
-    mod = model
-    for part in parts:
-        mod = getattr(mod, part)
-    return mod
 
 
 def run_patch(
@@ -68,27 +66,31 @@ def run_patch(
     # rather than letting `_get_module` emit a raw HF `AttributeError`.
     validate_module_path(at, model.arch_info)
 
+    from interpkit.ops._hooks import register_capture_hook
+
     clean_input, corrupted_input = model._prepare_pair(clean, corrupted)
 
-    cached_activation: list[torch.Tensor] = []
+    clean_store: dict[str, torch.Tensor] = {}
     target_mod = _get_module(model._model, at)
 
-    def _cache_hook(_mod: torch.nn.Module, _inp: Any, output: Any) -> None:
-        if isinstance(output, torch.Tensor):
-            cached_activation.append(output.detach().clone())
-        elif isinstance(output, (tuple, list)):
-            cached_activation.append(output[0].detach().clone())
+    handle = register_capture_hook(target_mod, clean_store, "clean")
+    try:
+        clean_logits = model._forward(clean_input)
+    finally:
+        handle.remove()
 
-    handle = target_mod.register_forward_hook(_cache_hook)
-    clean_logits = model._forward(clean_input)
-    handle.remove()
-
-    if not cached_activation:
+    if "clean" not in clean_store:
         raise RuntimeError(f"Module '{at}' produced no tensor output during clean forward pass.")
+    clean_activation = clean_store["clean"]
 
     corrupted_logits = model._forward(corrupted_input)
 
-    # Build the patching hook based on head / positions
+    # Build the patching hook based on head / positions.
+    # The head-level path below intentionally stays inline: it performs
+    # *input* surgery via pre-hooks on the attention output projection,
+    # a different contract from the output-replacement Interventions in
+    # core.interventions (see that module's deferral ledger). Revisit
+    # when per-head nodes land with EAP (roadmap phase 2).
     if head is not None:
         num_heads = model.arch_info.num_attention_heads
         if num_heads is None:
@@ -160,43 +162,17 @@ def run_patch(
             patched_logits = model._forward(corrupted_input)
             handle.remove()
 
-    elif positions is not None:
-        clean_cached = cached_activation[0]
-
-        def _pos_patch_hook(_mod: torch.nn.Module, _inp: Any, output: Any) -> Any:
-            t = output if isinstance(output, torch.Tensor) else (
-                output[0] if isinstance(output, (tuple, list)) and isinstance(output[0], torch.Tensor) else None
-            )
-            if t is None:
-                return output
-            patched = t.clone()
-            # F-008: cast clean cached activation to the patched tensor's
-            # dtype/device before assignment so non-fp32 models survive.
-            src = clean_cached.to(device=patched.device, dtype=patched.dtype)
-            for p in positions:
-                if patched.dim() == 3 and p < patched.shape[1]:
-                    patched[:, p, :] = src[:, p, :]
-                elif patched.dim() == 2 and p < patched.shape[0]:
-                    patched[p, :] = src[p, :]
-            if isinstance(output, torch.Tensor):
-                return patched
-            return (patched,) + tuple(output[1:])
-
-        handle = target_mod.register_forward_hook(_pos_patch_hook)
-        patched_logits = model._forward(corrupted_input)
-        handle.remove()
-
     else:
-        def _patch_hook(_mod: torch.nn.Module, _inp: Any, output: Any) -> Any:
-            if isinstance(output, torch.Tensor):
-                return cached_activation[0]
-            elif isinstance(output, (tuple, list)):
-                return (cached_activation[0],) + tuple(output[1:])
-            return output
-
-        handle = target_mod.register_forward_hook(_patch_hook)
-        patched_logits = model._forward(corrupted_input)
-        handle.remove()
+        # F-008 dtype/device casting and the position-bounds semantics live
+        # in PatchIntervention (core.interventions) — the single canonical
+        # implementation of activation writeback.
+        patch_iv = PatchIntervention(
+            at,
+            source=clean_activation,
+            positions=tuple(positions) if positions is not None else None,
+        )
+        with apply_interventions(model, [patch_iv]):
+            patched_logits = model._forward(corrupted_input)
 
     effect, warnings = _compute_effect(
         clean_logits, corrupted_logits, patched_logits, metric=metric,

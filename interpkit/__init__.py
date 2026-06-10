@@ -16,6 +16,16 @@ from interpkit.core.exceptions import (
     OperationNotSupportedForArchitecture,
     WrongInputType,
 )
+from interpkit.core.interventions import (
+    AblateIntervention,
+    CaptureProbe,
+    FnIntervention,
+    GenerationContext,
+    Intervention,
+    PatchIntervention,
+    SteerIntervention,
+    apply_interventions,
+)
 from interpkit.core.loader import load, load_module
 from interpkit.core.model import Model
 from interpkit.core.registry import register
@@ -54,6 +64,15 @@ __all__ = [
     "LensPipelineMismatch",
     "OperationNotSupportedForArchitecture",
     "WrongInputType",
+    # Interventions
+    "Intervention",
+    "SteerIntervention",
+    "AblateIntervention",
+    "PatchIntervention",
+    "FnIntervention",
+    "CaptureProbe",
+    "GenerationContext",
+    "apply_interventions",
     # Operations
     "register",
     "diff",

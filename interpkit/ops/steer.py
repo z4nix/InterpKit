@@ -15,7 +15,6 @@ from interpkit.core.inputs import (
     warn_if_leading_space_better,
 )
 from interpkit.core.paths import validate_module_path
-from interpkit.ops.patch import _get_module
 
 if TYPE_CHECKING:
     from interpkit.core.model import Model
@@ -165,30 +164,12 @@ def run_steer(
     # 1. Original forward
     original_logits = model._forward(model_input)
 
-    # 2. Steered forward
-    target_mod = _get_module(model._model, at)
+    # 2. Steered forward — hook plumbing lives in core.interventions.
+    from interpkit.core.interventions import SteerIntervention, apply_interventions
 
-    def _steer_hook(_mod: torch.nn.Module, _inp: Any, output: Any) -> Any:
-        t = output if isinstance(output, torch.Tensor) else (
-            output[0] if isinstance(output, (tuple, list)) and len(output) > 0 else None
-        )
-        if t is not None and t.shape[-1] != vector.shape[-1]:
-            raise ValueError(
-                f"Steering vector dimension ({vector.shape[-1]}) does not match "
-                f"module output dimension ({t.shape[-1]}) at '{at}'."
-            )
-        if isinstance(output, torch.Tensor):
-            return output + scale * vector.to(output.device)
-        elif isinstance(output, (tuple, list)):
-            steered = output[0] + scale * vector.to(output[0].device)
-            return (steered,) + tuple(output[1:])
-        return output
-
-    handle = target_mod.register_forward_hook(_steer_hook)
-    try:
+    steer_iv = SteerIntervention(at, vector=vector, scale=scale)
+    with apply_interventions(model, [steer_iv]):
         steered_logits = model._forward(model_input)
-    finally:
-        handle.remove()
 
     # Extract top tokens
     original_tokens = _top_tokens(model, original_logits)

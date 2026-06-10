@@ -63,6 +63,29 @@ Errors clearly when the model has no chat template (i.e. a base/non-instruct
 model) — load an instruct variant or call any other command with a plain
 string instead.
 
+### generate
+
+Generate text with interventions active across *every* decode step — the
+generation-time counterpart of `steer` / `ablate`, which analyse a single
+forward pass. A steering vector or ablation stays hooked for the prefill and
+all KV-cached decode steps, so you can watch a nudged model write.
+
+```bash
+interpkit generate gpt2 "I feel" \
+    --positive " joy" --negative " fear" --at transformer.h.6 --scale 8
+interpkit generate gpt2 "The capital of France is" --capture lens
+interpkit generate gpt2 "The weather is" --ablate-at transformer.h.4.mlp
+```
+
+`--capture lens` records each generated token's logit-lens trajectory: for
+every step, each block's hidden state is projected through the validated head
+pipeline, showing which layer first predicted the token the model emitted.
+`--capture logits` records each step's final logits instead.
+
+Steering accepts the same options as `steer` (`--positive` / `--negative` or
+`--positive-file` / `--negative-file`, plus `--at` and `--scale`). Greedy by
+default; `--sample --temperature 0.8 --top-p 0.9` for sampling.
+
 ## Core operations
 
 ### inspect
@@ -111,7 +134,32 @@ Logit lens. Project each layer's hidden state into vocabulary space.
 ```bash
 interpkit lens gpt2 "The capital of France is"
 interpkit lens gpt2 "The capital of France is" --position -1
+interpkit lens gpt2 "The capital of France is" --tuned-lens lens_dir/
 ```
+
+The raw projection is biased for early layers (their basis isn't aligned with
+the unembedding). `--tuned-lens <path>` applies trained per-layer translators
+(Belrose et al. 2023) for an unbiased readout — train them once with
+`train-tuned-lens` below.
+
+### train-tuned-lens
+
+Train tuned-lens translators for a model: one affine map per layer, trained so
+each layer's translated readout matches the model's own final distribution
+under KL. The model stays frozen; only the translators
+(`n_layers × (hidden² + hidden)` parameters) train. A few hundred diverse
+sentences is plenty for small models; expect a few minutes on CPU for gpt2 at
+the defaults, seconds on GPU.
+
+```bash
+interpkit train-tuned-lens gpt2 --corpus-file texts.txt --save lens_dir/
+interpkit train-tuned-lens gpt2 --corpus-file texts.txt \
+    --steps 500 --batch-size 8 --lr 1e-3
+```
+
+Artifacts are safetensors weights + a JSON metadata sidecar; loading validates
+the hidden size and layer structure against the live model. Omitting `--save`
+writes to `~/.cache/interpkit/tuned_lens/<model>/`.
 
 ### attribute
 
@@ -219,8 +267,14 @@ interpkit diff gpt2 my-finetuned-gpt2 "The capital of France is" --save diff.png
 
 ### find-circuit
 
-Automated circuit discovery. Iteratively ablates components and keeps those
-whose removal changes the output above `--threshold`.
+Automated circuit discovery. With the default ablation methods, iteratively
+ablates components and keeps those whose removal changes the output above
+`--threshold`. With `--method eap` (or `eap-ig`), components are selected by
+Edge Attribution Patching scores instead — a handful of gradient passes
+replaces the per-component ablation sweep, and the threshold becomes a
+fraction of the top component's score. Either way, the discovered circuit is
+verified *causally* by ablating the excluded components and measuring how
+much of the clean-vs-corrupted distinction survives.
 
 ```bash
 interpkit find-circuit gpt2 \
@@ -229,7 +283,42 @@ interpkit find-circuit gpt2 \
     --threshold 0.05
 interpkit find-circuit gpt2 \
     --clean-file cleans.txt --corrupted-file corrupteds.txt
+interpkit find-circuit gpt2 \
+    --clean "..." --corrupted "..." --method eap --threshold 0.2
 ```
+
+### atp
+
+Attribution Patching (Syed et al. 2023). A first-order gradient approximation
+of activation patching: one clean forward, one corrupted forward, and one
+backward pass score *every* module simultaneously — versus one forward per
+module for exhaustive tracing. Use it as the fast first look, then confirm
+top candidates with `trace` or `patch`.
+
+```bash
+interpkit atp gpt2 \
+    --clean "The capital of France is" \
+    --corrupted "The capital of Germany is" --top-k 15
+```
+
+### eap
+
+Edge Attribution Patching. Where `atp` scores modules, `eap` scores *edges*:
+how much each component's clean-vs-corrupted delta matters as it flows into
+each downstream residual-stream layer. The edge at a component's own layer is
+its total effect; deeper edges show how the effect persists down the stream.
+Inputs must tokenize to the same length.
+
+```bash
+interpkit eap gpt2 \
+    --clean "The capital of France is" \
+    --corrupted "The capital of Germany is"
+interpkit eap gpt2 --clean "..." --corrupted "..." --ig-steps 5
+```
+
+`--ig-steps 5` switches to EAP-IG: gradients averaged over embeddings
+interpolated from corrupted toward clean, which is more faithful when the
+corrupted point sits in a saturated region.
 
 ### features
 
@@ -252,6 +341,29 @@ interpkit features gpt2 \
 `--sae` accepts a HuggingFace repo ID, a local `.safetensors` / `.pt` file, or
 the `org/repo/subfolder` shorthand. Alternatively pass `--sae-subfolder` to
 target a subfolder explicitly.
+
+### maxact
+
+Max-activating examples — the feature-browsing workflow: scan a corpus and
+show the contexts where one unit fires hardest, with the peak token
+highlighted. Works for raw neurons (`--neuron`), SAE features (`--feature` +
+`--sae`), and attention heads (`--head`, scored by the head's pre-projection
+output norm). Streams batched forwards and keeps only the top-k scored
+contexts, so memory stays flat however large the corpus.
+
+```bash
+interpkit maxact gpt2 --at transformer.h.6.mlp --neuron 42 \
+    --texts-file corpus.txt --top-k 20
+interpkit maxact gpt2 --at transformer.h.6 --feature 1337 \
+    --sae jbloom/GPT2-Small-SAEs-Reformatted --texts-file corpus.txt
+interpkit maxact gpt2 --at transformer.h.6.mlp --neuron 42 \
+    --dataset hf:imdb --max-examples 256
+```
+
+HF dataset specs (`hf:name[:split[:column]]`, default split `train`, column
+`text`) require the `datasets` package: `pip install 'interpkit[data]'`.
+`--max-examples` is mandatory for HF datasets so a typo can't start an
+unbounded scan.
 
 ## Common options
 

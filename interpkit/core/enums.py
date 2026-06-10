@@ -51,6 +51,20 @@ VALID_FIND_CIRCUIT_METHODS = frozenset({
     "zero",
     "mean",
     "resample",
+    # Gradient-based selection (phase 2): EAP-ranked components, verified
+    # causally with mean ablation.
+    "eap",
+    "eap-ig",
+})
+
+VALID_EAP_METRICS = frozenset({
+    # Only logit_diff has an EAP/AtP gradient formulation today.
+    "logit_diff",
+})
+
+VALID_LENS_KINDS = frozenset({
+    "logit",
+    "tuned",  # Belrose et al. 2023 trained per-block translators (phase 3)
 })
 
 VALID_IG_METHODS = frozenset({
@@ -99,6 +113,8 @@ __all__ = [
     "VALID_TRACE_METHODS",
     "VALID_ABLATE_METHODS",
     "VALID_FIND_CIRCUIT_METHODS",
+    "VALID_EAP_METRICS",
+    "VALID_LENS_KINDS",
     "VALID_IG_METHODS",
     "VALID_IG_BASELINES",
     "_validate_enum",

@@ -60,6 +60,8 @@ def run_lens(
     save: str | None = None,
     html: str | None = None,
     position: int | None = None,
+    kind: str = "logit",
+    tuned_lens: Any = None,
 ) -> list[dict[str, Any]] | None:
     """Project each block's output through the head pipeline.
 
@@ -77,19 +79,49 @@ def run_lens(
     position:
         Token position to report (LMs only; ignored for vision).
         Default ``None`` reports all positions; ``-1`` for last token.
+    kind:
+        ``"logit"`` (default) — raw logit lens. ``"tuned"`` — apply
+        trained per-block translators (Belrose et al. 2023) before the
+        head projection; requires *tuned_lens*.
+    tuned_lens:
+        A :class:`~interpkit.ops.tuned_lens.TunedLens`, or a path to a
+        saved one. Required when ``kind="tuned"``; an untrained lens
+        reproduces the logit lens exactly (identity translators).
 
     Returns
     -------
     list[dict] | None
-        Per-block dicts with ``layer_name``, ``top1_token``, ``top1_prob``,
-        ``top5_tokens``, ``top5_probs``, and ``positions`` (LM only).
-        Returns ``None`` if the model has no head we can project through
-        (e.g. headless encoder).
+        Per-block dicts with ``layer_name``, ``lens_kind``,
+        ``top1_token``, ``top1_prob``, ``top5_tokens``, ``top5_probs``,
+        and ``positions`` (LM only). Returns ``None`` if the model has
+        no head we can project through (e.g. headless encoder).
     """
+    from interpkit.core.enums import VALID_LENS_KINDS, _validate_enum
     from interpkit.core.render import render_lens
 
+    _validate_enum(kind, VALID_LENS_KINDS, "kind")
     arch = model.arch_info
     check_op_supported("lens", arch)
+
+    translator_lens = None
+    if kind == "tuned":
+        from interpkit.ops.tuned_lens import TunedLens, load_tuned_lens
+
+        if tuned_lens is None:
+            raise ValueError(
+                "lens(kind='tuned') needs a tuned lens — pass tuned_lens="
+                "<TunedLens or path>. Train one with "
+                "model.train_tuned_lens(corpus, save=...)."
+            )
+        if isinstance(tuned_lens, TunedLens):
+            translator_lens = tuned_lens
+        else:
+            translator_lens = load_tuned_lens(tuned_lens, model=model)
+    elif tuned_lens is not None:
+        raise ValueError(
+            "tuned_lens was passed but kind='logit' — did you mean "
+            "kind='tuned'?"
+        )
 
     # N-002: pick the family-appropriate block list. Seq2seq lens hooks
     # the decoder stack; MLM/causal/vision use ``arch.blocks`` directly.
@@ -102,6 +134,9 @@ def run_lens(
             f" for {arch.arch_family or 'this model'}.\n"
         )
         return None
+
+    if translator_lens is not None:
+        translator_lens.validate_against(arch, [b.path for b in blocks])
 
     # N-009: prepare the input *before* the lens validation contract so that
     # empty / whitespace-only / type-error inputs surface as the same
@@ -141,10 +176,17 @@ def run_lens(
             input_tokens = None
 
     predictions: list[dict[str, Any]] = []
-    for block in blocks:
+    for block_idx, block in enumerate(blocks):
         if block.path not in block_outputs:
             continue
         block_out = block_outputs[block.path].float()
+        if translator_lens is not None:
+            # Tuned lens: per-block affine translator between the captured
+            # hidden state and the (unchanged) head projection pipeline.
+            with torch.no_grad():
+                block_out = translator_lens.translators[block_idx](
+                    block_out.to(next(translator_lens.parameters()).device)
+                )
         logits = _project_through_head(arch, block_out)
         if logits is None:
             continue
@@ -153,6 +195,7 @@ def run_lens(
             input_tokens=input_tokens, spatial=arch.spatial,
         )
         if entry is not None:
+            entry["lens_kind"] = kind
             predictions.append(entry)
 
     if not predictions:
@@ -160,6 +203,8 @@ def run_lens(
         return None
 
     model_name = arch.arch_family or "model"
+    if kind == "tuned":
+        model_name += " (tuned lens)"
     render_lens(predictions, model_name)
 
     if save is not None:

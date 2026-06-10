@@ -15,13 +15,22 @@ trailing ``"{prefix}#{i}"`` this module produces). Extending the helpers to
 cover those is a follow-up; until then those sites stay as-is rather than be
 force-fit.
 
-Four helpers:
+The *write* side (replacing module outputs) lives in
+:mod:`interpkit.core.interventions`; the deferral ledger for sites that
+intentionally remain inline (dla capture factories, patch.py's head-level
+o_proj pre-hooks) is split between this docstring and that module's.
+
+Five helpers:
 
 - :func:`first_tensor` extracts the leading ``Tensor`` from a forward
   hook's ``output`` argument across the supported shapes (``Tensor``,
   ``tuple[Tensor, ...]``, ``list[Tensor, ...]``, ``None``).
 - :func:`register_capture_hook` wires up the standard one-shot
   capture pattern (``store[key] = first_tensor(output).detach()``).
+- :func:`register_grad_capture_hook` is the gradient-flow variant:
+  captures *without* detaching and calls ``retain_grad()`` so the
+  tensor's ``.grad`` is populated after ``backward()`` (the
+  ``_atp.py`` attribution-patching pattern; foundation for EAP).
 - :func:`register_per_call_hook` wires up per-call indexing for
   shared-weight modules (ALBERT and similar): each invocation of the
   same physical block writes to a different ``f"{key_prefix}#{counter}"``
@@ -47,6 +56,7 @@ import torch.nn as nn
 __all__ = [
     "first_tensor",
     "register_capture_hook",
+    "register_grad_capture_hook",
     "register_per_call_hook",
     "eager_attention_forward",
 ]
@@ -130,6 +140,35 @@ def register_capture_hook(
             t = t.detach()
         if clone:
             t = t.clone()
+        store[key] = t
+
+    return module.register_forward_hook(hook)
+
+
+def register_grad_capture_hook(
+    module: nn.Module,
+    store: dict[str, torch.Tensor],
+    key: str,
+) -> torch.utils.hooks.RemovableHandle:
+    """Register a forward hook that captures *module*'s output **with** its graph.
+
+    Gradient-flow variant of :func:`register_capture_hook`: the captured
+    tensor is neither detached nor cloned, and ``retain_grad()`` is
+    called so ``store[key].grad`` is populated after a subsequent
+    ``backward()`` on the loss. This is the Attribution Patching capture
+    pattern from ``ops/_atp.py`` and the foundation for edge attribution
+    patching (roadmap phase 2).
+
+    Caller is responsible for ``handle.remove()`` in a ``finally`` block,
+    and for dropping the *store* references promptly — each entry pins
+    the full autograd graph of its forward pass.
+    """
+    def hook(_mod: nn.Module, _inp: Any, output: Any) -> None:
+        t = first_tensor(output)
+        if t is None:
+            return
+        if t.requires_grad:
+            t.retain_grad()
         store[key] = t
 
     return module.register_forward_hook(hook)

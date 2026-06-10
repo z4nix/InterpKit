@@ -36,7 +36,9 @@ from interpkit.core.enums import (
     VALID_TRACE_MODES,
     _validate_enum,
 )
+from interpkit.core.interventions import PatchIntervention
 from interpkit.core.paths import validate_module_path
+from interpkit.ops._hooks import register_capture_hook
 from interpkit.ops.patch import _compute_effect_value as _compute_effect
 from interpkit.ops.patch import _get_module
 
@@ -224,23 +226,13 @@ def _run_module_trace(
     # Phase 2: full patching on selected modules with cached clean activations
     clean_cache: dict[str, torch.Tensor] = {}
 
-    def _make_cache_hook(name: str):
-        def hook_fn(_mod: torch.nn.Module, _inp: Any, output: Any) -> None:
-            t = output if isinstance(output, torch.Tensor) else (
-                output[0] if isinstance(output, (tuple, list)) and isinstance(output[0], torch.Tensor) else None
-            )
-            if t is not None:
-                clean_cache[name] = t.detach().clone()
-
-        return hook_fn
-
     cache_handles = []
     for name in selected_names:
         try:
             mod = _get_module(model._model, name)
         except (AttributeError, IndexError, KeyError, TypeError):
             continue
-        cache_handles.append(mod.register_forward_hook(_make_cache_hook(name)))
+        cache_handles.append(register_capture_hook(mod, clean_cache, name))
     clean_logits = model._forward(clean_input)
     for h in cache_handles:
         h.remove()
@@ -262,17 +254,8 @@ def _run_module_trace(
                 progress.advance(task)
                 continue
 
-            def _make_patch_hook(cached: torch.Tensor):
-                def hook_fn(_mod: torch.nn.Module, _inp: Any, output: Any) -> Any:
-                    if isinstance(output, torch.Tensor):
-                        return cached
-                    elif isinstance(output, (tuple, list)):
-                        return (cached,) + tuple(output[1:])
-                    return output
-
-                return hook_fn
-
-            handle = target_mod.register_forward_hook(_make_patch_hook(clean_cache[name]))
+            patch_hook = PatchIntervention(name, source=clean_cache[name]).build_hook(None)
+            handle = target_mod.register_forward_hook(patch_hook)
             patched_logits = model._forward(corrupted_input)
             handle.remove()
 
@@ -397,20 +380,11 @@ def _run_position_trace(
     # Cache clean activations at every layer
     clean_cache: dict[str, torch.Tensor] = {}
 
-    def _make_cache_hook(name: str):
-        def hook_fn(_mod: torch.nn.Module, _inp: Any, output: Any) -> None:
-            t = output if isinstance(output, torch.Tensor) else (
-                output[0] if isinstance(output, (tuple, list)) and isinstance(output[0], torch.Tensor) else None
-            )
-            if t is not None:
-                clean_cache[name] = t.detach().clone()
-        return hook_fn
-
     hooks = []
     for ln in layer_names:
         try:
             mod = _get_module(model._model, ln)
-            hooks.append(mod.register_forward_hook(_make_cache_hook(ln)))
+            hooks.append(register_capture_hook(mod, clean_cache, ln))
         except AttributeError:
             continue
     clean_logits = model._forward(clean_input)
@@ -448,30 +422,10 @@ def _run_position_trace(
             target_mod = _get_module(model._model, ln)
 
             for pos in range(seq_len):
-                def _make_pos_patch_hook(cached: torch.Tensor, p: int):
-                    def hook_fn(_mod: torch.nn.Module, _inp: Any, output: Any) -> Any:
-                        t = output if isinstance(output, torch.Tensor) else (
-                            output[0] if isinstance(output, (tuple, list)) and isinstance(output[0], torch.Tensor) else None
-                        )
-                        if t is None:
-                            return output
-
-                        patched = t.clone()
-                        if patched.dim() == 3:
-                            patched[:, p, :] = cached[:, p, :]
-                        elif patched.dim() == 2:
-                            patched[p, :] = cached[p, :]
-                        else:
-                            return output
-
-                        if isinstance(output, torch.Tensor):
-                            return patched
-                        return (patched,) + tuple(output[1:])
-                    return hook_fn
-
-                handle = target_mod.register_forward_hook(
-                    _make_pos_patch_hook(clean_act, pos)
-                )
+                pos_hook = PatchIntervention(
+                    ln, source=clean_act, positions=(pos,),
+                ).build_hook(None)
+                handle = target_mod.register_forward_hook(pos_hook)
                 patched_logits = model._forward(corrupted_input)
                 handle.remove()
 

@@ -206,6 +206,122 @@ def test_find_circuit(mock_model):
     assert result.exit_code == 0
 
 
+def test_generate(mock_model):
+    result = runner.invoke(app, [
+        "generate", "gpt2", "The capital of France is",
+        "--max-new-tokens", "3",
+    ])
+    assert result.exit_code == 0
+
+
+def test_generate_with_steering(mock_model):
+    result = runner.invoke(app, [
+        "generate", "gpt2", "The weather is",
+        "--positive", "Love",
+        "--negative", "Hate",
+        "--at", "transformer.h.8",
+        "--scale", "6",
+        "--max-new-tokens", "3",
+    ])
+    assert result.exit_code == 0
+
+
+def test_generate_with_ablation(mock_model):
+    result = runner.invoke(app, [
+        "generate", "gpt2", "The weather is",
+        "--ablate-at", "transformer.h.4.mlp",
+        "--max-new-tokens", "3",
+    ])
+    assert result.exit_code == 0
+
+
+def test_generate_steering_requires_at(mock_model):
+    result = runner.invoke(app, [
+        "generate", "gpt2", "hi",
+        "--positive", "a", "--negative", "b",
+    ])
+    assert result.exit_code != 0
+
+
+def test_atp_command(mock_model):
+    result = runner.invoke(app, [
+        "atp", "gpt2",
+        "--clean", "The capital of France is",
+        "--corrupted", "The capital of Germany is",
+        "--top-k", "5",
+    ])
+    assert result.exit_code == 0
+
+
+def test_eap_command(mock_model):
+    result = runner.invoke(app, [
+        "eap", "gpt2",
+        "--clean", "The capital of France is",
+        "--corrupted", "The capital of Germany is",
+        "--top-k-edges", "5",
+    ])
+    assert result.exit_code == 0
+
+
+def test_find_circuit_eap_method(mock_model):
+    result = runner.invoke(app, [
+        "find-circuit", "gpt2",
+        "--clean", "The capital of France is",
+        "--corrupted", "The capital of Germany is",
+        "--method", "eap",
+        "--threshold", "0.3",
+    ])
+    assert result.exit_code == 0
+
+
+def test_train_tuned_lens_and_lens_tuned(mock_model, tmp_path):
+    corpus = tmp_path / "corpus.txt"
+    corpus.write_text(
+        "The capital of France is Paris.\n"
+        "Water boils at one hundred degrees.\n"
+        "The sun rises in the east.\n"
+    )
+    lens_dir = tmp_path / "lens"
+    result = runner.invoke(app, [
+        "train-tuned-lens", "gpt2",
+        "--corpus-file", str(corpus),
+        "--steps", "2", "--batch-size", "2", "--max-length", "12",
+        "--save", str(lens_dir),
+    ])
+    assert result.exit_code == 0
+    assert (lens_dir / "tuned_lens.safetensors").exists()
+
+    result = runner.invoke(app, [
+        "lens", "gpt2", "The capital of France is",
+        "--tuned-lens", str(lens_dir),
+    ])
+    assert result.exit_code == 0
+
+
+def test_maxact_command(mock_model, tmp_path):
+    corpus = tmp_path / "corpus.txt"
+    corpus.write_text(
+        "The cat sat on the mat.\n"
+        "Paris is the capital of France.\n"
+        "I love programming in Python.\n"
+    )
+    result = runner.invoke(app, [
+        "maxact", "gpt2",
+        "--at", "transformer.h.6.mlp",
+        "--neuron", "42",
+        "--texts-file", str(corpus),
+        "--top-k", "3",
+    ])
+    assert result.exit_code == 0
+
+
+def test_maxact_requires_one_corpus_source(mock_model):
+    result = runner.invoke(app, [
+        "maxact", "gpt2", "--at", "transformer.h.6.mlp", "--neuron", "1",
+    ])
+    assert result.exit_code != 0
+
+
 # ══════════════════════════════════════════════════════════════════
 # Commands requiring external resources
 # ══════════════════════════════════════════════════════════════════
@@ -289,6 +405,23 @@ def test_format_json_lens(mock_model):
     assert result.exit_code == 0
     parsed = _extract_json(result.stdout)
     assert isinstance(parsed, (dict, list))
+
+
+def test_format_json_generate_capture_lens(mock_model):
+    result = runner.invoke(app, [
+        "--format", "json",
+        "generate", "gpt2", "The capital of France is",
+        "--max-new-tokens", "2",
+        "--capture", "lens",
+    ])
+    assert result.exit_code == 0
+    parsed = _extract_json(result.stdout)
+    assert "response" in parsed
+    assert "input_ids" not in parsed  # tensors trimmed from JSON output
+    assert len(parsed["steps"]) == 2
+    for step in parsed["steps"]:
+        assert "logits" not in step
+        assert step["lens"]
 
 
 def test_format_json_dla(mock_model):

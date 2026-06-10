@@ -261,6 +261,94 @@ def render_position_trace(result: dict[str, Any]) -> None:
 
 
 # ------------------------------------------------------------------
+# Attribution Patching / EAP rendering
+# ------------------------------------------------------------------
+
+
+def render_atp(results: list[dict[str, Any]], meta: dict[str, Any]) -> None:
+    """Print a signed-bar ranking of Attribution Patching scores."""
+    import math
+
+    _section(
+        "Attribution Patching",
+        f"{len(results)} of {meta['n_modules']} modules — "
+        f"{meta['n_forward_passes']} forwards + {meta['n_backward_passes']} backward",
+    )
+
+    if meta.get("warning"):
+        console.print(f"  [yellow]⚠ {meta['warning']}[/yellow]\n")
+        return
+
+    if not results:
+        console.print("  [dim]No modules scored.[/dim]")
+        return
+
+    finite = [abs(r["score"]) for r in results if not math.isnan(r["score"])]
+    max_score = max(finite) if finite else 1.0
+
+    table = Table(show_header=False, box=None, pad_edge=False, padding=(0, 1))
+    table.add_column("Module", style=ACCENT, no_wrap=True, min_width=35)
+    table.add_column("Role", min_width=8)
+    table.add_column("Bar", no_wrap=True, min_width=_BAR_WIDTH + 2)
+    table.add_column("Score", justify="right", style="bold")
+
+    for r in results:
+        score = r["score"]
+        if math.isnan(score):
+            table.add_row(r["module"], _role_tag(r.get("role")), "", "[dim]NaN[/dim]")
+            continue
+        bar = _bar(abs(score), max_score, positive=score >= 0)
+        table.add_row(r["module"], _role_tag(r.get("role")), bar, f"{score:+.3f}")
+
+    console.print(table)
+    console.print(f"\n  [dim]{meta['caveat']}.[/dim]\n")
+
+
+def render_eap(result: dict[str, Any]) -> None:
+    """Print the top-edge ranking from edge attribution patching."""
+    import math
+
+    edges = result.get("edges", [])
+    meta = result.get("meta", {})
+    _section(
+        "Edge Attribution Patching",
+        f"{len(edges)} edges — method={meta.get('method', 'eap')}"
+        + (f", ig_steps={meta['ig_steps']}" if meta.get("ig_steps") else ""),
+    )
+
+    if not edges:
+        console.print("  [dim]No edges scored.[/dim]")
+        return
+
+    finite = [abs(e["score"]) for e in edges if not math.isnan(e["score"])]
+    max_score = max(finite) if finite else 1.0
+
+    table = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
+    table.add_column("Rank", justify="right", style="dim")
+    table.add_column("Edge", style=ACCENT, no_wrap=True)
+    table.add_column("", no_wrap=True, min_width=_BAR_WIDTH + 2)
+    table.add_column("Score", justify="right", style="bold")
+
+    for e in edges[:20]:
+        score = e["score"]
+        bar = "" if math.isnan(score) else _bar(abs(score), max_score, positive=score >= 0)
+        table.add_row(
+            str(e["rank"]),
+            f"{e['src']} → {e['dst']}",
+            bar,
+            f"{score:+.3f}" if not math.isnan(score) else "[dim]NaN[/dim]",
+        )
+    if len(edges) > 20:
+        table.add_row("...", f"({len(edges) - 20} more)", "", "")
+
+    console.print(table)
+    console.print(
+        "\n  [dim]Edge u → resid_l: first-order effect of u's clean-vs-corrupted "
+        "delta as felt through everything downstream of block l.[/dim]\n"
+    )
+
+
+# ------------------------------------------------------------------
 # Logit lens rendering
 # ------------------------------------------------------------------
 
@@ -523,6 +611,94 @@ def render_steer(
         table.add_row(str(i + 1), orig_tok, orig_prob, arrow, f"{steer_style}{steer_tok}{steer_end}", steer_prob)
 
     console.print(table)
+    console.print()
+
+
+# ------------------------------------------------------------------
+# Max-activating examples rendering
+# ------------------------------------------------------------------
+
+
+def render_max_activating(result: dict[str, Any]) -> None:
+    """Print top examples with the peak token highlighted in its context."""
+    unit = result["unit"]
+    label = f"{unit['kind']} {unit['index']} @ {unit['at']}"
+    _section(
+        "Max-Activating Examples",
+        f"{label} — {result['n_examples_scanned']} examples / "
+        f"{result['n_positions_scanned']} positions scanned",
+    )
+
+    examples = result.get("examples", [])
+    if not examples:
+        console.print("  [dim]No activations recorded.[/dim]")
+        return
+
+    max_score = max(abs(e["score"]) for e in examples) or 1.0
+    for e in examples[:10]:
+        line = Text("  ")
+        line.append(f"#{e['rank'] + 1:<3}", style="dim")
+        line.append(f"{e['score']:+8.3f}  ", style="bold")
+        for i, tok in enumerate(e["context_tokens"]):
+            if i == e["context_offset"]:
+                line.append(tok, style=f"bold reverse {ACCENT}")
+            else:
+                # Shade context tokens by their own score share.
+                share = abs(e["context_scores"][i]) / max_score
+                line.append(tok, style=ACCENT if share > 0.5 else "")
+        console.print(line)
+
+    if len(examples) > 10:
+        console.print(f"  [dim]... {len(examples) - 10} more in result['examples'].[/dim]")
+    console.print(f"\n  [dim]Score: {result['meta']['score_definition']}.[/dim]\n")
+
+
+# ------------------------------------------------------------------
+# Generate rendering
+# ------------------------------------------------------------------
+
+
+def render_generate(result: dict[str, Any]) -> None:
+    """Print prompt/response plus an optional per-step lens table."""
+    n_ivs = len(result.get("interventions", []))
+    subtitle = f"{n_ivs} intervention{'s' if n_ivs != 1 else ''}" if n_ivs else None
+    _section("Generate", subtitle)
+
+    _callout("Prompt", result.get("prompt", ""))
+    _callout("Response", result.get("response", ""), style="green")
+
+    steps = result.get("steps")
+    if not steps:
+        console.print()
+        return
+
+    has_lens = any(s.get("lens") for s in steps)
+    if has_lens:
+        table = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
+        table.add_column("Step", justify="right", style="dim")
+        table.add_column("Token", style=ACCENT)
+        table.add_column("Final-block lens", style="green")
+        table.add_column("Prob", justify="right")
+        table.add_column("First block predicting it", style=MUTED)
+
+        for s in steps[:20]:
+            lens_entries = s.get("lens", [])
+            final = lens_entries[-1] if lens_entries else None
+            first_match = ""
+            for e in lens_entries:
+                if e["top1_id"] == s["token_id"]:
+                    first_match = e["block"]
+                    break
+            table.add_row(
+                str(s["step"]),
+                repr(s["token"]),
+                repr(final["top1_token"]) if final else "",
+                f"{final['top1_prob']:.3f}" if final else "",
+                first_match,
+            )
+        if len(steps) > 20:
+            table.add_row("...", f"({len(steps) - 20} more)", "", "", "")
+        console.print(table)
     console.print()
 
 

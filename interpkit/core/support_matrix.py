@@ -119,6 +119,12 @@ SUPPORT_MATRIX: dict[str, Requires | str] = {
     "report":      "all",
     "inspect":     "all",
     "chat":        Requires(generative=True),
+    "generate":    Requires(generative=True),
+    "intervene":   "all",
+    "atp":         "all",
+    "eap":         Requires(unembedding=True, residual_stream=True),
+    "train_tuned_lens": Requires(unembedding=True),
+    "max_activating": "all",
 }
 
 
@@ -145,6 +151,8 @@ def _suggest_alternative_op(op: str, family: ArchFamily) -> str:
 _DEBERTA_V3_GATED_OPS = frozenset({
     "trace", "decompose", "attribute", "head_activations",
     "steer", "probe", "diff", "ov_scores", "qk_scores",
+    "intervene",  # intervention hooks fire the same broken broadcast path
+    "atp", "eap",  # hook every module / block under gradients — same path
 })
 
 

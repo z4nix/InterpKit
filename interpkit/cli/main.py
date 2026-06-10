@@ -236,6 +236,28 @@ def _show_extensive_help() -> None:
         padding=(0, 2),
     ))
 
+    console.print()
+    console.print(Panel(
+        f"[bold {ACCENT}]generate[/bold {ACCENT}]  "
+        "[dim]interpkit generate gpt2 'I feel' --positive ' joy' --negative ' fear' --at transformer.h.6 --scale 8[/dim]\n\n"
+        "Generate text with interventions active across [italic]every[/italic] decode step —"
+        " the generation-time counterpart of [bold]steer[/bold] / [bold]ablate[/bold], which"
+        " analyse a single forward pass. A steering vector or ablation stays hooked for the"
+        " prefill and all KV-cached decode steps, so you can watch a nudged model write.\n\n"
+        "  Add [bold green]--capture lens[/bold green] to record each generated token's"
+        " logit-lens trajectory: which layer first predicted the token the model ended up"
+        " emitting.\n\n"
+        "  [bold]Key options:[/bold]\n"
+        "    [bold green]--positive / --negative + --at[/bold green]  Build a steering vector and apply it while generating.\n"
+        "    [bold green]--ablate-at / --ablate-method[/bold green]  Knock out a module for the whole generation.\n"
+        "    [bold green]--capture lens|logits[/bold green]  Per-token lens trajectory or raw step logits.\n"
+        "    [bold green]--max-new-tokens N[/bold green]  Generation budget (default 64).\n"
+        "    [bold green]--sample / --temperature / --top-p[/bold green]  Standard sampling controls.",
+        title="generate",
+        border_style=ACCENT_DIM,
+        padding=(0, 2),
+    ))
+
     # ── Core Operations ───────────────────────────────────────────
     console.print()
     console.print(Rule("[bold]Core Operations[/bold]", style=ACCENT))
@@ -285,9 +307,17 @@ def _show_extensive_help() -> None:
             "interpkit lens gpt2 'The capital of France is'",
             "Logit lens. After every transformer layer, the hidden state is projected directly into"
             " vocabulary space so you can see what the model 'thinks' it's predicting at each depth."
-            " Lets you watch a vague representation sharpen into the final answer layer by layer.",
+            " Lets you watch a vague representation sharpen into the final answer layer by layer.\n\n"
+            "  The raw projection is biased for early layers (their basis isn't aligned with the"
+            " unembedding). Train per-layer translators once with"
+            f" [bold {ACCENT}]train-tuned-lens[/bold {ACCENT}] and pass"
+            " [bold green]--tuned-lens <path>[/bold green] for the unbiased tuned-lens readout"
+            " (Belrose et al. 2023).\n"
+            "  [dim]interpkit train-tuned-lens gpt2 --corpus-file texts.txt --save lens_dir/[/dim]\n"
+            "  [dim]interpkit lens gpt2 'The capital of France is' --tuned-lens lens_dir/[/dim]",
             [
                 ("--position N", "Analyse a single token position instead of all positions."),
+                ("--tuned-lens PATH", "Apply saved tuned-lens translators instead of the raw projection."),
             ],
         ),
         (
@@ -461,9 +491,72 @@ def _show_extensive_help() -> None:
         "    [bold green]--clean / --corrupted[/bold green]  Single clean and corrupted input texts.\n"
         "    [bold green]--clean-file / --corrupted-file[/bold green]  Text files with one example per line (paired by line number).\n"
         "    [bold green]--threshold[/bold green]  Minimum ablation effect to include (default 0.01).\n"
-        "    [bold green]--method[/bold green]  Ablation method: mean (default), zero, resample.\n"
+        "    [bold green]--method[/bold green]  mean (default) · zero · resample (ablation), or eap · eap-ig"
+        " (gradient-based selection in a handful of passes — much faster; the circuit is still"
+        " verified causally).\n"
         "    [bold green]--metric[/bold green]  logit_diff · kl_div · target_prob · l2_prob",
         title="find-circuit",
+        border_style=ACCENT_DIM,
+        padding=(0, 2),
+    ))
+    console.print()
+
+    console.print(Panel(
+        f"[bold {ACCENT}]atp[/bold {ACCENT}]  "
+        "[dim]interpkit atp gpt2 --clean 'The capital of France is' --corrupted 'The capital of Germany is'[/dim]\n\n"
+        "Attribution Patching (Syed et al. 2023). A first-order gradient approximation of"
+        " activation patching: one clean forward, one corrupted forward, and one backward pass"
+        " score [italic]every[/italic] module simultaneously — versus one forward per module for"
+        " exhaustive tracing. Correlation with true patch effects is typically 0.85–0.95."
+        " Use it as the fast first look, then confirm top candidates with"
+        f" [bold {ACCENT}]trace[/bold {ACCENT}] or [bold {ACCENT}]patch[/bold {ACCENT}].\n\n"
+        "  [bold]Key options:[/bold]\n"
+        "    [bold green]--clean / --corrupted[/bold green]  The contrast pair to attribute.\n"
+        "    [bold green]--top-k[/bold green]  Top modules to report by absolute score (0 = all).",
+        title="atp",
+        border_style=ACCENT_DIM,
+        padding=(0, 2),
+    ))
+    console.print()
+
+    console.print(Panel(
+        f"[bold {ACCENT}]eap[/bold {ACCENT}]  "
+        "[dim]interpkit eap gpt2 --clean 'The capital of France is' --corrupted 'The capital of Germany is'[/dim]\n\n"
+        "Edge Attribution Patching. Where [bold]atp[/bold] scores modules, eap scores"
+        " [italic]edges[/italic]: how much each component's clean-vs-corrupted delta matters as it"
+        " flows into each downstream residual-stream layer. The edge at a component's own layer is"
+        " its total effect; deeper edges show how the effect persists down the stream. Inputs must"
+        " tokenize to the same length.\n\n"
+        "  [bold green]--ig-steps 5[/bold green] switches to EAP-IG: gradients averaged over"
+        " embeddings interpolated from corrupted toward clean — more faithful scores when the"
+        " corrupted point sits in a saturated region.\n\n"
+        "  [bold]Key options:[/bold]\n"
+        "    [bold green]--clean / --corrupted[/bold green]  Token-aligned contrast pair.\n"
+        "    [bold green]--ig-steps[/bold green]  EAP-IG interpolation steps (0 = plain EAP).\n"
+        "    [bold green]--top-k-edges[/bold green]  Top edges to report by absolute score (0 = all).",
+        title="eap",
+        border_style=ACCENT_DIM,
+        padding=(0, 2),
+    ))
+    console.print()
+
+    console.print(Panel(
+        f"[bold {ACCENT}]maxact[/bold {ACCENT}]  "
+        "[dim]interpkit maxact gpt2 --at transformer.h.6.mlp --neuron 42 --texts-file corpus.txt[/dim]\n\n"
+        "Max-activating examples — the feature-browsing workflow: scan a corpus and show the"
+        " contexts where one unit fires hardest, with the peak token highlighted. Works for raw"
+        " neurons ([bold green]--neuron[/bold green]), SAE features ([bold green]--feature[/bold green]"
+        " + [bold green]--sae[/bold green]), and attention heads ([bold green]--head[/bold green])."
+        " Streams batched forwards and keeps only the top-k scored contexts, so memory stays flat"
+        " however large the corpus.\n\n"
+        "  HF datasets work too (requires [dim]pip install 'interpkit[data]'[/dim]):\n"
+        "  [dim]interpkit maxact gpt2 --at transformer.h.6.mlp --neuron 42 --dataset hf:imdb --max-examples 256[/dim]\n\n"
+        "  [bold]Key options:[/bold]\n"
+        "    [bold green]--texts-file / --dataset[/bold green]  Corpus: one-per-line file, or hf:name[:split[:column]].\n"
+        "    [bold green]--neuron / --feature / --head[/bold green]  Which unit to scan (exactly one).\n"
+        "    [bold green]--sae[/bold green]  SAE repo ID or path (with --feature).\n"
+        "    [bold green]--top-k / --max-examples[/bold green]  How many results / how much corpus.",
+        title="maxact",
         border_style=ACCENT_DIM,
         padding=(0, 2),
     ))
@@ -552,13 +645,15 @@ def main(
         ("scan", "One-command overview \u2014 DLA, lens, attention, attribution"),
         ("report", "Generate an interactive HTML report"),
         ("chat", "Send a message to a chat / instruct model"),
+        ("generate", "Generate with steering/ablation active + per-token lens"),
     ])
 
     core_ops = _cmd_table([
         ("inspect", "Module tree with types, params, roles"),
         ("dla", "Direct Logit Attribution \u2014 decompose logit by component"),
         ("trace", "Causal tracing \u2014 module or position-aware"),
-        ("lens", "Logit lens \u2014 project layers to vocab"),
+        ("lens", "Logit lens \u2014 project layers to vocab (--tuned-lens for tuned)"),
+        ("train-tuned-lens", "Train per-layer tuned-lens translators"),
         ("attribute", "Gradient saliency over inputs"),
         ("patch", "Activation patching at module/head/position"),
     ])
@@ -574,8 +669,11 @@ def main(
     ])
 
     circuit_ops = _cmd_table([
-        ("find-circuit", "Automated circuit discovery"),
+        ("find-circuit", "Automated circuit discovery (ablation or EAP)"),
+        ("atp", "Attribution Patching — score all modules in 3 passes"),
+        ("eap", "Edge Attribution Patching — gradient-based edge scores"),
         ("features", "SAE feature decomposition (single or contrastive)"),
+        ("maxact", "Max-activating examples for a neuron / SAE feature / head"),
     ])
 
     layout = Table(show_header=False, box=None, pad_edge=False, padding=0, expand=True)
@@ -726,16 +824,63 @@ def lens(
     save: str | None = typer.Option(None, "--save", help="Save heatmap to file (e.g. lens.png)"),
     html_path: str | None = typer.Option(None, "--html", help="Save interactive HTML to file"),
     position: int | None = typer.Option(None, "--position", help="Single token position to analyse (-1 = last). Omit for all positions."),
+    tuned_lens_path: str | None = typer.Option(None, "--tuned-lens", help="Path to a saved tuned lens (switches to kind='tuned'). Train with `interpkit train-tuned-lens`."),
     device: str | None = typer.Option(None, help="Device"),
     dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
     device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
-    """Logit lens: project each layer's hidden state to vocabulary space."""
+    """Logit lens: project each layer's hidden state to vocabulary space.
+
+    Pass --tuned-lens <path> to apply trained per-layer translators
+    (Belrose et al. 2023) for an unbiased early-layer readout.
+    """
     m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
+    kind = "tuned" if tuned_lens_path is not None else "logit"
     with console.status("  Running logit lens..."):
-        result = m.lens(text, save=save, html=html_path, position=position)
+        result = m.lens(
+            text, save=save, html=html_path, position=position,
+            kind=kind, tuned_lens=tuned_lens_path,
+        )
     if _output_format == "json":
         _json_dump(result if isinstance(result, dict) else {"results": result})
+
+
+# ══════════════════════════════════════════════════════════════════
+# train-tuned-lens
+# ══════════════════════════════════════════════════════════════════
+
+
+@app.command("train-tuned-lens")
+def train_tuned_lens_cmd(
+    model_name: str = typer.Argument(..., help="HuggingFace model ID"),
+    corpus_file: str = typer.Option(..., "--corpus-file", help="Text file with training sentences, one per line"),
+    steps: int = typer.Option(200, "--steps", help="Training steps"),
+    batch_size: int = typer.Option(4, "--batch-size", help="Batch size"),
+    lr: float = typer.Option(1e-3, "--lr", help="Adam learning rate"),
+    max_length: int = typer.Option(64, "--max-length", help="Token truncation length"),
+    seed: int = typer.Option(0, "--seed", help="Random seed (deterministic on CPU)"),
+    save: str | None = typer.Option(None, "--save", help="Output directory or .safetensors path (default: ~/.cache/interpkit/tuned_lens/<model>/)"),
+    device: str | None = typer.Option(None, help="Device"),
+    dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
+) -> None:
+    """Train tuned-lens translators (Belrose et al. 2023) for a model.
+
+    The model stays frozen; only per-layer affine translators train.
+    Use the result with `interpkit lens ... --tuned-lens <path>`.
+    """
+    from interpkit.core.inputs import read_examples_file
+    from interpkit.ops.tuned_lens import default_tuned_lens_dir
+
+    corpus = read_examples_file(corpus_file)
+    m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
+    out = save if save is not None else str(default_tuned_lens_dir(model_name))
+    lens_obj = m.train_tuned_lens(
+        corpus, steps=steps, batch_size=batch_size, lr=lr,
+        max_length=max_length, seed=seed, save=out,
+    )
+    if _output_format == "json":
+        _json_dump({"saved_to": out, "meta": lens_obj.meta})
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1080,7 +1225,7 @@ def find_circuit(
     clean_file: str | None = typer.Option(None, "--clean-file", help="Text file with clean examples, one per line"),
     corrupted_file: str | None = typer.Option(None, "--corrupted-file", help="Text file with corrupted examples, one per line (must match --clean-file line count)"),
     threshold: float = typer.Option(0.01, "--threshold", help="Minimum ablation effect to include in circuit (0-1)"),
-    method: str = typer.Option("mean", "--method", help="Ablation method: mean (default), zero, resample"),
+    method: str = typer.Option("mean", "--method", help="Selection method: mean (default), zero, resample (ablation), or eap / eap-ig (gradient-based, much faster)"),
     metric: str = typer.Option("logit_diff", "--metric", help="Effect metric: logit_diff, kl_div, target_prob, l2_prob"),
     device: str | None = typer.Option(None, help="Device"),
     dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
@@ -1188,6 +1333,196 @@ def chat(
 
     if _output_format == "json":
         _json_dump({k: v for k, v in result.items() if k not in {"input_ids", "output_ids"}})
+
+
+# ══════════════════════════════════════════════════════════════════
+# atp / eap
+# ══════════════════════════════════════════════════════════════════
+
+
+@app.command()
+def atp(
+    model_name: str = typer.Argument(..., help="HuggingFace model ID"),
+    clean: str = typer.Option(..., "--clean", help="Clean input"),
+    corrupted: str = typer.Option(..., "--corrupted", help="Corrupted input"),
+    top_k: int = typer.Option(20, "--top-k", help="Top modules to report by absolute score. 0 = all."),
+    device: str | None = typer.Option(None, help="Device"),
+    dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
+) -> None:
+    """Attribution Patching: first-order patch-effect scores for every module.
+
+    Three model passes score all modules at once — the fast first look
+    before committing to `trace`'s per-module full patching.
+    """
+    m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
+    effective_top_k: int | None = top_k if top_k > 0 else None
+    with console.status("  Computing attribution patching scores..."):
+        result = m.atp(clean, corrupted, top_k=effective_top_k)
+    if _output_format == "json":
+        _json_dump(result)
+
+
+@app.command()
+def eap(
+    model_name: str = typer.Argument(..., help="HuggingFace model ID"),
+    clean: str = typer.Option(..., "--clean", help="Clean input (must tokenize to same length as --corrupted)"),
+    corrupted: str = typer.Option(..., "--corrupted", help="Corrupted input"),
+    ig_steps: int = typer.Option(0, "--ig-steps", help="EAP-IG interpolation steps (0 = plain EAP; try 5)"),
+    top_k_edges: int = typer.Option(30, "--top-k-edges", help="Top edges to report by absolute score. 0 = all."),
+    device: str | None = typer.Option(None, help="Device"),
+    dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
+) -> None:
+    """Edge Attribution Patching: gradient-based edge scores for circuit discovery.
+
+    Scores every (component → residual stream) edge from a handful of
+    passes. Pair with `find-circuit --method eap` for a causally
+    verified circuit.
+    """
+    m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
+    effective_top_k: int | None = top_k_edges if top_k_edges > 0 else None
+    with console.status("  Computing edge attribution scores..."):
+        result = m.eap(clean, corrupted, ig_steps=ig_steps, top_k_edges=effective_top_k)
+    if _output_format == "json":
+        _json_dump(result)
+
+
+# ══════════════════════════════════════════════════════════════════
+# maxact
+# ══════════════════════════════════════════════════════════════════
+
+
+@app.command()
+def maxact(
+    model_name: str = typer.Argument(..., help="HuggingFace model ID"),
+    at: str = typer.Option(..., "--at", help="Module whose activations to scan (e.g. transformer.h.6.mlp)"),
+    texts_file: str | None = typer.Option(None, "--texts-file", help="Text file with one example per line"),
+    dataset: str | None = typer.Option(None, "--dataset", help="HF dataset spec: hf:name[:split[:column]] (needs interpkit[data] + --max-examples)"),
+    neuron: int | None = typer.Option(None, "--neuron", help="Neuron index at the module (raw activation score)"),
+    feature: int | None = typer.Option(None, "--feature", help="SAE feature index (requires --sae)"),
+    head: int | None = typer.Option(None, "--head", help="Attention head index (pre-projection output norm)"),
+    sae: str | None = typer.Option(None, "--sae", help="SAE repo ID or local path (with --feature)"),
+    top_k: int = typer.Option(20, "--top-k", help="Top examples to keep"),
+    batch_size: int = typer.Option(8, "--batch-size", help="Forward batch size"),
+    max_examples: int | None = typer.Option(None, "--max-examples", help="Cap on dataset examples scanned"),
+    max_length: int = typer.Option(128, "--max-length", help="Token truncation length"),
+    device: str | None = typer.Option(None, help="Device"),
+    dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
+) -> None:
+    """Find the dataset examples that most activate a neuron / SAE feature / head.
+
+    The feature-browsing workflow: "what does this unit fire on?".
+    Streams batched forwards and keeps only the top-k scored contexts.
+    """
+    from interpkit.core.inputs import read_examples_file
+
+    if (texts_file is None) == (dataset is None):
+        raise typer.BadParameter("Provide exactly one of --texts-file or --dataset.")
+    data: list[str] | str = (
+        read_examples_file(texts_file) if texts_file is not None else dataset  # type: ignore[assignment]
+    )
+
+    m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
+    result = m.max_activating(
+        data, at=at,
+        neuron=neuron, feature=feature, head=head, sae=sae,
+        top_k=top_k, batch_size=batch_size, max_examples=max_examples,
+        max_length=max_length,
+    )
+    if _output_format == "json":
+        _json_dump(result)
+
+
+# ══════════════════════════════════════════════════════════════════
+# generate
+# ══════════════════════════════════════════════════════════════════
+
+
+@app.command()
+def generate(
+    model_name: str = typer.Argument(..., help="HuggingFace model ID"),
+    prompt: str = typer.Argument(..., help="Prompt text to generate from"),
+    max_new_tokens: int = typer.Option(64, "--max-new-tokens", help="Max generation length"),
+    positive: str | None = typer.Option(None, "--positive", help="Positive steering text (single example)"),
+    negative: str | None = typer.Option(None, "--negative", help="Negative steering text (single example)"),
+    positive_file: str | None = typer.Option(None, "--positive-file", help="Text file with positive examples, one per line"),
+    negative_file: str | None = typer.Option(None, "--negative-file", help="Text file with negative examples, one per line"),
+    at: str | None = typer.Option(None, "--at", help="Module to apply the steering vector at (required with --positive/--negative)"),
+    scale: float = typer.Option(2.0, "--scale", help="Steering vector scale factor"),
+    ablate_at: str | None = typer.Option(None, "--ablate-at", help="Module to ablate during generation"),
+    ablate_method: str = typer.Option("zero", "--ablate-method", help="Ablation method: zero, mean"),
+    capture: str | None = typer.Option(None, "--capture", help="Per-token capture: 'lens' (logit-lens trajectory) or 'logits'"),
+    sample: bool = typer.Option(False, "--sample/--no-sample", help="Sample (True) or use greedy decoding (False, default)"),
+    temperature: float = typer.Option(1.0, "--temperature", help="Sampling temperature (used when --sample)"),
+    top_p: float = typer.Option(1.0, "--top-p", help="Nucleus sampling cutoff (used when --sample)"),
+    device: str | None = typer.Option(None, help="Device"),
+    dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
+    device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
+) -> None:
+    """Generate text with interventions active across every decode step.
+
+    Steering (``--positive`` / ``--negative`` + ``--at``) and ablation
+    (``--ablate-at``) stay hooked for the prefill and all KV-cached decode
+    steps — the generation-time counterpart of ``steer`` / ``ablate``.
+    ``--capture lens`` additionally records each generated token's
+    logit-lens trajectory through every block.
+    """
+    from interpkit.core.inputs import read_examples_file
+    from interpkit.core.interventions import AblateIntervention, SteerIntervention
+
+    wants_steering = any([positive, negative, positive_file, negative_file])
+    if wants_steering and at is None:
+        raise typer.BadParameter("Steering requires --at (module to apply the vector at).")
+
+    m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
+
+    interventions: list = []
+    if wants_steering:
+        pos_inputs: str | list[str]
+        neg_inputs: str | list[str]
+        if positive_file:
+            pos_inputs = read_examples_file(positive_file)
+        elif positive:
+            pos_inputs = positive
+        else:
+            raise typer.BadParameter("Provide --positive or --positive-file")
+        if negative_file:
+            neg_inputs = read_examples_file(negative_file)
+        elif negative:
+            neg_inputs = negative
+        else:
+            raise typer.BadParameter("Provide --negative or --negative-file")
+
+        assert at is not None
+        vector = m.steer_vector(pos_inputs, neg_inputs, at=at)
+        interventions.append(SteerIntervention(at, vector=vector, scale=scale))
+
+    if ablate_at is not None:
+        interventions.append(AblateIntervention(ablate_at, method=ablate_method))
+
+    with console.status("  Generating..."):
+        result = m.generate(
+            prompt,
+            max_new_tokens=max_new_tokens,
+            interventions=interventions or None,
+            capture=capture,
+            do_sample=sample,
+            temperature=temperature,
+            top_p=top_p,
+        )
+
+    if _output_format == "json":
+        # Trim tensors: ids ride along in the Python API but bloat JSON, and
+        # per-step logits are (1, vocab) each.
+        out = {k: v for k, v in result.items() if k not in {"input_ids", "output_ids"}}
+        if "steps" in out:
+            out["steps"] = [
+                {k: v for k, v in step.items() if k != "logits"}
+                for step in out["steps"]
+            ]
+        _json_dump(out)
 
 
 def run() -> None:

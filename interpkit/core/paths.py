@@ -14,8 +14,25 @@ from __future__ import annotations
 import difflib
 from typing import TYPE_CHECKING
 
+import torch
+
 if TYPE_CHECKING:
     from interpkit.core.arch import ArchInfo
+
+
+def get_module(model: torch.nn.Module, name: str) -> torch.nn.Module:
+    """Resolve a dotted module path on *model* (e.g. ``"transformer.h.4.attn"``).
+
+    Canonical home of the helper previously private to ``ops/patch.py``
+    (``_get_module``); a re-export shim remains there for existing
+    importers. Pair with :func:`validate_module_path` for friendly
+    errors on typos.
+    """
+    parts = name.split(".")
+    mod = model
+    for part in parts:
+        mod = getattr(mod, part)
+    return mod
 
 
 def validate_module_path(path: str, arch_info: ArchInfo) -> None:
@@ -68,4 +85,4 @@ def validate_position(position: int, seq_len: int, *, op: str | None = None) -> 
     )
 
 
-__all__ = ["validate_module_path", "validate_position"]
+__all__ = ["get_module", "validate_module_path", "validate_position"]

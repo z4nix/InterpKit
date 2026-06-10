@@ -642,8 +642,16 @@ class Model:
         save: str | None = None,
         html: str | None = None,
         position: int | None = None,
+        kind: str = "logit",
+        tuned_lens: Any = None,
     ) -> list[dict[str, Any]] | None:
         """Logit lens: project each block's output through the head pipeline.
+
+        ``kind="tuned"`` applies trained per-block affine translators
+        (Belrose et al. 2023) before the head projection — the unbiased
+        readout for layers far from the output. Pass ``tuned_lens=`` a
+        :class:`~interpkit.ops.tuned_lens.TunedLens` or a saved path;
+        train one with :meth:`train_tuned_lens`.
 
         For language models: projects through ``pre_head`` (LayerNorm) →
         ``project_out`` (OPT only) → ``head`` (lm_head). For vision
@@ -670,7 +678,41 @@ class Model:
         """
         from interpkit.ops.lens import run_lens
 
-        return run_lens(self, text, save=save, html=html, position=position)
+        return run_lens(
+            self, text, save=save, html=html, position=position,
+            kind=kind, tuned_lens=tuned_lens,
+        )
+
+    def train_tuned_lens(
+        self,
+        corpus: list[str],
+        *,
+        steps: int = 200,
+        batch_size: int = 4,
+        lr: float = 1e-3,
+        max_length: int = 64,
+        seed: int = 0,
+        save: str | None = None,
+    ) -> Any:
+        """Train per-block tuned-lens translators (Belrose et al. 2023).
+
+        The model stays frozen; only ``n_blocks × (hidden² + hidden)``
+        affine parameters train, minimising KL between the model's final
+        distribution and each block's translated readout. A few hundred
+        diverse sentences is plenty for small models; expect a few
+        minutes on CPU for gpt2 at the defaults, seconds on GPU.
+
+        Returns a :class:`~interpkit.ops.tuned_lens.TunedLens` for use
+        with ``lens(kind="tuned", tuned_lens=...)``. Pass ``save=`` a
+        directory or ``.safetensors`` path to persist it.
+        """
+        from interpkit.ops.tuned_lens import train_tuned_lens
+
+        return train_tuned_lens(
+            self, corpus,
+            steps=steps, batch_size=batch_size, lr=lr,
+            max_length=max_length, seed=seed, save=save,
+        )
 
     def encoder_lens(
         self,
@@ -1060,6 +1102,99 @@ class Model:
             self, src_layer=src_layer, dst_layer=dst_layer, comp_type=comp_type,
         )
 
+    def max_activating(
+        self,
+        dataset: list[str] | str,
+        *,
+        at: str,
+        neuron: int | None = None,
+        feature: int | None = None,
+        head: int | None = None,
+        sae: str | Any | None = None,
+        top_k: int = 20,
+        batch_size: int = 8,
+        max_examples: int | None = None,
+        max_length: int = 128,
+        context: int = 12,
+    ) -> dict[str, Any]:
+        """Find the dataset examples that most activate one unit at *at*.
+
+        The feature-browsing workflow: "what does this unit fire on?".
+        Streams batched forwards over *dataset* and keeps the top-k
+        (example, position) records by activation score — memory stays
+        O(k) regardless of dataset size.
+
+        Exactly one of ``neuron=`` (raw activation at that index),
+        ``feature=`` (SAE feature activation; requires ``sae=``), or
+        ``head=`` (L2 norm of the head's pre-projection output slice)
+        selects the unit. *dataset* is a list of texts or an
+        ``"hf:name[:split[:column]]"`` spec (requires the
+        ``interpkit[data]`` extra and ``max_examples=``).
+
+        Returns a dict with ``unit``, ``examples`` (each with the peak
+        token and a ±``context``-token scored window), scan counters,
+        and ``meta``.
+        """
+        from interpkit.ops.maxact import run_max_activating
+
+        return run_max_activating(
+            self, dataset, at=at,
+            neuron=neuron, feature=feature, head=head, sae=sae,
+            top_k=top_k, batch_size=batch_size, max_examples=max_examples,
+            max_length=max_length, context=context,
+        )
+
+    def atp(
+        self,
+        clean: str | torch.Tensor | Any,
+        corrupted: str | torch.Tensor | Any,
+        *,
+        top_k: int | None = 20,
+        metric: str = "logit_diff",
+    ) -> dict[str, Any]:
+        """Attribution Patching: first-order patch-effect scores for all modules.
+
+        Three model passes (clean forward, corrupted forward, one
+        backward) score *every* module simultaneously — the fast first
+        look before :meth:`trace`'s per-module full patching. Scores
+        approximate the true patch effect (correlation typically
+        0.85–0.95) but are first-order: confirm top candidates causally.
+
+        Returns ``{"results": [{"module", "role", "score", "rank"}],
+        "meta": {...}}`` sorted by absolute score.
+        """
+        from interpkit.ops.atp import run_atp
+
+        return run_atp(self, clean, corrupted, top_k=top_k, metric=metric)
+
+    def eap(
+        self,
+        clean: str | torch.Tensor | Any,
+        corrupted: str | torch.Tensor | Any,
+        *,
+        ig_steps: int = 0,
+        top_k_edges: int | None = 30,
+        metric: str = "logit_diff",
+    ) -> dict[str, Any]:
+        """Edge Attribution Patching: gradient-based edge scores for circuits.
+
+        Scores every (component → residual-stream) edge from one clean
+        forward + one corrupted forward + one backward. ``ig_steps > 0``
+        switches to EAP-IG (gradients averaged over embeddings
+        interpolated from corrupted toward clean — more faithful in
+        saturated regions; try 5).
+
+        Requires token-aligned clean/corrupted pairs (same length).
+        Returns ``{"edges": [...], "nodes": [...], "meta": {...}}``;
+        see :func:`interpkit.ops.eap.run_eap` for edge semantics.
+        """
+        from interpkit.ops.eap import run_eap
+
+        return run_eap(
+            self, clean, corrupted,
+            ig_steps=ig_steps, top_k_edges=top_k_edges, metric=metric,
+        )
+
     def find_circuit(
         self,
         clean: str | torch.Tensor | list | Any,
@@ -1097,6 +1232,79 @@ class Model:
             self, clean, corrupted, threshold=threshold, method=method, metric=metric,
         )
 
+    def intervene(self, *interventions: Any) -> Any:
+        """Context manager applying interventions to every op run inside it.
+
+        Pass :class:`~interpkit.core.interventions.Intervention` objects
+        (``SteerIntervention``, ``AblateIntervention``,
+        ``PatchIntervention``, ``FnIntervention``, ``CaptureProbe``)::
+
+            with model.intervene(SteerIntervention("transformer.h.6", vector=v)):
+                model.lens("The capital of France is")
+
+        Hooks are registered on entry and always removed on exit (even on
+        exception). Note: ops that internally reload an eager-attention
+        copy (``attention`` on SDPA models) run that copy without these
+        hooks.
+        """
+        from interpkit.core.interventions import apply_interventions
+        from interpkit.core.support_matrix import check_op_supported
+
+        check_op_supported("intervene", self.arch_info)
+        return apply_interventions(self, list(interventions))
+
+    def generate(
+        self,
+        input_data: str | torch.Tensor | Any,
+        *,
+        max_new_tokens: int = 64,
+        interventions: list[Any] | None = None,
+        capture: str | None = None,
+        do_sample: bool = False,
+        temperature: float = 1.0,
+        top_p: float = 1.0,
+    ) -> dict[str, Any]:
+        """Generate text with interventions active across every decode step.
+
+        The generation-time counterpart of the single-forward ops:
+        steering / ablation / patching hooks stay registered for the
+        prefill and all subsequent KV-cached decode steps, and
+        ``capture`` records per-token analysis.
+
+        Parameters
+        ----------
+        interventions:
+            :class:`~interpkit.core.interventions.Intervention` objects.
+            ``positions`` on an intervention are **absolute and
+            prompt-indexed** — generated token *i* sits at position
+            ``prompt_len + i``; a :class:`GenerationContext` maps them
+            into each decode window. An intervened output at step *t*
+            feeds the KV cache, so positional interventions influence
+            all later steps by design.
+        capture:
+            ``"lens"`` — per-token logit-lens trajectory (each block's
+            hidden state projected through the validated head pipeline);
+            ``"logits"`` — per-step final logits.
+
+        Greedy / sampling only (``num_beams=1`` semantics): beam search
+        re-feeds tokens, which breaks position tracking.
+
+        Returns a dict with ``prompt``, ``response``, ``input_ids``,
+        ``output_ids``, ``interventions`` and (with *capture*) ``steps``.
+        """
+        from interpkit.ops.generate import run_generate
+
+        return run_generate(
+            self,
+            input_data,
+            max_new_tokens=max_new_tokens,
+            interventions=interventions,
+            capture=capture,
+            do_sample=do_sample,
+            temperature=temperature,
+            top_p=top_p,
+        )
+
     def chat(
         self,
         message: str | list[dict[str, str]],
@@ -1106,6 +1314,7 @@ class Model:
         do_sample: bool = False,
         temperature: float = 1.0,
         top_p: float = 1.0,
+        interventions: list[Any] | None = None,
     ) -> dict[str, Any]:
         """Generate a chat response from the model.
 
@@ -1129,6 +1338,11 @@ class Model:
         do_sample, temperature, top_p:
             Standard HuggingFace ``generate`` sampling controls.  Default
             is greedy (``do_sample=False``).
+        interventions:
+            Optional :class:`~interpkit.core.interventions.Intervention`
+            objects kept active during generation. Applied without
+            position tracking — use :meth:`generate` for positional
+            (``positions=...``) interventions.
 
         Returns
         -------
@@ -1215,8 +1429,14 @@ class Model:
             gen_kwargs["attention_mask"] = attention_mask
 
         generate_fn: Any = self._model.generate
-        with torch.no_grad():
-            output_ids = generate_fn(input_ids=input_ids, **gen_kwargs)
+        if interventions:
+            from interpkit.core.interventions import apply_interventions
+
+            with apply_interventions(self, list(interventions)), torch.no_grad():
+                output_ids = generate_fn(input_ids=input_ids, **gen_kwargs)
+        else:
+            with torch.no_grad():
+                output_ids = generate_fn(input_ids=input_ids, **gen_kwargs)
 
         input_len = input_ids.shape[-1]
         new_tokens = output_ids[0, input_len:]
