@@ -97,6 +97,16 @@ class SAE:
     def decode(self, features: torch.Tensor) -> torch.Tensor:
         return features @ self.W_dec + self.b_dec
 
+    def feature_direction(self, feature: int) -> torch.Tensor:
+        """Decoder row ``W_dec[feature]`` — the residual-stream direction the
+        feature writes when it fires, i.e. the steering vector for SAE
+        feature steering (:class:`interpkit.SAEFeatureIntervention`)."""
+        if not 0 <= feature < self.d_sae:
+            raise ValueError(
+                f"feature {feature} out of range for SAE with d_sae={self.d_sae}."
+            )
+        return self.W_dec[feature]
+
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Return (features, reconstruction)."""
         features = self.encode(x)

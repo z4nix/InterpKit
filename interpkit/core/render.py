@@ -586,9 +586,15 @@ def render_steer(
     steered_tokens: list[tuple[str, float]],
     module_name: str,
     scale: float,
+    *,
+    label: str | None = None,
 ) -> None:
-    """Print side-by-side comparison of top tokens with and without steering."""
-    _section(f"Steering \u2014 {module_name}", f"scale={scale}")
+    """Print side-by-side comparison of top tokens with and without steering.
+
+    *label* overrides the default ``scale=\u2026`` subtitle (used for SAE
+    feature steering, e.g. ``feature 7742 clamp@10``).
+    """
+    _section(f"Steering \u2014 {module_name}", label or f"scale={scale}")
 
     table = Table(show_header=True, header_style="bold", box=_TABLE_BOX)
     table.add_column("Rank", justify="right", style="dim")

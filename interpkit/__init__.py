@@ -23,6 +23,7 @@ from interpkit.core.interventions import (
     GenerationContext,
     Intervention,
     PatchIntervention,
+    SAEFeatureIntervention,
     SteerIntervention,
     apply_interventions,
 )
@@ -67,6 +68,7 @@ __all__ = [
     # Interventions
     "Intervention",
     "SteerIntervention",
+    "SAEFeatureIntervention",
     "AblateIntervention",
     "PatchIntervention",
     "FnIntervention",

@@ -73,6 +73,9 @@ all KV-cached decode steps, so you can watch a nudged model write.
 ```bash
 interpkit generate gpt2 "I feel" \
     --positive " joy" --negative " fear" --at transformer.h.6 --scale 8
+interpkit generate gpt2 "My favorite place in the world is" \
+    --sae jbloom/GPT2-Small-SAEs-Reformatted/blocks.8.hook_resid_pre \
+    --feature 9752 --at transformer.h.7 --strength 50
 interpkit generate gpt2 "The capital of France is" --capture lens
 interpkit generate gpt2 "The weather is" --ablate-at transformer.h.4.mlp
 ```
@@ -82,9 +85,12 @@ every step, each block's hidden state is projected through the validated head
 pipeline, showing which layer first predicted the token the model emitted.
 `--capture logits` records each step's final logits instead.
 
-Steering accepts the same options as `steer` (`--positive` / `--negative` or
-`--positive-file` / `--negative-file`, plus `--at` and `--scale`). Greedy by
-default; `--sample --temperature 0.8 --top-p 0.9` for sampling.
+Steering accepts the same options as `steer`: contrastive (`--positive` /
+`--negative` or `--positive-file` / `--negative-file`, plus `--at` and
+`--scale`) or SAE-feature (`--sae` + `--feature` + `--at`, with
+`--feature-mode add|clamp` and `--strength` — the Golden Gate manipulation,
+applied at every decode step). Greedy by default;
+`--sample --temperature 0.8 --top-p 0.9` for sampling.
 
 ## Core operations
 
@@ -243,6 +249,20 @@ interpkit steer gpt2 "The weather today is" \
 interpkit steer gpt2 "The weather today is" \
     --positive-file pos.txt --negative-file neg.txt \
     --at transformer.h.8 --scale 2.0
+```
+
+Alternatively steer along a single **SAE feature**'s decoder direction — the
+Golden Gate Claude manipulation. `--feature-mode clamp` (default) pins the
+feature's activation to `--strength` regardless of input; `add` injects
+`strength · W_dec[feature]` unconditionally. The SAE must have been trained on
+the module passed to `--at` (find feature indices with `features` or `maxact`;
+useful strengths are a few times the feature's max activation — `maxact` tells
+you that scale). Mutually exclusive with `--positive` / `--negative`.
+
+```bash
+interpkit steer gpt2 "My favorite place in the world is" \
+    --sae jbloom/GPT2-Small-SAEs-Reformatted/blocks.8.hook_resid_pre \
+    --feature 9752 --at transformer.h.7 --strength 50
 ```
 
 ### probe

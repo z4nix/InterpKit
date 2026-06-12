@@ -455,19 +455,66 @@ class Model:
         self,
         input_data: str | torch.Tensor | Any,
         *,
-        vector: torch.Tensor,
+        vector: torch.Tensor | None = None,
         at: str,
         scale: float = 2.0,
+        sae: str | Any | None = None,
+        feature: int | None = None,
+        mode: str = "clamp",
+        strength: float = 10.0,
+        sae_subfolder: str | None = None,
         save: str | None = None,
     ) -> dict[str, Any]:
-        """Run inference with a steering vector added at module *at*.
+        """Run inference with steering applied at module *at*.
+
+        Pass exactly one of *vector* / *feature*:
+
+        - ``vector=`` — contrastive steering: add ``scale * vector``
+          (extract the vector with :meth:`steer_vector`).
+        - ``feature=`` — SAE feature steering along the feature's decoder
+          direction ``W_dec[feature]`` (requires *sae*).
+          ``mode="clamp"`` (default) pins the feature's activation to
+          *strength* — the Golden Gate Claude manipulation;
+          ``mode="add"`` adds ``strength * W_dec[feature]``
+          unconditionally. The SAE must have been trained on this
+          module's activations (same contract as :meth:`features`).
+
+        Parameters
+        ----------
+        sae:
+            SAE source: HuggingFace repo ID, local ``.safetensors`` /
+            ``.pt`` path, ``'org/repo/subfolder'`` shorthand, or a
+            pre-loaded :class:`interpkit.ops.sae.SAE`.
+        strength:
+            Target activation (clamp) or added activation (add), in
+            feature-activation units. Useful values are several times
+            the feature's typical max activation (find that scale with
+            :meth:`max_activating`).
+        sae_subfolder:
+            Subfolder inside the SAE repo (alternative to the shorthand).
 
         Shows side-by-side comparison of original vs steered top predictions.
         Pass ``save="path.png"`` to export a matplotlib figure.
         """
         from interpkit.ops.steer import run_steer
 
-        return run_steer(self, input_data, vector=vector, at=at, scale=scale, save=save)
+        loaded_sae = None
+        if sae is not None:
+            from interpkit.ops.sae import SAE as SAEClass
+            from interpkit.ops.sae import load_sae
+
+            if isinstance(sae, str):
+                loaded_sae = load_sae(sae, device=self._device, subfolder=sae_subfolder)
+            elif isinstance(sae, SAEClass):
+                loaded_sae = sae
+            else:
+                raise TypeError(f"Expected SAE or HF repo ID string, got {type(sae).__name__}")
+
+        return run_steer(
+            self, input_data, vector=vector, at=at, scale=scale,
+            sae=loaded_sae, feature=feature, mode=mode, strength=strength,
+            save=save,
+        )
 
     def attention(
         self,

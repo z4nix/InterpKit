@@ -249,6 +249,7 @@ def _show_extensive_help() -> None:
         " emitting.\n\n"
         "  [bold]Key options:[/bold]\n"
         "    [bold green]--positive / --negative + --at[/bold green]  Build a steering vector and apply it while generating.\n"
+        "    [bold green]--sae + --feature + --at[/bold green]  Clamp an SAE feature while generating (Golden Gate style; --feature-mode add|clamp, --strength).\n"
         "    [bold green]--ablate-at / --ablate-method[/bold green]  Knock out a module for the whole generation.\n"
         "    [bold green]--capture lens|logits[/bold green]  Per-token lens trajectory or raw step logits.\n"
         "    [bold green]--max-new-tokens N[/bold green]  Generation budget (default 64).\n"
@@ -426,12 +427,22 @@ def _show_extensive_help() -> None:
             "  For more robust vectors, pass text files with many examples instead of a single pair."
             " The activations are averaged across all examples before computing the difference"
             " (Contrastive Activation Addition).\n"
-            "  [dim]interpkit steer gpt2 'The sky is' --positive-file pos.txt --negative-file neg.txt --at transformer.h.8[/dim]",
+            "  [dim]interpkit steer gpt2 'The sky is' --positive-file pos.txt --negative-file neg.txt --at transformer.h.8[/dim]\n\n"
+            "  Alternatively, steer along a single [bold]SAE feature[/bold]'s decoder direction"
+            " ([bold green]--sae[/bold green] + [bold green]--feature[/bold green]) — the Golden Gate"
+            " Claude manipulation. [bold green]--feature-mode clamp[/bold green] (default) pins the"
+            " feature's activation to [bold green]--strength[/bold green]; [bold green]add[/bold green]"
+            " injects the direction unconditionally. Find feature indices with"
+            " [bold]features[/bold] or [bold]maxact[/bold].\n"
+            "  [dim]interpkit steer gpt2 'My favorite place in the world is' --sae jbloom/GPT2-Small-SAEs-Reformatted/blocks.8.hook_resid_pre --feature 9752 --at transformer.h.7 --strength 50[/dim]",
             [
                 ("--positive / --negative", "Single contrasting concept texts that define the direction."),
                 ("--positive-file / --negative-file", "Text files with one example per line for multi-example steering."),
-                ("--at", "Which module to apply the vector at."),
-                ("--scale", "How strongly to apply it (default 2.0; higher = more extreme)."),
+                ("--at", "Which module to apply the steering at."),
+                ("--scale", "How strongly to apply a contrastive vector (default 2.0; higher = more extreme)."),
+                ("--sae / --feature", "Steer along an SAE feature's decoder direction instead (mutually exclusive with --positive/--negative)."),
+                ("--feature-mode", "'clamp' (pin the feature's activation; default) or 'add' (inject the direction)."),
+                ("--strength", "Feature target activation (clamp) or added activation (add); try a few times the feature's max activation."),
             ],
         ),
         (
@@ -663,7 +674,7 @@ def main(
         ("ablate", "Zero/mean/resample ablate a component"),
         ("attention", "Visualize attention patterns"),
         ("decompose", "Residual stream decomposition by component"),
-        ("steer", "Activation steering (inline or file-based)"),
+        ("steer", "Activation steering (contrastive vector or SAE feature)"),
         ("probe", "Linear probe on activations"),
         ("diff", "Compare two models' activations"),
     ])
@@ -997,14 +1008,42 @@ def steer(
     positive_file: str | None = typer.Option(None, "--positive-file", help="Text file with positive examples, one per line"),
     negative_file: str | None = typer.Option(None, "--negative-file", help="Text file with negative examples, one per line"),
     at: str = typer.Option(..., "--at", help="Module name to apply steering at"),
-    scale: float = typer.Option(2.0, "--scale", help="Steering vector scale factor"),
+    scale: float = typer.Option(2.0, "--scale", help="Steering vector scale factor (contrastive mode)"),
+    sae: str | None = typer.Option(None, "--sae", help="SAE source: HuggingFace repo ID, local file path (.safetensors / .pt), or 'org/repo/subfolder' shorthand (with --feature)"),
+    sae_subfolder: str | None = typer.Option(None, "--sae-subfolder", help="Subfolder inside the SAE repo (e.g. 'blocks.8.hook_resid_pre'). Equivalent to appending it to --sae."),
+    feature: int | None = typer.Option(None, "--feature", help="SAE feature index to steer along (requires --sae)"),
+    feature_mode: str = typer.Option("clamp", "--feature-mode", help="SAE feature steering mode: 'clamp' (pin the feature's activation — Golden Gate style) or 'add' (inject the decoder direction)"),
+    strength: float = typer.Option(10.0, "--strength", help="Feature target activation (clamp) or added activation (add)"),
     save: str | None = typer.Option(None, "--save", help="Save comparison chart to file"),
     device: str | None = typer.Option(None, help="Device"),
     dtype: str | None = typer.Option(None, "--dtype", help="Model dtype: float16, bfloat16, float32, auto"),
     device_map: str | None = typer.Option(None, "--device-map", help="HF device_map (e.g. 'auto')"),
 ) -> None:
-    """Extract a steering vector and apply it during inference."""
+    """Apply steering during inference: a contrastive vector or an SAE feature."""
     from interpkit.core.inputs import read_examples_file
+
+    wants_contrastive = any([positive, negative, positive_file, negative_file])
+    wants_feature = feature is not None or sae is not None
+    if wants_contrastive and wants_feature:
+        raise typer.BadParameter(
+            "--positive/--negative (contrastive steering) and --sae/--feature "
+            "(SAE feature steering) are mutually exclusive."
+        )
+    if wants_feature and (feature is None or sae is None):
+        raise typer.BadParameter("SAE feature steering requires both --sae and --feature.")
+
+    m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
+
+    if wants_feature:
+        with console.status("  Running steered inference..."):
+            result = m.steer(
+                input_data, at=at, sae=sae, feature=feature,
+                mode=feature_mode, strength=strength,
+                sae_subfolder=sae_subfolder, save=save,
+            )
+        if _output_format == "json":
+            _json_dump(result)
+        return
 
     pos_inputs: str | list[str]
     neg_inputs: str | list[str]
@@ -1023,7 +1062,6 @@ def steer(
     else:
         raise typer.BadParameter("Provide --negative or --negative-file")
 
-    m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
     vector = m.steer_vector(pos_inputs, neg_inputs, at=at)
     with console.status("  Running steered inference..."):
         result = m.steer(input_data, vector=vector, at=at, scale=scale, save=save)
@@ -1449,8 +1487,13 @@ def generate(
     negative: str | None = typer.Option(None, "--negative", help="Negative steering text (single example)"),
     positive_file: str | None = typer.Option(None, "--positive-file", help="Text file with positive examples, one per line"),
     negative_file: str | None = typer.Option(None, "--negative-file", help="Text file with negative examples, one per line"),
-    at: str | None = typer.Option(None, "--at", help="Module to apply the steering vector at (required with --positive/--negative)"),
+    at: str | None = typer.Option(None, "--at", help="Module to apply steering at (required with --positive/--negative or --sae/--feature)"),
     scale: float = typer.Option(2.0, "--scale", help="Steering vector scale factor"),
+    sae: str | None = typer.Option(None, "--sae", help="SAE source: HuggingFace repo ID, local file path (.safetensors / .pt), or 'org/repo/subfolder' shorthand (with --feature)"),
+    sae_subfolder: str | None = typer.Option(None, "--sae-subfolder", help="Subfolder inside the SAE repo (e.g. 'blocks.8.hook_resid_pre'). Equivalent to appending it to --sae."),
+    feature: int | None = typer.Option(None, "--feature", help="SAE feature index to steer along during generation (requires --sae)"),
+    feature_mode: str = typer.Option("clamp", "--feature-mode", help="SAE feature steering mode: 'clamp' (pin the feature's activation — Golden Gate style) or 'add' (inject the decoder direction)"),
+    strength: float = typer.Option(10.0, "--strength", help="Feature target activation (clamp) or added activation (add)"),
     ablate_at: str | None = typer.Option(None, "--ablate-at", help="Module to ablate during generation"),
     ablate_method: str = typer.Option("zero", "--ablate-method", help="Ablation method: zero, mean"),
     capture: str | None = typer.Option(None, "--capture", help="Per-token capture: 'lens' (logit-lens trajectory) or 'logits'"),
@@ -1463,22 +1506,46 @@ def generate(
 ) -> None:
     """Generate text with interventions active across every decode step.
 
-    Steering (``--positive`` / ``--negative`` + ``--at``) and ablation
-    (``--ablate-at``) stay hooked for the prefill and all KV-cached decode
-    steps — the generation-time counterpart of ``steer`` / ``ablate``.
-    ``--capture lens`` additionally records each generated token's
-    logit-lens trajectory through every block.
+    Steering — contrastive (``--positive`` / ``--negative`` + ``--at``) or
+    SAE-feature (``--sae`` + ``--feature`` + ``--at``, the Golden Gate
+    manipulation) — and ablation (``--ablate-at``) stay hooked for the
+    prefill and all KV-cached decode steps — the generation-time
+    counterpart of ``steer`` / ``ablate``. ``--capture lens`` additionally
+    records each generated token's logit-lens trajectory through every
+    block.
     """
     from interpkit.core.inputs import read_examples_file
-    from interpkit.core.interventions import AblateIntervention, SteerIntervention
+    from interpkit.core.interventions import (
+        AblateIntervention,
+        SAEFeatureIntervention,
+        SteerIntervention,
+    )
 
     wants_steering = any([positive, negative, positive_file, negative_file])
-    if wants_steering and at is None:
-        raise typer.BadParameter("Steering requires --at (module to apply the vector at).")
+    wants_feature = feature is not None or sae is not None
+    if wants_steering and wants_feature:
+        raise typer.BadParameter(
+            "--positive/--negative (contrastive steering) and --sae/--feature "
+            "(SAE feature steering) are mutually exclusive."
+        )
+    if wants_feature and (feature is None or sae is None):
+        raise typer.BadParameter("SAE feature steering requires both --sae and --feature.")
+    if (wants_steering or wants_feature) and at is None:
+        raise typer.BadParameter("Steering requires --at (module to apply it at).")
 
     m = _load_model(model_name, device=device, dtype=dtype, device_map=device_map)
 
     interventions: list = []
+    if wants_feature:
+        from interpkit.ops.sae import _ensure_sae_on_device, load_sae
+
+        assert at is not None and sae is not None and feature is not None
+        loaded_sae = _ensure_sae_on_device(
+            load_sae(sae, device=m._device, subfolder=sae_subfolder), m._device,
+        )
+        interventions.append(SAEFeatureIntervention(
+            at, sae=loaded_sae, feature=feature, strength=strength, mode=feature_mode,
+        ))
     if wants_steering:
         pos_inputs: str | list[str]
         neg_inputs: str | list[str]

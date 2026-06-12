@@ -197,6 +197,58 @@ def test_steer(mock_model):
     assert result.exit_code == 0
 
 
+def _save_toy_sae(tmp_path, d_in: int = 768, d_sae: int = 16):
+    """Write a small SAELens-format SAE to disk for --sae path options."""
+    from safetensors.torch import save_file
+
+    g = torch.Generator().manual_seed(0)
+    W_dec = torch.randn(d_sae, d_in, generator=g)
+    W_dec = W_dec / W_dec.norm(dim=-1, keepdim=True)
+    path = tmp_path / "sae_weights.safetensors"
+    save_file(
+        {
+            "W_enc": W_dec.T.contiguous(), "W_dec": W_dec.contiguous(),
+            "b_enc": torch.zeros(d_sae), "b_dec": torch.zeros(d_in),
+        },
+        str(path),
+    )
+    (tmp_path / "cfg.json").write_text(json.dumps({"apply_b_dec_to_input": False}))
+    return path
+
+
+def test_steer_sae_feature(mock_model, tmp_path):
+    sae_path = _save_toy_sae(tmp_path)
+    result = runner.invoke(app, [
+        "steer", "gpt2", "The weather is",
+        "--sae", str(sae_path),
+        "--feature", "3",
+        "--at", "transformer.h.8",
+        "--strength", "20",
+    ])
+    assert result.exit_code == 0
+
+
+def test_steer_sae_feature_conflicts(mock_model, tmp_path):
+    sae_path = _save_toy_sae(tmp_path)
+    # Contrastive and SAE-feature steering are mutually exclusive.
+    result = runner.invoke(app, [
+        "steer", "gpt2", "hi",
+        "--positive", "a", "--negative", "b",
+        "--sae", str(sae_path), "--feature", "3",
+        "--at", "transformer.h.8",
+    ])
+    assert result.exit_code != 0
+    # --feature without --sae (and vice versa) is rejected.
+    result = runner.invoke(app, [
+        "steer", "gpt2", "hi", "--feature", "3", "--at", "transformer.h.8",
+    ])
+    assert result.exit_code != 0
+    result = runner.invoke(app, [
+        "steer", "gpt2", "hi", "--sae", str(sae_path), "--at", "transformer.h.8",
+    ])
+    assert result.exit_code != 0
+
+
 def test_find_circuit(mock_model):
     result = runner.invoke(app, [
         "find-circuit", "gpt2",
@@ -241,6 +293,33 @@ def test_generate_steering_requires_at(mock_model):
         "--positive", "a", "--negative", "b",
     ])
     assert result.exit_code != 0
+
+
+def test_generate_with_sae_feature(mock_model, tmp_path):
+    sae_path = _save_toy_sae(tmp_path)
+    result = runner.invoke(app, [
+        "generate", "gpt2", "The weather is",
+        "--sae", str(sae_path),
+        "--feature", "3",
+        "--at", "transformer.h.8",
+        "--strength", "20",
+        "--max-new-tokens", "3",
+    ])
+    assert result.exit_code == 0
+
+
+def test_generate_sae_feature_requires_at_and_pair(mock_model, tmp_path):
+    sae_path = _save_toy_sae(tmp_path)
+    result = runner.invoke(app, [
+        "generate", "gpt2", "hi",
+        "--sae", str(sae_path), "--feature", "3",
+    ])
+    assert result.exit_code != 0  # missing --at
+    result = runner.invoke(app, [
+        "generate", "gpt2", "hi",
+        "--feature", "3", "--at", "transformer.h.8",
+    ])
+    assert result.exit_code != 0  # missing --sae
 
 
 def test_atp_command(mock_model):

@@ -67,6 +67,14 @@ VALID_LENS_KINDS = frozenset({
     "tuned",  # Belrose et al. 2023 trained per-block translators (phase 3)
 })
 
+VALID_FEATURE_STEER_MODES = frozenset({
+    # SAE feature steering (SAEFeatureIntervention):
+    # "add"   — x' = x + strength * W_dec[i]
+    # "clamp" — x' = x + (strength - f_i(x)) * W_dec[i]  (Golden Gate style)
+    "add",
+    "clamp",
+})
+
 VALID_IG_METHODS = frozenset({
     "riemann_midpoint",
     # Future-proof for adaptive / gauss-legendre additions.
@@ -115,6 +123,7 @@ __all__ = [
     "VALID_FIND_CIRCUIT_METHODS",
     "VALID_EAP_METRICS",
     "VALID_LENS_KINDS",
+    "VALID_FEATURE_STEER_MODES",
     "VALID_IG_METHODS",
     "VALID_IG_BASELINES",
     "_validate_enum",

@@ -128,7 +128,7 @@ See [examples/10_chat_models.ipynb](examples/10_chat_models.ipynb) for a full wa
 | `head_activations` | Decompose attention output into per-head contributions | Transformers |
 | `ablate` | Zero/mean ablate a component and measure effect | Any model |
 | `attention` | Visualize attention patterns per layer/head | Transformers |
-| `steer` | Extract and apply steering vectors | LMs |
+| `steer` | Steering: contrastive vectors or SAE features (add/clamp, Golden Gate style) | LMs |
 | `probe` | Linear probe on activations | Any model |
 | `diff` | Compare activations between two models | Any model |
 | `features` | SAE feature decomposition | Any model |
@@ -340,6 +340,29 @@ model.steer("The weather today is", vector=vector, at="transformer.h.8", scale=2
 
 > Note the leading spaces. BPE tokenizers (GPT-2, Llama, ...) treat `" love"` and `"love"` as different tokens, and the leading-space variant is the one the model actually sees in normal text. interpkit prints a warning if you forget.
 
+Or steer along a single **SAE feature**'s decoder direction — the Golden Gate
+Claude manipulation. `mode="clamp"` (default) pins the feature's activation to
+`strength` regardless of input; `mode="add"` injects the direction
+unconditionally:
+
+```python
+# Feature 9752 of the layer-8 GPT-2 SAE fires on " Francisco"; clamped high,
+# gpt2 starts gushing about the Bay Area.
+# Single-forward comparison (the SAE must match the module at `at`):
+model.steer("My favorite place in the world is",
+            sae="jbloom/GPT2-Small-SAEs-Reformatted/blocks.8.hook_resid_pre",
+            feature=9752, at="transformer.h.7", strength=50)
+
+# Or clamp the feature across every decode step of a generation
+from interpkit import SAEFeatureIntervention
+from interpkit.ops.sae import load_sae
+
+sae = load_sae("jbloom/GPT2-Small-SAEs-Reformatted/blocks.8.hook_resid_pre")
+model.generate("My favorite place in the world is", interventions=[
+    SAEFeatureIntervention("transformer.h.7", sae=sae, feature=9752, strength=50),
+])
+```
+
 ## Linear Probe
 
 ```python
@@ -431,6 +454,7 @@ interpkit lens gpt2 "The capital of France is" --position -1
 interpkit attention gpt2 "The capital of France is" --layer 8 --save attention.png
 interpkit attribute gpt2 "The capital of France is"
 interpkit steer gpt2 "The weather is" --positive " love" --negative " hate" --at transformer.h.8
+interpkit steer gpt2 "My favorite place in the world is" --sae jbloom/GPT2-Small-SAEs-Reformatted/blocks.8.hook_resid_pre --feature 9752 --at transformer.h.7 --strength 50
 interpkit ablate gpt2 "The capital of France is" --at transformer.h.8.mlp
 interpkit decompose gpt2 "The capital of France is"
 interpkit diff gpt2 my-finetuned-gpt2 "The capital of France is" --save diff.png
@@ -440,6 +464,7 @@ interpkit dla gpt2 "The capital of France is" --sae jbloom/GPT2-Small-SAEs-Refor
 
 # Generation-time interventions + per-token lens trajectories
 interpkit generate gpt2 "I feel" --positive " joy" --negative " fear" --at transformer.h.6 --scale 8
+interpkit generate gpt2 "My favorite place in the world is" --sae jbloom/GPT2-Small-SAEs-Reformatted/blocks.8.hook_resid_pre --feature 9752 --at transformer.h.7 --strength 50
 interpkit generate gpt2 "The capital of France is" --capture lens
 
 # Gradient-based circuit discovery
@@ -562,7 +587,7 @@ See the [`examples/`](examples/) directory for Jupyter notebooks:
 | `08_dla_and_circuits` | DLA, head activations, residual decomposition, OV/QK analysis, composition, circuit discovery |
 | `09_scan_and_batch` | Auto-scan, batch operations, dataset workflows |
 | `10_chat_models` | Chat-template handling, `model.chat()`, message-list inputs, chat-style steering |
-| `11_generation_interventions` | Steering/ablation active across every decode step, per-token lens trajectories, positional interventions, `model.intervene()` |
+| `11_generation_interventions` | Steering/ablation active across every decode step, SAE feature steering (Golden Gate style), per-token lens trajectories, positional interventions, `model.intervene()` |
 | `12_circuit_discovery_and_lenses` | Attribution Patching, Edge Attribution Patching, EAP-driven `find_circuit`, tuned lens, max-activating examples |
 
 ---

@@ -60,6 +60,7 @@ __all__ = [
     "cast_like",
     "Intervention",
     "SteerIntervention",
+    "SAEFeatureIntervention",
     "AblateIntervention",
     "PatchIntervention",
     "FnIntervention",
@@ -274,6 +275,7 @@ class Intervention:
 
 _SPEC_NAMES = {
     "SteerIntervention": "steer",
+    "SAEFeatureIntervention": "sae_feature",
     "AblateIntervention": "ablate",
     "PatchIntervention": "patch",
     "FnIntervention": "fn",
@@ -317,6 +319,113 @@ class SteerIntervention(Intervention):
                         new[:, p, :] = new[:, p, :] + vec
                     elif new.dim() == 2:
                         new[p, :] = new[p, :] + vec
+            return replace_in_output(output, new)
+
+        return hook
+
+
+@dataclass(frozen=True, eq=False)
+class SAEFeatureIntervention(Intervention):
+    """Steer along an SAE feature's decoder direction (Golden Gate style).
+
+    The steering direction for feature *i* is the decoder row
+    ``sae.W_dec[i]`` — the residual-stream vector the SAE writes when the
+    feature fires. Two modes:
+
+    - ``"add"``   — ``x' = x + strength * W_dec[i]``: inject the direction
+      unconditionally (equivalent to :class:`SteerIntervention` with
+      ``vector=W_dec[i], scale=strength``).
+    - ``"clamp"`` (default) — ``x' = x + (strength - f_i(x)) * W_dec[i]``
+      where ``f_i(x)`` is the feature's current activation from
+      ``sae.encode``. This pins the feature's effective activation to
+      *strength* regardless of input: it amplifies when the feature is
+      quiet and doesn't double-count when it's already firing — the
+      manipulation behind Golden Gate Claude (Templeton et al. 2024).
+
+    *strength* is in feature-activation units; useful values are a few
+    times the feature's typical max activation (find that scale with
+    :meth:`interpkit.Model.max_activating`).
+
+    Caveats: the SAE must have been trained on the activations of the
+    module hooked at *at* (same contract as ``Model.features``). For
+    ``normalize_activations`` SAEs the clamp target is in encode-space
+    units (no rescale is applied, matching ``SAE.decode``).
+
+    *sae* is duck-typed (needs ``.W_dec``, ``.encode``, ``.d_sae``) so
+    this module keeps zero imports from :mod:`interpkit.ops.sae`.
+    """
+
+    sae: Any = field(default=None)
+    feature: int = -1
+    strength: float = 10.0
+    mode: str = "clamp"
+
+    def __post_init__(self) -> None:
+        from interpkit.core.enums import VALID_FEATURE_STEER_MODES, _validate_enum
+
+        if self.sae is None:
+            raise ValueError(
+                "SAEFeatureIntervention requires an `sae` "
+                "(an interpkit.ops.sae.SAE — see interpkit.ops.sae.load_sae)."
+            )
+        if self.feature < 0:
+            raise ValueError(f"feature index must be >= 0, got {self.feature}.")
+        d_sae = getattr(self.sae, "d_sae", None)
+        if d_sae and self.feature >= d_sae:
+            raise ValueError(
+                f"feature {self.feature} out of range for SAE with d_sae={d_sae}."
+            )
+        _validate_enum(self.mode, VALID_FEATURE_STEER_MODES, "mode")
+
+    def describe(self) -> dict[str, Any]:
+        out = super().describe()
+        out["sae"] = (
+            f"<SAE d_in={getattr(self.sae, 'd_in', '?')} "
+            f"d_sae={getattr(self.sae, 'd_sae', '?')}>"
+        )
+        return out
+
+    def build_hook(
+        self, ctx: GenerationContext | None = None,
+    ) -> Callable[[nn.Module, Any, Any], Any]:
+        def hook(_mod: nn.Module, _inp: Any, output: Any) -> Any:
+            t = first_tensor(output)
+            if t is None:
+                return output
+            direction = self.sae.W_dec[self.feature]
+            if t.shape[-1] != direction.shape[-1]:
+                raise ValueError(
+                    f"SAE decoder dimension ({direction.shape[-1]}) does not match "
+                    f"module output dimension ({t.shape[-1]}) at '{self.at}'. "
+                    f"Use an SAE trained on this module's activations."
+                )
+            if self.mode == "add":
+                # Position-independent delta, broadcast over the sequence.
+                delta = cast_like(direction, t) * self.strength
+            else:  # "clamp"
+                # Encode on the SAE's own device — the SAE may live on CPU
+                # while the model runs on GPU/MPS; cast_like moves the
+                # resulting delta back to the activation's device/dtype.
+                acts = self.sae.encode(
+                    t.float().to(direction.device),
+                )[..., self.feature]  # (..., S)
+                delta_f = (self.strength - acts).unsqueeze(-1) * direction.float()
+                delta = cast_like(delta_f, t)
+            if self.positions is None:
+                new = t + delta
+            else:
+                local = _local_positions(self.positions, t, ctx)
+                if not local:
+                    return output
+                new = t.clone()
+                for p in local:
+                    row_delta = delta if delta.dim() <= 1 else (
+                        delta[:, p, :] if delta.dim() == 3 else delta[p, :]
+                    )
+                    if new.dim() == 3:
+                        new[:, p, :] = new[:, p, :] + row_delta
+                    elif new.dim() == 2:
+                        new[p, :] = new[p, :] + row_delta
             return replace_in_output(output, new)
 
         return hook

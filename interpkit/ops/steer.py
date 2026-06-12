@@ -144,12 +144,23 @@ def run_steer(
     model: Model,
     input_data: Any,
     *,
-    vector: torch.Tensor,
+    vector: torch.Tensor | None = None,
     at: str,
     scale: float = 2.0,
+    sae: Any = None,
+    feature: int | None = None,
+    mode: str = "clamp",
+    strength: float = 10.0,
     save: str | None = None,
 ) -> dict[str, Any]:
-    """Run inference with and without a steering vector, compare top predictions."""
+    """Run inference with and without steering, compare top predictions.
+
+    The steering unit is either a raw *vector* (contrastive activation
+    steering; scaled by *scale*) or an SAE *feature* (requires *sae*):
+    the feature's decoder direction is added (``mode="add"``) or its
+    activation clamped to *strength* (``mode="clamp"``, Golden Gate
+    style). Pass exactly one of ``vector=`` / ``feature=``.
+    """
     from interpkit.core.render import render_steer
     from interpkit.core.support_matrix import check_op_supported
 
@@ -159,15 +170,45 @@ def run_steer(
     # F-022: reject typo'd module paths up-front with a friendly KeyError.
     validate_module_path(at, model.arch_info)
 
+    if (vector is None) == (feature is None):
+        raise ValueError(
+            "Pass exactly one of vector= (contrastive steering) or "
+            "feature= (SAE feature steering)."
+        )
+    if feature is not None and sae is None:
+        raise ValueError(
+            "feature= requires sae= (an SAE object, HF repo ID, or local path)."
+        )
+    if feature is None and sae is not None:
+        raise ValueError("sae= only applies with feature= (SAE feature steering).")
+
+    from interpkit.core.interventions import (
+        SAEFeatureIntervention,
+        SteerIntervention,
+        apply_interventions,
+    )
+
+    steer_iv: SteerIntervention | SAEFeatureIntervention
+    if feature is not None:
+        from interpkit.ops.sae import _ensure_sae_on_device
+
+        sae = _ensure_sae_on_device(sae, model._device)
+        steer_iv = SAEFeatureIntervention(
+            at, sae=sae, feature=feature, strength=strength, mode=mode,
+        )
+        label = f"feature {feature} {mode}@{strength:g}"
+        plot_scale = strength
+    else:
+        steer_iv = SteerIntervention(at, vector=vector, scale=scale)
+        label = None
+        plot_scale = scale
+
     model_input = model._prepare(input_data)
 
     # 1. Original forward
     original_logits = model._forward(model_input)
 
     # 2. Steered forward — hook plumbing lives in core.interventions.
-    from interpkit.core.interventions import SteerIntervention, apply_interventions
-
-    steer_iv = SteerIntervention(at, vector=vector, scale=scale)
     with apply_interventions(model, [steer_iv]):
         steered_logits = model._forward(model_input)
 
@@ -175,19 +216,27 @@ def run_steer(
     original_tokens = _top_tokens(model, original_logits)
     steered_tokens = _top_tokens(model, steered_logits)
 
-    render_steer(original_tokens, steered_tokens, at, scale)
+    render_steer(original_tokens, steered_tokens, at, scale, label=label)
 
     if save is not None:
         from interpkit.core.plot import plot_steer
 
-        plot_steer(original_tokens, steered_tokens, module_name=at, scale=scale, save_path=save)
+        plot_steer(
+            original_tokens, steered_tokens,
+            module_name=at, scale=plot_scale, save_path=save,
+        )
 
-    return {
+    result: dict[str, Any] = {
         "original_logits": original_logits,
         "steered_logits": steered_logits,
         "original_top": original_tokens,
         "steered_top": steered_tokens,
     }
+    if feature is not None:
+        result["feature"] = feature
+        result["mode"] = mode
+        result["strength"] = strength
+    return result
 
 
 def _top_tokens(

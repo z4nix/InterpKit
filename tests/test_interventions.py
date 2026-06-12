@@ -13,6 +13,7 @@ from interpkit.core.interventions import (
     GenerationContext,
     Intervention,
     PatchIntervention,
+    SAEFeatureIntervention,
     SteerIntervention,
     cast_like,
     replace_in_output,
@@ -131,6 +132,106 @@ def test_steer_hook_tuple_output_preserved():
     out = _run_with_hook(mod, SteerIntervention("m", vector=torch.ones(8)), torch.zeros(2, 8))
     assert isinstance(out, tuple) and out[1] == "kv"
     assert torch.allclose(out[0], torch.full((2, 8), 2.0))  # default scale 2.0
+
+
+def _toy_sae(hidden: int = 16, n_features: int = 8):
+    """Orthonormal-decoder SAE with W_enc = W_dec.T, so encode∘(x + c·W_dec[i])
+    shifts feature i's pre-activation by exactly c. Rows are random (a uniform
+    direction would be cancelled by LayerNorm in real-model tests)."""
+    from interpkit.ops.sae import load_sae_from_tensors
+
+    g = torch.Generator().manual_seed(0)
+    rows = torch.linalg.qr(torch.randn(hidden, hidden, generator=g))[0][:n_features]
+    return load_sae_from_tensors(
+        W_enc=rows.T.clone(), W_dec=rows.clone(),
+        b_enc=torch.zeros(n_features), b_dec=torch.zeros(hidden),
+        metadata={"apply_b_dec_to_input": False},
+    )
+
+
+def test_sae_feature_add_matches_manual_delta():
+    sae = _toy_sae()
+    mod = nn.Identity()
+    x = torch.randn(1, 5, 16, generator=torch.Generator().manual_seed(1))
+    iv = SAEFeatureIntervention("m", sae=sae, feature=3, strength=4.0, mode="add")
+    out = _run_with_hook(mod, iv, x)
+    assert torch.allclose(out, x + 4.0 * sae.W_dec[3])
+
+
+def test_sae_feature_clamp_pins_reencoded_activation():
+    sae = _toy_sae()
+    mod = nn.Identity()
+    g = torch.Generator().manual_seed(1)
+    # Force positive pre-activations so the post-ReLU clamp is exact.
+    x = torch.randn(1, 5, 16, generator=g) + 5.0 * sae.W_dec[3]
+    iv = SAEFeatureIntervention("m", sae=sae, feature=3, strength=4.0, mode="clamp")
+    out = _run_with_hook(mod, iv, x)
+    feats = sae.encode(out)[..., 3]
+    assert torch.allclose(feats, torch.full_like(feats, 4.0), atol=1e-5)
+
+
+def test_sae_feature_clamp_negative_preact_invariant():
+    """Where the feature is under the ReLU threshold (pre-activation < 0) the
+    residual-space clamp lands at relu(strength + pre_act) — the standard
+    behaviour: the current activation reads 0, so strength·d is added on top
+    of the (negative) existing projection."""
+    sae = _toy_sae()
+    mod = nn.Identity()
+    x = torch.randn(1, 5, 16, generator=torch.Generator().manual_seed(1))
+    iv = SAEFeatureIntervention("m", sae=sae, feature=3, strength=4.0, mode="clamp")
+    out = _run_with_hook(mod, iv, x)
+    pre = x @ sae.W_dec[3]
+    expected = torch.relu(4.0 + torch.clamp(pre, max=0.0))
+    assert torch.allclose(sae.encode(out)[..., 3], expected, atol=1e-5)
+
+
+def test_sae_feature_positions_only():
+    sae = _toy_sae()
+    mod = nn.Identity()
+    x = torch.randn(1, 5, 16, generator=torch.Generator().manual_seed(2))
+    iv = SAEFeatureIntervention(
+        "m", sae=sae, feature=3, strength=4.0, mode="clamp", positions=(2,),
+    )
+    out = _run_with_hook(mod, iv, x)
+    untouched = [0, 1, 3, 4]
+    assert torch.allclose(out[:, untouched], x[:, untouched])
+    assert not torch.allclose(out[:, 2], x[:, 2])
+
+
+def test_sae_feature_tuple_output_preserved():
+    sae = _toy_sae()
+    mod = TupleOut()
+    iv = SAEFeatureIntervention("m", sae=sae, feature=0, strength=1.0, mode="add")
+    out = _run_with_hook(mod, iv, torch.zeros(2, 16))
+    assert isinstance(out, tuple) and out[1] == "kv"
+    assert torch.allclose(out[0], sae.W_dec[0].expand(2, 16))
+
+
+def test_sae_feature_validation():
+    sae = _toy_sae()
+    with pytest.raises(ValueError, match="requires an `sae`"):
+        SAEFeatureIntervention("m", feature=1)
+    with pytest.raises(ValueError, match="must be >= 0"):
+        SAEFeatureIntervention("m", sae=sae, feature=-1)
+    with pytest.raises(ValueError, match="out of range"):
+        SAEFeatureIntervention("m", sae=sae, feature=99)
+    with pytest.raises(ValueError, match="Unknown mode"):
+        SAEFeatureIntervention("m", sae=sae, feature=1, mode="boost")
+    iv = SAEFeatureIntervention("m", sae=sae, feature=1)
+    with pytest.raises(ValueError, match=r"SAE decoder dimension \(16\) does not match"):
+        _run_with_hook(nn.Identity(), iv, torch.zeros(1, 4, 8))
+
+
+def test_sae_feature_describe_is_json_safe():
+    import json
+
+    sae = _toy_sae()
+    iv = SAEFeatureIntervention("m", sae=sae, feature=3, strength=4.0)
+    desc = iv.describe()
+    json.dumps(desc)
+    assert desc["type"] == "sae_feature"
+    assert desc["sae"] == "<SAE d_in=16 d_sae=8>"
+    assert desc["feature"] == 3 and desc["mode"] == "clamp"
 
 
 def test_ablate_zero_and_mean():
