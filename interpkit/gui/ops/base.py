@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import BaseModel
+from pydantic_core import PydanticUndefined
 
 # Sidebar order. Keys are OpSpec.category values.
 CATEGORIES: list[tuple[str, str]] = [
@@ -157,7 +158,9 @@ def fields_from_model(model_cls: type[BaseModel]) -> list[dict[str, Any]]:
         ftype, choices = _field_type(inner)
         extra = info.json_schema_extra or {}
         ui_hints = dict(extra.get("x-ui", {})) if isinstance(extra, dict) else {}
-        default = None if info.is_required() else info.get_default()
+        default = info.get_default(call_default_factory=True)
+        if default is PydanticUndefined:
+            default = None
         fields.append(
             {
                 "name": name,
