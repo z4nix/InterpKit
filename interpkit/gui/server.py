@@ -186,7 +186,7 @@ def create_app(
         try:
             params = spec.params.model_validate(body or {})
         except ValidationError as exc:
-            raise HTTPException(status_code=422, detail=exc.errors(include_url=False))
+            raise HTTPException(status_code=422, detail=exc.errors(include_url=False)) from exc
 
         job = _submit_op(session, jobs, spec, params)
         return {"job_id": job.id}
