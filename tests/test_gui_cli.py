@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import re
 
 from typer.testing import CliRunner
 
@@ -10,13 +11,21 @@ from interpkit.cli.main import app
 
 runner = CliRunner()
 
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    """Strip ANSI color codes; Rich splits e.g. ``--host`` across them under color."""
+    return _ANSI.sub("", text)
+
 
 def test_gui_command_exists():
     result = runner.invoke(app, ["gui", "--help"])
     assert result.exit_code == 0
-    assert "--host" in result.output
-    assert "--port" in result.output
-    assert "--no-browser" in result.output
+    output = _plain(result.output)
+    assert "--host" in output
+    assert "--port" in output
+    assert "--no-browser" in output
 
 
 def test_gui_missing_extra_prints_hint(monkeypatch):
@@ -32,5 +41,6 @@ def test_gui_missing_extra_prints_hint(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", fake_import)
     result = runner.invoke(app, ["gui"])
     assert result.exit_code == 1
-    assert "gui" in result.output.lower()
-    assert "pip install" in result.output
+    output = _plain(result.output)
+    assert "gui" in output.lower()
+    assert "pip install" in output
