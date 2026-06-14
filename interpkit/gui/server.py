@@ -16,7 +16,6 @@ from importlib.metadata import version as _pkg_version
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
@@ -187,7 +186,7 @@ def create_app(
         try:
             params = spec.params.model_validate(body or {})
         except ValidationError as exc:
-            return JSONResponse(status_code=422, content={"detail": exc.errors(include_url=False)})
+            raise HTTPException(status_code=422, detail=exc.errors(include_url=False))
 
         job = _submit_op(session, jobs, spec, params)
         return {"job_id": job.id}
