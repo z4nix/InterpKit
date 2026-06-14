@@ -24,6 +24,7 @@ chosen, total candidates measured, etc.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -62,6 +63,7 @@ def run_trace(
     pin_modules: list[str] | None = None,
     save: str | None = None,
     html: str | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> list[dict[str, Any]] | dict[str, Any]:
     """Causal tracing with three-tier dispatcher (F-015).
 
@@ -99,6 +101,11 @@ def run_trace(
     metric:
         Effect metric. One of ``"logit_diff"`` (default), ``"kl_div"``,
         ``"target_prob"``, ``"target_prob_effect"``, ``"l2_prob"``.
+    progress_callback:
+        Optional ``(done, total, message)`` hook called once per patched
+        candidate (module mode) or per (layer, position) cell (position
+        mode). The rich progress bar renders regardless; this is for
+        programmatic consumers (e.g. the GUI job queue).
 
     Returns
     -------
@@ -134,6 +141,7 @@ def run_trace(
     if mode == "position":
         return _run_position_trace(
             model, clean, corrupted, metric=metric, save=save, html=html,
+            progress_callback=progress_callback,
         )
     return _run_module_trace(
         model, clean, corrupted,
@@ -141,6 +149,7 @@ def run_trace(
         exhaustive_threshold=exhaustive_threshold,
         top_k_search=top_k_search, pin_modules=pin_modules,
         save=save, html=html,
+        progress_callback=progress_callback,
     )
 
 
@@ -161,6 +170,7 @@ def _run_module_trace(
     pin_modules: list[str] | None = None,
     save: str | None = None,
     html: str | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> dict[str, Any]:
     """Module-level causal tracing with three-tier dispatcher (F-015).
 
@@ -244,14 +254,23 @@ def _run_module_trace(
         task = progress.add_task(
             f"Causal tracing ({chosen})", total=len(selected_names),
         )
+        done = 0
+
+        def _tick() -> None:
+            nonlocal done
+            done += 1
+            progress.advance(task)
+            if progress_callback is not None:
+                progress_callback(done, len(selected_names), f"Causal tracing ({chosen})")
+
         for name in selected_names:
             if name not in clean_cache:
-                progress.advance(task)
+                _tick()
                 continue
             try:
                 target_mod = _get_module(model._model, name)
             except (AttributeError, IndexError, KeyError, TypeError):
-                progress.advance(task)
+                _tick()
                 continue
 
             patch_hook = PatchIntervention(name, source=clean_cache[name]).build_hook(None)
@@ -271,7 +290,7 @@ def _run_module_trace(
                 entry["atp_rank"] = atp_rank_map.get(name)
                 entry["pinned"] = name in pin_modules
             results.append(entry)
-            progress.advance(task)
+            _tick()
 
     results.sort(
         key=lambda x: abs(x["effect"]) if x["effect"] == x["effect"] else -1.0,
@@ -349,6 +368,7 @@ def _run_position_trace(
     metric: str = "logit_diff",
     save: str | None = None,
     html: str | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> dict[str, Any]:
     """Position-aware causal tracing (Meng et al. 2022).
 
@@ -413,9 +433,18 @@ def _run_position_trace(
     total_iters = num_layers * seq_len
     with Progress(console=console, transient=True) as progress:
         task = progress.add_task("Position tracing", total=total_iters)
+        done = 0
+
+        def _tick(advance: int = 1) -> None:
+            nonlocal done
+            done += advance
+            progress.advance(task, advance=advance)
+            if progress_callback is not None:
+                progress_callback(done, total_iters, "Position tracing")
+
         for li, ln in enumerate(layer_names):
             if ln not in clean_cache:
-                progress.advance(task, advance=seq_len)
+                _tick(seq_len)
                 continue
 
             clean_act = clean_cache[ln]
@@ -432,7 +461,7 @@ def _run_position_trace(
                 effects[li, pos] = _compute_effect(
                     clean_logits, corrupted_logits, patched_logits, metric=metric
                 )
-                progress.advance(task)
+                _tick()
 
     result = {
         "effects": effects,

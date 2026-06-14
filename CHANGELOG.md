@@ -5,6 +5,30 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Local web GUI** (`interpkit gui`) — a FastAPI server plus a no-build,
+  no-CDN single-page app that runs every operation in the browser. Install with
+  the new optional extra: `pip install "interpkit[gui]"`.
+  - Models load into named **sessions**, each with its own single-worker queue
+    so ops never run concurrently on the same model; every action is a polled
+    **job** so request handlers never block on PyTorch.
+  - One operation registry (`interpkit/gui/ops/`) drives both the API dispatch
+    and the schema-generated forms, so the GUI always covers the full CLI
+    surface (guarded by a parity test). Module / layer / head inputs are pickers
+    populated from the detected architecture; unsupported ops are greyed out
+    using the library's own support matrix.
+  - Native result rendering (heatmaps, bar charts, token strips, attention
+    explorer, chat thread) reusing the existing dark-theme visual language, with
+    raw-JSON download and per-op run history on every panel.
+- **`progress_callback`** parameter on `Model.trace()`, `Model.max_activating()`,
+  and `Model.train_tuned_lens()` (and the underlying `ops.*` functions) — an
+  optional `(done, total, message)` hook for programmatic progress reporting
+  (used by the GUI job queue). The rich progress bar is unchanged when it is
+  omitted.
+
 ## [0.6.0] - 2026-06-10
 
 Generation-time interventions, gradient-based circuit discovery, and

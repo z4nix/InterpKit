@@ -630,6 +630,7 @@ class Model:
         pin_modules: list[str] | None = None,
         save: str | None = None,
         html: str | None = None,
+        progress_callback: Any = None,
     ) -> list[dict[str, Any]] | dict[str, Any]:
         """Causal tracing with three-tier dispatcher (F-015).
 
@@ -654,6 +655,9 @@ class Model:
         top_k_search:
             For ``method="approximate"``: number of AtP-shortlisted modules
             to confirm with full patching. Defaults to ``4 * top_k``.
+        progress_callback:
+            Optional ``(done, total, message)`` hook called per measured
+            candidate / position cell (e.g. for the GUI job queue).
         pin_modules:
             For ``method="approximate"``: modules to always include in the
             confirmation regardless of AtP score. Defaults to embed /
@@ -679,7 +683,7 @@ class Model:
             top_k=top_k, mode=mode, method=method, metric=metric,
             exhaustive_threshold=exhaustive_threshold,
             top_k_search=top_k_search, pin_modules=pin_modules,
-            save=save, html=html,
+            save=save, html=html, progress_callback=progress_callback,
         )
 
     def lens(
@@ -740,6 +744,7 @@ class Model:
         max_length: int = 64,
         seed: int = 0,
         save: str | None = None,
+        progress_callback: Any = None,
     ) -> Any:
         """Train per-block tuned-lens translators (Belrose et al. 2023).
 
@@ -752,6 +757,8 @@ class Model:
         Returns a :class:`~interpkit.ops.tuned_lens.TunedLens` for use
         with ``lens(kind="tuned", tuned_lens=...)``. Pass ``save=`` a
         directory or ``.safetensors`` path to persist it.
+        ``progress_callback`` (optional) is called as ``(step, steps,
+        message)`` after every training step.
         """
         from interpkit.ops.tuned_lens import train_tuned_lens
 
@@ -759,6 +766,7 @@ class Model:
             self, corpus,
             steps=steps, batch_size=batch_size, lr=lr,
             max_length=max_length, seed=seed, save=save,
+            progress_callback=progress_callback,
         )
 
     def encoder_lens(
@@ -1163,6 +1171,7 @@ class Model:
         max_examples: int | None = None,
         max_length: int = 128,
         context: int = 12,
+        progress_callback: Any = None,
     ) -> dict[str, Any]:
         """Find the dataset examples that most activate one unit at *at*.
 
@@ -1180,7 +1189,8 @@ class Model:
 
         Returns a dict with ``unit``, ``examples`` (each with the peak
         token and a ±``context``-token scored window), scan counters,
-        and ``meta``.
+        and ``meta``. ``progress_callback`` (optional) is called as
+        ``(scanned, total, message)`` after each batch.
         """
         from interpkit.ops.maxact import run_max_activating
 
@@ -1189,6 +1199,7 @@ class Model:
             neuron=neuron, feature=feature, head=head, sae=sae,
             top_k=top_k, batch_size=batch_size, max_examples=max_examples,
             max_length=max_length, context=context,
+            progress_callback=progress_callback,
         )
 
     def atp(

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import random
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -225,6 +226,7 @@ def train_tuned_lens(
     seed: int = 0,
     save: str | None = None,
     progress: bool = True,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> TunedLens:
     """Train per-block affine translators against the model's own logits.
 
@@ -243,6 +245,10 @@ def train_tuned_lens(
         Optional path (directory or ``.safetensors`` file). Defaults to
         not saving; use :func:`save_tuned_lens` or the ``save=`` of this
         function, and ``lens(kind="tuned", tuned_lens=<path>)`` to load.
+    progress_callback:
+        Optional ``(step, steps, message)`` hook called after every
+        training step — for programmatic consumers like the GUI job
+        queue; the rich bar renders regardless (``progress=True``).
 
     Returns the trained :class:`TunedLens` (also usable directly via
     ``model.lens(kind="tuned", tuned_lens=lens)``).
@@ -318,6 +324,8 @@ def train_tuned_lens(
             losses.append(float(loss.item()))
             if progress_ctx is not None and task is not None:
                 progress_ctx.advance(task)
+            if progress_callback is not None:
+                progress_callback(_step + 1, steps, "Training tuned lens")
     finally:
         if progress_ctx is not None:
             progress_ctx.stop()

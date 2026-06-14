@@ -23,6 +23,21 @@ options, run `interpkit --extensive`.
 
 These commands are the fastest way to get oriented with a model.
 
+### gui
+
+Launch the local web GUI — a point-and-click interface that runs every
+operation in your browser, with architecture-aware pickers and native result
+visualisations. Requires the optional `gui` extra
+(`pip install "interpkit[gui]"`).
+
+```bash
+interpkit gui                       # opens http://127.0.0.1:7860
+interpkit gui --port 8000           # custom port
+interpkit gui --no-browser          # don't auto-open the browser
+```
+
+See the [Web GUI guide](gui.md) for a full walkthrough.
+
 ### scan
 
 One-command model overview — runs DLA, logit lens, attention, and gradient

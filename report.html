@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>InterpKit Report — GPT2LMHeadModel</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    background: #1a1a2e;
+    color: #eee;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    padding: 24px;
+    line-height: 1.5;
+}
+h1 { color: #e94560; margin-bottom: 8px; font-size: 1.6em; }
+h2 { color: #53d769; margin: 16px 0 8px; font-size: 1.2em; }
+.subtitle { color: #aaa; margin-bottom: 20px; }
+.panel {
+    background: #16213e;
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 16px;
+    border: 1px solid #0f3460;
+}
+table { border-collapse: collapse; width: 100%; }
+th, td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #0f3460; }
+th { color: #53d769; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<div style="display:flex;gap:24px">
+    <nav style="min-width:160px;position:sticky;top:24px;align-self:flex-start;
+                background:#16213e;border-radius:8px;padding:12px;border:1px solid #0f3460">
+        <h2 style="margin:0 0 8px;font-size:1em">Sections</h2>
+        <a href="#prediction" style="display:block;padding:6px 12px;color:#aaa;text-decoration:none;border-left:3px solid transparent;margin:2px 0" onmouseover="this.style.borderLeftColor='#e94560'" onmouseout="this.style.borderLeftColor='transparent'">Prediction</a>
+<a href="#dla" style="display:block;padding:6px 12px;color:#aaa;text-decoration:none;border-left:3px solid transparent;margin:2px 0" onmouseover="this.style.borderLeftColor='#e94560'" onmouseout="this.style.borderLeftColor='transparent'">DLA</a>
+<a href="#lens" style="display:block;padding:6px 12px;color:#aaa;text-decoration:none;border-left:3px solid transparent;margin:2px 0" onmouseover="this.style.borderLeftColor='#e94560'" onmouseout="this.style.borderLeftColor='transparent'">Logit Lens</a>
+<a href="#attention" style="display:block;padding:6px 12px;color:#aaa;text-decoration:none;border-left:3px solid transparent;margin:2px 0" onmouseover="this.style.borderLeftColor='#e94560'" onmouseout="this.style.borderLeftColor='transparent'">Attention</a>
+<a href="#attribution" style="display:block;padding:6px 12px;color:#aaa;text-decoration:none;border-left:3px solid transparent;margin:2px 0" onmouseover="this.style.borderLeftColor='#e94560'" onmouseout="this.style.borderLeftColor='transparent'">Attribution</a>
+    </nav>
+    <main style="flex:1;max-width:calc(100% - 200px)">
+        <h1>InterpKit Report</h1>
+        <p class="subtitle">Model: <strong>GPT2LMHeadModel</strong> |
+            Input: <em>The capital of France is</em></p>
+        
+<div id="prediction" class="panel">
+    <h2>Top-5 Predictions</h2>
+    <table><tr><th>Token</th><th style="width:50%">Probability</th><th>Value</th></tr>
+    <tr><td style="font-weight:600"> the</td><td><div style="width:8.5%;height:18px;background:#53d769;border-radius:3px;min-width:2px"></div></td><td style="text-align:right">0.0846</td></tr>
+<tr><td style="font-weight:600"> now</td><td><div style="width:4.8%;height:18px;background:#53d769;border-radius:3px;min-width:2px"></div></td><td style="text-align:right">0.0479</td></tr>
+<tr><td style="font-weight:600"> a</td><td><div style="width:4.6%;height:18px;background:#53d769;border-radius:3px;min-width:2px"></div></td><td style="text-align:right">0.0462</td></tr>
+<tr><td style="font-weight:600"> France</td><td><div style="width:3.2%;height:18px;background:#53d769;border-radius:3px;min-width:2px"></div></td><td style="text-align:right">0.0324</td></tr>
+<tr><td style="font-weight:600"> Paris</td><td><div style="width:3.2%;height:18px;background:#53d769;border-radius:3px;min-width:2px"></div></td><td style="text-align:right">0.0322</td></tr>
+    </table>
+</div>
+
+        <div id="dla" class="panel">
+
+<h1>Direct Logit Attribution</h1>
+<p class="subtitle">Target: <strong> the</strong> | Pre-LN sum: 364.456 | Model logit: -100.250 | LN error: -464.706</p>
+<p class='subtitle' style='font-size:0.8em'>total_logit_pre_ln is the sum of per-component contributions projected through the unembedding matrix, BYPASSING the final LayerNorm. model_logit is the actual model output at the target token. ln_error = model_logit - total_logit_pre_ln captures the LayerNorm non-linearity gap. Component rankings remain valid; the sum is an approximation, not the model&#x27;s prediction.</p>
+<div class="controls panel">
+    <label>Sort by:
+        <select id="sortBy" onchange="renderDLA()">
+            <option value="abs">|Contribution|</option>
+            <option value="pos">Positive first</option>
+            <option value="neg">Negative first</option>
+        </select>
+    </label>
+    <label style="margin-left:16px">Show:
+        <select id="filterType" onchange="renderDLA()">
+            <option value="all">All</option>
+            <option value="attn">Attention only</option>
+            <option value="mlp">MLP only</option>
+        </select>
+    </label>
+</div>
+<div id="dlaContainer" class="panel"></div>
+
+<div class="tooltip" id="tooltip"></div>
+<script>
+const tooltip = document.getElementById('tooltip');
+function showTip(e, text) {
+    tooltip.textContent = text;
+    tooltip.style.display = 'block';
+    tooltip.style.left = (e.clientX + 12) + 'px';
+    tooltip.style.top = (e.clientY - 30) + 'px';
+}
+function hideTip() { tooltip.style.display = 'none'; }
+
+const DLA_DATA = [{"component": "L11.attn", "layer": 11, "type": "attn", "logit": 204.7005}, {"component": "L10.mlp", "layer": 10, "type": "mlp", "logit": 67.314}, {"component": "L9.mlp", "layer": 9, "type": "mlp", "logit": 27.4421}, {"component": "L8.mlp", "layer": 8, "type": "mlp", "logit": 23.0129}, {"component": "L0.mlp", "layer": 0, "type": "mlp", "logit": 15.5874}, {"component": "L6.mlp", "layer": 6, "type": "mlp", "logit": 11.659}, {"component": "L0.attn", "layer": 0, "type": "attn", "logit": 9.2178}, {"component": "L10.attn", "layer": 10, "type": "attn", "logit": 8.6934}, {"component": "L7.mlp", "layer": 7, "type": "mlp", "logit": 8.5847}, {"component": "L3.mlp", "layer": 3, "type": "mlp", "logit": 4.0298}, {"component": "L9.attn", "layer": 9, "type": "attn", "logit": 2.9562}, {"component": "L4.attn", "layer": 4, "type": "attn", "logit": 2.8246}, {"component": "L6.attn", "layer": 6, "type": "attn", "logit": 2.6923}, {"component": "L2.attn", "layer": 2, "type": "attn", "logit": 2.5886}, {"component": "L3.attn", "layer": 3, "type": "attn", "logit": 2.121}, {"component": "L4.mlp", "layer": 4, "type": "mlp", "logit": 1.6843}, {"component": "L7.attn", "layer": 7, "type": "attn", "logit": 1.0136}, {"component": "L8.attn", "layer": 8, "type": "attn", "logit": 0.9397}, {"component": "L1.mlp", "layer": 1, "type": "mlp", "logit": -1.0442}, {"component": "L5.mlp", "layer": 5, "type": "mlp", "logit": -1.3885}, {"component": "L5.attn", "layer": 5, "type": "attn", "logit": -1.5716}, {"component": "L2.mlp", "layer": 2, "type": "mlp", "logit": -2.2861}, {"component": "L1.attn", "layer": 1, "type": "attn", "logit": -4.5176}, {"component": "L11.mlp", "layer": 11, "type": "mlp", "logit": -21.798}];
+
+function renderDLA() {
+    const sortBy = document.getElementById('sortBy').value;
+    const filterType = document.getElementById('filterType').value;
+    let data = [...DLA_DATA];
+    if (filterType !== 'all') data = data.filter(d => d.type === filterType);
+    if (sortBy === 'abs') data.sort((a,b) => Math.abs(b.logit) - Math.abs(a.logit));
+    else if (sortBy === 'pos') data.sort((a,b) => b.logit - a.logit);
+    else data.sort((a,b) => a.logit - b.logit);
+
+    const maxAbs = Math.max(...data.map(d => Math.abs(d.logit)), 0.001);
+    let h = '<table><tr><th>Component</th><th>Type</th><th style="width:50%">Contribution</th><th>Logit</th></tr>';
+    for (const d of data.slice(0, 50)) {
+        const pct = (Math.abs(d.logit) / maxAbs * 100).toFixed(1);
+        const color = d.logit >= 0 ? '#53d769' : '#e94560';
+        h += '<tr onmousemove="showTip(event, \'' + d.component + ': ' + d.logit.toFixed(4) + '\')" onmouseleave="hideTip()">' +
+            '<td style="font-family:monospace;font-size:0.85em">' + d.component + '</td>' +
+            '<td style="color:#aaa">' + d.type + '</td>' +
+            '<td><div class="bar" style="width:' + pct + '%;background:' + color + '"></div></td>' +
+            '<td style="text-align:right;font-weight:600;color:' + color + '">' + d.logit.toFixed(4) + '</td></tr>';
+    }
+    h += '</table>';
+    document.getElementById('dlaContainer').innerHTML = h;
+}
+renderDLA();
+
+</script>
+</div>
+        <div id="lens" class="panel">
+
+<h1>Logit Lens</h1>
+<p class="subtitle">Each cell shows the model's top-1 prediction at that (layer, position).</p>
+<div class="controls panel">
+    <label>Color by: <select id="colorBy" onchange="renderLens()">
+        <option value="prob">Probability</option>
+    </select></label>
+</div>
+<div id="lensContainer" class="panel" style="overflow-x:auto"></div>
+
+<div class="tooltip" id="tooltip"></div>
+<script>
+const tooltip = document.getElementById('tooltip');
+function showTip(e, text) {
+    tooltip.textContent = text;
+    tooltip.style.display = 'block';
+    tooltip.style.left = (e.clientX + 12) + 'px';
+    tooltip.style.top = (e.clientY - 30) + 'px';
+}
+function hideTip() { tooltip.style.display = 'none'; }
+
+const LENS_DATA = [{"layer": 0, "position": 0, "prediction": "\n", "prob": 0.02498384565114975}, {"layer": 0, "position": 1, "prediction": " capital", "prob": 0.9995125532150269}, {"layer": 0, "position": 2, "prediction": " the", "prob": 0.7110810279846191}, {"layer": 0, "position": 3, "prediction": " France", "prob": 0.2960299551486969}, {"layer": 0, "position": 4, "prediction": " not", "prob": 0.3322335183620453}, {"layer": 1, "position": 0, "prediction": " the", "prob": 0.04746957868337631}, {"layer": 1, "position": 1, "prediction": " capital", "prob": 0.9997885823249817}, {"layer": 1, "position": 2, "prediction": " the", "prob": 0.7567837834358215}, {"layer": 1, "position": 3, "prediction": "'s", "prob": 0.3363672196865082}, {"layer": 1, "position": 4, "prediction": " now", "prob": 0.27087920904159546}, {"layer": 2, "position": 0, "prediction": " the", "prob": 0.026063021272420883}, {"layer": 2, "position": 1, "prediction": " capital", "prob": 0.9989643096923828}, {"layer": 2, "position": 2, "prediction": " the", "prob": 0.6277618408203125}, {"layer": 2, "position": 3, "prediction": "'s", "prob": 0.5106929540634155}, {"layer": 2, "position": 4, "prediction": " now", "prob": 0.3662175238132477}, {"layer": 3, "position": 0, "prediction": " the", "prob": 0.026351766660809517}, {"layer": 3, "position": 1, "prediction": " capital", "prob": 0.9943760633468628}, {"layer": 3, "position": 2, "prediction": " the", "prob": 0.8012475967407227}, {"layer": 3, "position": 3, "prediction": "'s", "prob": 0.7240801453590393}, {"layer": 3, "position": 4, "prediction": " now", "prob": 0.5149421691894531}, {"layer": 4, "position": 0, "prediction": " the", "prob": 0.02613660879433155}, {"layer": 4, "position": 1, "prediction": " capital", "prob": 0.7948309779167175}, {"layer": 4, "position": 2, "prediction": " the", "prob": 0.7919014692306519}, {"layer": 4, "position": 3, "prediction": "'s", "prob": 0.7548434734344482}, {"layer": 4, "position": 4, "prediction": " now", "prob": 0.6269258260726929}, {"layer": 5, "position": 0, "prediction": " the", "prob": 0.02568391151726246}, {"layer": 5, "position": 1, "prediction": " capital", "prob": 0.4573991000652313}, {"layer": 5, "position": 2, "prediction": " the", "prob": 0.690868616104126}, {"layer": 5, "position": 3, "prediction": "'s", "prob": 0.698059618473053}, {"layer": 5, "position": 4, "prediction": " now", "prob": 0.5516778230667114}, {"layer": 6, "position": 0, "prediction": " the", "prob": 0.025425344705581665}, {"layer": 6, "position": 1, "prediction": " city", "prob": 0.6791440844535828}, {"layer": 6, "position": 2, "prediction": " the", "prob": 0.4647892713546753}, {"layer": 6, "position": 3, "prediction": "'s", "prob": 0.6190801858901978}, {"layer": 6, "position": 4, "prediction": " now", "prob": 0.5723844766616821}, {"layer": 7, "position": 0, "prediction": " the", "prob": 0.025334389880299568}, {"layer": 7, "position": 1, "prediction": " city", "prob": 0.7577216029167175}, {"layer": 7, "position": 2, "prediction": " the", "prob": 0.5986446142196655}, {"layer": 7, "position": 3, "prediction": ",", "prob": 0.5048603415489197}, {"layer": 7, "position": 4, "prediction": " now", "prob": 0.6891129016876221}, {"layer": 8, "position": 0, "prediction": " the", "prob": 0.02531290613114834}, {"layer": 8, "position": 1, "prediction": " city", "prob": 0.7886344194412231}, {"layer": 8, "position": 2, "prediction": " the", "prob": 0.33519768714904785}, {"layer": 8, "position": 3, "prediction": ",", "prob": 0.6130327582359314}, {"layer": 8, "position": 4, "prediction": " now", "prob": 0.4226663410663605}, {"layer": 9, "position": 0, "prediction": " the", "prob": 0.02531810849905014}, {"layer": 9, "position": 1, "prediction": " city", "prob": 0.8295971751213074}, {"layer": 9, "position": 2, "prediction": " China", "prob": 0.15335997939109802}, {"layer": 9, "position": 3, "prediction": ",", "prob": 0.6711037755012512}, {"layer": 9, "position": 4, "prediction": " France", "prob": 0.6212646961212158}, {"layer": 10, "position": 0, "prediction": " the", "prob": 0.02550201117992401}, {"layer": 10, "position": 1, "prediction": " city", "prob": 0.6099230647087097}, {"layer": 10, "position": 2, "prediction": " the", "prob": 0.2638753056526184}, {"layer": 10, "position": 3, "prediction": ",", "prob": 0.5732100605964661}, {"layer": 10, "position": 4, "prediction": " France", "prob": 0.2424335777759552}, {"layer": 11, "position": 0, "prediction": "\n", "prob": 0.01359968539327383}, {"layer": 11, "position": 1, "prediction": " of", "prob": 0.16422519087791443}, {"layer": 11, "position": 2, "prediction": " the", "prob": 0.23868213593959808}, {"layer": 11, "position": 3, "prediction": ",", "prob": 0.3749156594276428}, {"layer": 11, "position": 4, "prediction": " the", "prob": 0.0845908373594284}];
+const LENS_TOKENS = ["The", "\u0120capital", "\u0120of", "\u0120France", "\u0120is"];
+
+function renderLens() {
+    const container = document.getElementById('lensContainer');
+    if (!LENS_DATA.length) { container.innerHTML = '<p>No data</p>'; return; }
+
+    const layers = [...new Set(LENS_DATA.map(d => d.layer || 0))].sort((a,b) => a-b);
+    const positions = [...new Set(LENS_DATA.map(d => d.position || 0))].sort((a,b) => a-b);
+
+    const lookup = {};
+    for (const d of LENS_DATA) {
+        lookup[(d.layer||0) + ',' + (d.position||0)] = d;
+    }
+
+    let h = '<table><tr><th>Layer \\ Pos</th>';
+    for (const p of positions) {
+        const tok = LENS_TOKENS[p] || p;
+        h += '<th style="font-size:10px;max-width:50px;overflow:hidden">' + tok + '</th>';
+    }
+    h += '</tr>';
+
+    for (const l of layers) {
+        h += '<tr><td style="font-weight:600">L' + l + '</td>';
+        for (const p of positions) {
+            const d = lookup[l + ',' + p];
+            if (!d) { h += '<td>-</td>'; continue; }
+            const pred = d.top_prediction || d.prediction || '-';
+            const prob = d.probability || d.prob || 0;
+            const intensity = Math.min(prob * 2, 1);
+            const r = Math.round(233 * intensity + 26 * (1-intensity));
+            const g = Math.round(69 * intensity + 33 * (1-intensity));
+            const b = Math.round(96 * intensity + 62 * (1-intensity));
+            const bg = 'rgb('+r+','+g+','+b+')';
+            const tip = 'L'+l+' pos'+p+': '+pred+' ('+prob.toFixed(3)+')';
+            h += '<td class="heatmap-cell" style="background:'+bg+';font-size:9px;color:white"' +
+                ' onmousemove="showTip(event,\''+tip.replace(/'/g,"\\'")+'\')" onmouseleave="hideTip()">' +
+                (pred.length > 6 ? pred.slice(0,5)+'…' : pred) + '</td>';
+        }
+        h += '</tr>';
+    }
+    h += '</table>';
+    container.innerHTML = h;
+}
+renderLens();
+
+</script>
+</div>
+        <div id="attention" class="panel"><h2>Attention</h2><p>144 head(s) captured.</p></div>
+        <div id="attribution" class="panel">
+
+<h1>Attribution (Gradient Saliency)</h1>
+<div class="panel controls">
+    <label>Threshold: <input type="range" id="threshold" min="0" max="100" value="0"
+        oninput="renderAttribution(this.value / 100)">
+    <span id="threshVal">0%</span></label>
+</div>
+<div class="panel">
+    <h2>Token Coloring</h2>
+    <div id="tokenContainer" style="margin:12px 0;line-height:2.2"></div>
+</div>
+<div class="panel">
+    <h2>Ranked Tokens</h2>
+    <div id="rankedContainer"></div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+<script>
+const tooltip = document.getElementById('tooltip');
+function showTip(e, text) {
+    tooltip.textContent = text;
+    tooltip.style.display = 'block';
+    tooltip.style.left = (e.clientX + 12) + 'px';
+    tooltip.style.top = (e.clientY - 30) + 'px';
+}
+function hideTip() { tooltip.style.display = 'none'; }
+
+const ATTR_DATA = [{"token": "The", "score": 0.994554}, {"token": "\u0120capital", "score": 1.579183}, {"token": "\u0120of", "score": 1.122356}, {"token": "\u0120France", "score": 1.492295}, {"token": "\u0120is", "score": 1.660651}];
+const MAX_SCORE = 1.6606513261795044;
+
+function scoreColor(intensity) {
+    if (intensity > 0.7) return 'rgba(233,69,96,0.85)';
+    if (intensity > 0.4) return 'rgba(255,193,7,0.65)';
+    if (intensity > 0.15) return 'rgba(255,255,255,0.15)';
+    return 'transparent';
+}
+
+function renderAttribution(threshold) {
+    document.getElementById('threshVal').textContent = (threshold * 100).toFixed(0) + '%';
+    const tc = document.getElementById('tokenContainer');
+    const rc = document.getElementById('rankedContainer');
+    let tokHtml = '';
+    for (const d of ATTR_DATA) {
+        const intensity = Math.abs(d.score) / MAX_SCORE;
+        if (intensity < threshold) {
+            tokHtml += '<span class="token" style="opacity:0.3" onmousemove="showTip(event, \'' + d.token + ': ' + d.score.toFixed(4) + '\')" onmouseleave="hideTip()">' + d.token + '</span>';
+        } else {
+            tokHtml += '<span class="token" style="background:' + scoreColor(intensity) + '" onmousemove="showTip(event, \'' + d.token + ': ' + d.score.toFixed(4) + '\')" onmouseleave="hideTip()">' + d.token + '</span>';
+        }
+    }
+    tc.innerHTML = tokHtml;
+
+    const sorted = [...ATTR_DATA].sort((a,b) => Math.abs(b.score) - Math.abs(a.score));
+    let rankHtml = '<table><tr><th>Token</th><th style="width:60%">Score</th><th>Value</th></tr>';
+    for (const d of sorted.slice(0, 20)) {
+        const intensity = Math.abs(d.score) / MAX_SCORE;
+        if (intensity < threshold) continue;
+        const pct = (intensity * 100).toFixed(1);
+        rankHtml += '<tr><td style="font-weight:600">' + d.token + '</td>' +
+            '<td><div class="bar" style="width:' + pct + '%;background:#e94560"></div></td>' +
+            '<td style="text-align:right">' + d.score.toFixed(4) + '</td></tr>';
+    }
+    rankHtml += '</table>';
+    rc.innerHTML = rankHtml;
+}
+
+renderAttribution(0);
+
+</script>
+</div>
+    </main>
+</div>
+
+</body>
+</html>

@@ -192,6 +192,20 @@ def _show_extensive_help() -> None:
     console.print()
 
     console.print(Panel(
+        f"[bold {ACCENT}]gui[/bold {ACCENT}]  [dim]interpkit gui[/dim]\n\n"
+        "Prefer clicking to typing? Launch the local web GUI — a point-and-click interface that runs"
+        " every command in your browser, with module/layer pickers populated from the model's detected"
+        " architecture and results drawn natively (heatmaps, bar charts, attention explorer, chat).\n\n"
+        "  Requires the optional extra: [bold green]pip install \"interpkit\\[gui]\"[/bold green]\n"
+        "  [bold green]--host / --port[/bold green]  Bind address (default 127.0.0.1:7860).\n"
+        "  [bold green]--no-browser[/bold green]  Don't open the browser automatically.",
+        title="gui",
+        border_style=ACCENT_DIM,
+        padding=(0, 2),
+    ))
+
+    console.print()
+    console.print(Panel(
         f"[bold {ACCENT}]scan[/bold {ACCENT}]  [dim]interpkit scan gpt2 'The capital of France is'[/dim]\n\n"
         "The best place to start. Runs four analyses in a single pass — DLA, logit lens, attention,"
         " and gradient attribution — and prints a combined overview. Think of it as a model health"
@@ -1590,6 +1604,32 @@ def generate(
                 for step in out["steps"]
             ]
         _json_dump(out)
+
+
+# ══════════════════════════════════════════════════════════════════
+# gui
+# ══════════════════════════════════════════════════════════════════
+
+
+@app.command()
+def gui(
+    host: str = typer.Option("127.0.0.1", "--host", help="Interface to bind the server to"),
+    port: int = typer.Option(7860, "--port", help="Port to serve the GUI on"),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Don't open the browser automatically"),
+) -> None:
+    """Launch the local web GUI: load models and run every op from the browser.
+
+    Requires the optional [gui] extra: pip install "interpkit[gui]".
+    """
+    try:
+        from interpkit.gui import serve
+    except ImportError:
+        console.print(
+            "\n  [bold red]The GUI requires the optional \\[gui] extra.[/bold red]\n"
+            f'  Install it with: [bold {ACCENT}]pip install "interpkit\\[gui]"[/bold {ACCENT}]\n'
+        )
+        raise typer.Exit(1) from None
+    serve(host=host, port=port, open_browser=not no_browser)
 
 
 def run() -> None:

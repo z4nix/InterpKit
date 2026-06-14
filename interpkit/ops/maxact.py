@@ -29,6 +29,7 @@ re-running the model. Each scan currently recomputes forwards.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from itertools import islice
 from typing import TYPE_CHECKING, Any
 
@@ -115,12 +116,17 @@ def run_max_activating(
     max_examples: int | None = None,
     max_length: int = 128,
     context: int = 12,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> dict[str, Any]:
     """Scan *dataset* for the inputs that most activate one unit at *at*.
 
     Exactly one of *neuron* / *feature* / *head* selects the unit;
     *feature* additionally needs *sae* (an :class:`~interpkit.ops.sae.SAE`
     or a HuggingFace repo / local path accepted by ``load_sae``).
+
+    ``progress_callback`` (optional) is called as ``(scanned, total,
+    message)`` after each batch — for programmatic consumers like the
+    GUI job queue; the rich bar renders regardless.
 
     Returns
     -------
@@ -196,6 +202,14 @@ def run_max_activating(
     n_positions = 0
     with Progress(console=console, transient=True) as progress:
         task = progress.add_task("Scanning for max activations", total=len(texts))
+        scanned = 0
+
+        def _tick(advance: int) -> None:
+            nonlocal scanned
+            scanned += advance
+            progress.advance(task, advance=advance)
+            if progress_callback is not None:
+                progress_callback(scanned, len(texts), "Scanning for max activations")
         for start in range(0, len(texts), batch_size):
             batch = texts[start : start + batch_size]
             encoded = tok(
@@ -235,7 +249,7 @@ def run_max_activating(
 
             acts = first_tensor(captured.get("acts"))
             if acts is None or acts.dim() < 2:
-                progress.advance(task, advance=len(batch))
+                _tick(len(batch))
                 continue
             if acts.dim() == 2:  # (S, H) → (1, S, H)
                 acts = acts.unsqueeze(0)
@@ -303,7 +317,7 @@ def run_max_activating(
                         "context_offset": pos - lo,
                         "context_scores": window_scores,
                     })
-            progress.advance(task, advance=len(batch))
+            _tick(len(batch))
 
     examples: list[dict[str, Any]] = []
     for rank, (score, payload) in enumerate(tracker.items()):

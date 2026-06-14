@@ -28,6 +28,7 @@ theme:
 nav:
   - Home: index.md
   - Quickstart: quickstart.md
+  - Web GUI: gui.md
   - API Reference:
     - Model: api/model.md
     - Operations: api/ops.md

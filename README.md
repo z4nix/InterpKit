@@ -29,6 +29,9 @@ uv pip install interpkit
 
 # For linear probe support:
 uv pip install "interpkit[probe]"
+
+# For the local web GUI:
+uv pip install "interpkit[gui]"
 ```
 
 Or with plain `venv` + `pip`:
@@ -40,6 +43,9 @@ pip install interpkit
 
 # For linear probe support:
 pip install "interpkit[probe]"
+
+# For the local web GUI:
+pip install "interpkit[gui]"
 ```
 
 Or with `conda`:
@@ -109,6 +115,30 @@ chat.dla([{"role": "user", "content": "Capital of France?"}])
 ```
 
 See [examples/10_chat_models.ipynb](examples/10_chat_models.ipynb) for a full walkthrough including chat-style steering.
+
+---
+
+## Web GUI
+
+Prefer a point-and-click workflow? InterpKit ships a clean local web GUI that
+runs every operation in your browser — no module paths to memorise (pickers are
+populated from the model's detected architecture), live results rendered
+natively, and ops that don't apply to the loaded model greyed out automatically.
+
+```bash
+pip install "interpkit[gui]"
+interpkit gui                 # opens http://127.0.0.1:7860
+```
+
+Load a model from the landing card, then walk the sidebar — **Overview**
+(scan, inspect, report), **Analysis** (lens, dla, attribution, attention,
+trace, …), **Steering & Generation** (steer, generate, chat, SAE features),
+**Circuits** (find-circuit, atp, eap, max-activating), and **Advanced**
+(tuned-lens training). Every result has a one-click JSON download and a
+per-op run history.
+
+Options: `--host`, `--port`, `--no-browser`. See [docs/gui.md](docs/gui.md) for
+the full guide.
 
 ---
 
